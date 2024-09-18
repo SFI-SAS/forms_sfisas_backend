@@ -15,7 +15,7 @@ def create_user_endpoint(
     db: Session = Depends(get_db),
 ):
     hashed_password = hash_password(user.password)
-    user_data = user.copy(update={"password": hashed_password})
+    user_data = user.model_copy(update={"password": hashed_password})
     
     return create_user(db=db, user=user_data)
 

@@ -3,8 +3,8 @@ from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
 from app.models import User, UserType
-from app.crud import create_form, add_questions_to_form, get_form
-from app.schemas import FormCreate, FormResponse, QuestionAdd
+from app.crud import create_form, add_questions_to_form, get_form, get_forms
+from app.schemas import FormCreate, FormResponse, QuestionAdd, FormBase
 from app.core.security import get_current_user
 
 router = APIRouter()
@@ -16,7 +16,7 @@ def create_form_endpoint(
     current_user: User = Depends(get_current_user)
 ):
     # Solo los usuarios tipo admin pueden crear formularios
-    if current_user.user_type.name != UserType.admin:
+    if current_user.user_type.name != UserType.admin.name:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create forms"
@@ -42,8 +42,33 @@ def add_questions_to_form_endpoint(
 def get_form_endpoint(
     form_id: int,
     db: Session = Depends(get_db),
-):
-    form = get_form(db, form_id)
-    if not form:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Form not found")
-    return form
+    current_user: User = Depends(get_current_user)
+):  
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get form"
+        )
+    else:    
+        form = get_form(db, form_id)
+        if not form:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Form not found")
+        return form
+
+@router.get("/", response_model=List[FormBase])
+def get_form_endpoint(
+    skip: int = 0,
+    limit: int = 10,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):  
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get form"
+        )
+    else:    
+        forms = get_forms(db, skip, limit)
+        if not forms:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Form not found")
+        return forms

@@ -27,10 +27,12 @@ class User(Base):
     __tablename__ = 'users'
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
+    num_document = Column(String(50), nullable=False)
     name = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
-    password = Column(Text, nullable=False)
+    telephone = Column(String(20), unique=True, nullable=False)
     user_type = Column(Enum(UserType), default=UserType.respondent, nullable=False)
+    password = Column(Text, nullable=False)
 
     forms = relationship('Form', back_populates='user')
     responses = relationship('Response', back_populates='user')
@@ -66,8 +68,10 @@ class Question(Base):
 # Tabla intermedia para la relación muchos a muchos entre Form y Question
 class FormQuestion(Base):
     __tablename__ = 'form_questions'
-    form_id = Column(BigInteger, ForeignKey('forms.id'), primary_key=True)
-    question_id = Column(BigInteger, ForeignKey('questions.id'), primary_key=True)
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id'))
+    question_id = Column(BigInteger, ForeignKey('questions.id'))
     
 # Modelo Options
 class Option(Base):

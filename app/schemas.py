@@ -17,6 +17,8 @@ class FormStatus(str, Enum):
 class UserBase(BaseModel):
     name: str = Field(..., example="John Doe")
     email: EmailStr = Field(..., example="john@example.com")
+    num_document: str = Field(..., example="10203040506")
+    telephone: str = Field(..., example="3013033435")
     user_type: UserType = Field(default=UserType.respondent, example="respondent") 
 
 class UserCreate(UserBase):
@@ -33,26 +35,19 @@ class UserUpdate(BaseModel):
     email: Optional[str] = None
     password: Optional[str] = None
     user_type: Optional[UserType] = None
+    
+# Schemas for Option
+class OptionCreate(BaseModel):
+    question_id: int
+    option_text: str
 
-# Schemas for Form
-class FormBase(BaseModel):
-    title: str = Field(..., example="Survey Form")
-    description: Optional[str] = Field(None, example="This is a survey form description.")
-    status: Optional[FormStatus] = FormStatus.draft
-
-class FormCreate(FormBase):
-    pass
-
-class FormResponse(FormBase):
+class OptionResponse(BaseModel):
     id: int
-    user_id: int
-    created_at: datetime
+    question_id: int
+    option_text: str
 
     class Config:
         from_attributes = True
-
-class QuestionAdd(BaseModel):
-    question_ids: List[int]
 
 # Schemas for Question
 class QuestionBase(BaseModel):
@@ -64,8 +59,14 @@ class QuestionCreate(QuestionBase):
 
 class QuestionResponse(QuestionBase):
     id: int
-    form_id: int
+    
+    class Config:
+        from_attributes = True
 
+class QuestionOptions(QuestionBase):
+    id: int
+    options: List[OptionResponse] = []
+    
     class Config:
         from_attributes = True
 
@@ -73,19 +74,28 @@ class QuestionUpdate(BaseModel):
     question_text: Optional[str] = None
     question_type: Optional[str] = None
 
-# Schemas for Option
-class OptionBase(BaseModel):
-    option_text: str = Field(..., example="Blue")
 
-class OptionCreate(OptionBase):
+# Schemas for Form
+class FormBase(BaseModel):
+    id: int
+    title: str = Field(..., example="Survey Form")
+    description: Optional[str] = Field(None, example="This is a survey form description.")
+    status: Optional[FormStatus] = FormStatus.draft
+
+class FormCreate(FormBase):
     pass
 
-class OptionResponse(OptionBase):
-    id: int
-    question_id: int
-
+class FormResponse(FormBase):
+    user_id: int
+    created_at: datetime
+    questions: List[QuestionOptions] = [] 
+    
     class Config:
         from_attributes = True
+
+class QuestionAdd(BaseModel):
+    question_ids: List[int]
+
 
 # Schemas for Response
 class ResponseBase(BaseModel):
