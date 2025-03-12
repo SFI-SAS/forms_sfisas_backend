@@ -74,10 +74,15 @@ class QuestionUpdate(BaseModel):
     question_text: Optional[str] = None
     question_type: Optional[str] = None
 
-
-# Schemas for Form
-class FormBase(BaseModel):
+class GetFormBase(BaseModel):
     id: int
+    title: str
+    description: Optional[str] = None
+    status: Optional[FormStatus] = FormStatus.draft  # Aquí corregido
+    created_at: datetime
+    
+    
+class FormBase(BaseModel):
     title: str = Field(..., example="Survey Form")
     description: Optional[str] = Field(None, example="This is a survey form description.")
     status: Optional[FormStatus] = FormStatus.draft
@@ -131,3 +136,11 @@ class AnswerResponse(AnswerBase):
 class Token(BaseModel):
     access_token: str
     token_type: str
+    
+class ProjectCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    
+class ProjectResponse(ProjectCreate):
+    id: int
+    created_at: datetime

@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
-from app.models import User, Form, Question, Option, Response, Answer, FormQuestion
-from app.schemas import UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate
+from app.models import Project, User, Form, Question, Option, Response, Answer, FormQuestion
+from app.schemas import ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate
 from fastapi import HTTPException, status
 from typing import List
 
@@ -176,3 +176,13 @@ def create_answer(db: Session, answer: AnswerCreate, response_id: int, question_
 
 def get_answers(db: Session, response_id: int):
     return db.query(Answer).filter(Answer.response_id == response_id).all()
+
+def create_project(db: Session, project_data: ProjectCreate):
+    new_project = Project(**project_data.dict())
+    db.add(new_project)
+    db.commit()
+    db.refresh(new_project)
+    return new_project
+
+def get_all_projects(db: Session):
+    return db.query(Project).all()

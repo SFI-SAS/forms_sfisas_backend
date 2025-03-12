@@ -1,5 +1,6 @@
+from datetime import datetime
 from sqlalchemy import (
-    Column, BigInteger, String, Text, ForeignKey, TIMESTAMP, Enum, func
+    Column, BigInteger, DateTime, String, Text, ForeignKey, TIMESTAMP, Enum, func
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -108,3 +109,13 @@ class Answer(Base):
 
     response = relationship('Response', back_populates='answers')
     question = relationship('Question', back_populates='answers')
+    
+    
+# Modelo Project
+class Project(Base):
+    __tablename__ = 'projects'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
