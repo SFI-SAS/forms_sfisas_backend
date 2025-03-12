@@ -11,9 +11,7 @@ class UserType(enum.Enum):
     respondent = "respondent"
 
 # Definir ENUM para form_status
-class FormStatus(enum.Enum):
-    draft = 'draft'
-    published = 'published'
+
     
 class QuestionType(enum.Enum):
     text = "text"
@@ -44,14 +42,17 @@ class Form(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
+    project_id = Column(BigInteger, ForeignKey('projects.id'), nullable=False)  # Relación con Project
+
     title = Column(String(255), nullable=False)
     description = Column(String(255), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
-    status = Column(Enum(FormStatus), server_default=FormStatus.draft.name, nullable=False)
 
     user = relationship('User', back_populates='forms')
+    project = relationship('Project', back_populates='forms')  # Relación con el modelo Project
     questions = relationship("Question", secondary="form_questions", back_populates="forms")
     responses = relationship('Response', back_populates='form')
+
 
 # Modelo Questions
 class Question(Base):
@@ -118,4 +119,6 @@ class Project(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    forms = relationship('Form', back_populates='project')  # Relación inversa con Form

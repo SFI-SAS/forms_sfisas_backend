@@ -4,7 +4,7 @@ from app.models import Project, User, Form, Question, Option, Response, Answer, 
 from app.schemas import ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate
 from fastapi import HTTPException, status
 from typing import List
-
+from datetime import datetime
 # User CRUD Operations
 def create_user(db: Session, user: UserCreate):
     db_user = User(num_document=user.num_document, name=user.name, email=user.email, telephone=user.telephone, password=user.password)
@@ -44,15 +44,24 @@ def get_users(db: Session, skip: int = 0, limit: int = 10):
 # Form CRUD Operations
 def create_form(db: Session, form: FormCreate, user_id: int):
     try:
-        db_form = Form(user_id=user_id, title=form.title, description=form.description, status=form.status)
-        db.add(db_form)
-        db.commit()
-        db.refresh(db_form)
-        return db_form
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Error to create form with the information provided")
+        db_form = Form(
+            user_id=user_id,
+            project_id=form.project_id,  
+            title=form.title,
+            description=form.description,
+            created_at=datetime.utcnow()  
+        )
+        
+        db.add(db_form)  # Agregar a la sesión
+        db.commit()  # Confirmar cambios en la DB
+        db.refresh(db_form)  # Actualizar el objeto con los valores generados
 
+        return db_form  # Devolver el formulario creado
+    except IntegrityError:
+        db.rollback()  # Revertir cambios si hay un error
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Error to create form with the information provided")
+    
+    
 def get_form(db: Session, form_id: int):
     return db.query(Form).options(
         joinedload(Form.questions).joinedload(Question.options)  # Cargar preguntas y opciones en una sola consulta

@@ -78,19 +78,21 @@ class GetFormBase(BaseModel):
     id: int
     title: str
     description: Optional[str] = None
-    status: Optional[FormStatus] = FormStatus.draft  # Aquí corregido
+    project_id: int
     created_at: datetime
     
     
 class FormBase(BaseModel):
+   
     title: str = Field(..., example="Survey Form")
     description: Optional[str] = Field(None, example="This is a survey form description.")
-    status: Optional[FormStatus] = FormStatus.draft
+    project_id: int = Field(..., example=1) 
 
 class FormCreate(FormBase):
     pass
 
 class FormResponse(FormBase):
+    id:int
     user_id: int
     created_at: datetime
     questions: List[QuestionOptions] = [] 
