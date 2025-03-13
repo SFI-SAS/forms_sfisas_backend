@@ -220,3 +220,20 @@ def get_forms_by_project(db: Session, project_id: int):
         raise HTTPException(status_code=404, detail="No forms found for this project")
 
     return forms
+
+
+def delete_question_from_db(question_id: int, db: Session):
+    """ Elimina una pregunta si no tiene relaciones con otras tablas. """
+    question = db.query(Question).filter(Question.id == question_id).first()
+
+    if not question:
+        raise HTTPException(status_code=404, detail="Pregunta no encontrada")
+
+    # Verificar si tiene relaciones con otras tablas
+    if question.forms or question.options or question.answers:
+        raise HTTPException(status_code=400, detail="No se puede eliminar porque está relacionada con otros datos")
+
+    # Eliminar la pregunta
+    db.delete(question)
+    db.commit()
+    return {"message": "Pregunta eliminada correctamente"}

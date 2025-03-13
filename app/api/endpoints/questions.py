@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
 from app.models import User, UserType
-from app.crud import create_question, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
+from app.crud import create_question, delete_question_from_db, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
 from app.schemas import QuestionCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate
 from app.core.security import get_current_user
 
@@ -79,3 +79,8 @@ def read_options_by_question(question_id: int, db: Session = Depends(get_db), cu
         )
     else: 
         return get_options_by_question_id(db=db, question_id=question_id)
+
+@router.delete("/delete/{question_id}")
+def delete_question(question_id: int, db: Session = Depends(get_db)):
+    return delete_question_from_db(question_id, db)
+
