@@ -195,3 +195,28 @@ def create_project(db: Session, project_data: ProjectCreate):
 
 def get_all_projects(db: Session):
     return db.query(Project).all()
+
+def delete_project_by_id(db: Session, project_id: int):
+    project = db.query(Project).filter(Project.id == project_id).first()
+
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    existing_forms = db.query(Form).filter(Form.project_id == project_id).first()
+    if existing_forms:
+        raise HTTPException(status_code=400, detail="No se puede eliminar el proyecto porque tiene formularios asociados.")
+
+    db.delete(project)
+    db.commit()
+
+    return {"message": "Project deleted successfully"}
+
+
+def get_forms_by_project(db: Session, project_id: int):
+    """Consulta los formularios asociados a un proyecto específico"""
+    forms = db.query(Form).filter(Form.project_id == project_id).all()
+
+    if not forms:
+        raise HTTPException(status_code=404, detail="No forms found for this project")
+
+    return forms
