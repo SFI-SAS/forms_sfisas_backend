@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine
 from app.models import Base
-from app.api.endpoints import projects, users, forms, auth, questions
+from app.api.endpoints import projects, responses, users, forms, auth, questions
 
 app = FastAPI()
 
@@ -22,6 +22,7 @@ app.include_router(forms.router, prefix="/forms", tags=["forms"])
 app.include_router(questions.router, prefix="/questions", tags=["questions"])
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(projects.router,prefix="/projects", tags=["projects"] )
+app.include_router(responses.router,prefix="/responses", tags=["responses"] )
 # Crear todas las tablas definidas en models.py
 Base.metadata.create_all(bind=engine)
 

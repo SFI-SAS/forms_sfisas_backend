@@ -1,3 +1,4 @@
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from app.models import Project, User, Form, Question, Option, Response, Answer, FormQuestion
@@ -237,3 +238,35 @@ def delete_question_from_db(question_id: int, db: Session):
     db.delete(question)
     db.commit()
     return {"message": "Pregunta eliminada correctamente"}
+
+def post_create_response(db: Session, form_id: int, user_id: int):
+    """Función para crear una nueva respuesta en la base de datos si la encuesta y el usuario existen."""
+    form = db.query(Form).filter(Form.id == form_id).first()
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not form:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    # Crear la respuesta con la fecha de envío automática
+    response = Response(form_id=form_id, user_id=user_id, submitted_at=func.now())
+
+    db.add(response)
+    db.commit()
+    db.refresh(response)
+
+    return {"message": "Respuesta guardada exitosamente", "response_id": response.id}
+
+
+def create_answer_in_db(answer, db: Session):
+    new_answer = Answer(
+        response_id=answer.response_id,
+        question_id=answer.question_id,
+        answer_text=answer.answer_text,
+        file_path=answer.file_path
+    )
+    db.add(new_answer)
+    db.commit()
+    db.refresh(new_answer)
+    return new_answer

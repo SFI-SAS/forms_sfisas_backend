@@ -146,3 +146,9 @@ class ProjectCreate(BaseModel):
 class ProjectResponse(ProjectCreate):
     id: int
     created_at: datetime
+    
+class PostCreate(BaseModel):
+    response_id: int
+    question_id: int
+    answer_text: str | None = None
+    file_path: str | None = None
