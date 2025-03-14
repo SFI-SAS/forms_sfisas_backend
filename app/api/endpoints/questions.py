@@ -81,6 +81,12 @@ def read_options_by_question(question_id: int, db: Session = Depends(get_db), cu
         return get_options_by_question_id(db=db, question_id=question_id)
 
 @router.delete("/delete/{question_id}")
-def delete_question(question_id: int, db: Session = Depends(get_db)):
-    return delete_question_from_db(question_id, db)
+def delete_question(question_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get options"
+        )
+    else: 
+        return delete_question_from_db(question_id, db)
 
