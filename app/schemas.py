@@ -53,6 +53,7 @@ class OptionResponse(BaseModel):
 class QuestionBase(BaseModel):
     question_text: str = Field(..., example="What is your favorite color?")
     question_type: str = Field(..., example="multiple_choice")
+    required: bool = Field(..., example=True) 
 
 class QuestionCreate(QuestionBase):
     pass # Allow creation without assignment

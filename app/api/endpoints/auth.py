@@ -31,3 +31,5 @@ def login_for_access_token(
 def validate_token(current_user: User = Depends(get_current_user)):
     # Si llegas a este punto, significa que el token es válido
     return {"message": "Token is valid", "user": current_user}
+
+

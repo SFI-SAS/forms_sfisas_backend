@@ -1,6 +1,6 @@
 from datetime import datetime
 from sqlalchemy import (
-    Column, BigInteger, DateTime, String, Text, ForeignKey, TIMESTAMP, Enum, func
+    Boolean, Column, BigInteger, DateTime, String, Text, ForeignKey, TIMESTAMP, Enum, func, text
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -31,6 +31,7 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False)
     telephone = Column(String(20), unique=True, nullable=False)
     user_type = Column(Enum(UserType), default=UserType.respondent, nullable=False)
+    nickname = Column(String(100), nullable=True)  # Nuevo campo agregado
     password = Column(Text, nullable=False)
 
     forms = relationship('Form', back_populates='user')
@@ -60,13 +61,12 @@ class Question(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     question_text = Column(String(255), nullable=False)
-    question_type = Column(Enum(QuestionType), server_default=QuestionType.text.name, nullable=False)  # Utiliza el enum aquí
+    question_type = Column(Enum(QuestionType), server_default=QuestionType.text.name, nullable=False)
+    required = Column(Boolean, nullable=False, server_default=text("1"))  # Solución aquí
 
     forms = relationship('Form', secondary='form_questions', back_populates='questions')
     options = relationship('Option', back_populates='question')
     answers = relationship('Answer', back_populates='question')
-    
-    
 # Tabla intermedia para la relación muchos a muchos entre Form y Question
 class FormQuestion(Base):
     __tablename__ = 'form_questions'

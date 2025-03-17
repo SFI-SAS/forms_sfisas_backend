@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
 from app.models import User, UserType
-from app.crud import create_form, add_questions_to_form, get_form, get_forms
+from app.crud import  create_form, add_questions_to_form, get_form, get_forms
 from app.schemas import FormCreate, FormResponse, GetFormBase, QuestionAdd, FormBase
 from app.core.security import get_current_user
 
@@ -55,3 +55,12 @@ def get_form_endpoint(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Form not found")
         return form
 
+@router.get("/{form_id}/has-responses")
+def check_form_responses(form_id: int, db: Session = Depends(get_db),    current_user: User = Depends(get_current_user)):
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get form"
+        )
+    else:    
+        return check_form_data(db, form_id)

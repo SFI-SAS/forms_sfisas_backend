@@ -6,18 +6,38 @@ from app.schemas import ProjectCreate, UserCreate, FormCreate, QuestionCreate, O
 from fastapi import HTTPException, status
 from typing import List
 from datetime import datetime
+
+def generate_nickname(name: str) -> str:
+    parts = name.split()
+    if len(parts) == 1:
+        return (parts[0][0] + parts[0][-1]).upper()  # Primera y última letra del único nombre en mayúsculas
+    elif len(parts) >= 2:
+        return (parts[0][0] + parts[0][-1] + parts[1][0] + parts[1][-1]).upper()  # Primer y última letra de los dos primeros nombres o palabras en mayúsculas
+    return ""  # En caso de un string vacío (no debería pasar)
+
 # User CRUD Operations
 def create_user(db: Session, user: UserCreate):
-    db_user = User(num_document=user.num_document, name=user.name, email=user.email, telephone=user.telephone, password=user.password)
+    nickname = generate_nickname(user.name)
+    db_user = User(
+        num_document=user.num_document,
+        name=user.name,
+        email=user.email,
+        telephone=user.telephone,
+        password=user.password,
+        nickname=nickname  # Guardamos el nickname generado
+    )
     try:
         db.add(db_user)
         db.commit()
         db.refresh(db_user)
         return db_user
-    except IntegrityError as e:
-        print(e)
+    except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+
 
 def update_user(db: Session, user_id: int, user: UserUpdate):
     db_user = db.query(User).filter(User.id == user_id).first()
@@ -74,15 +94,21 @@ def get_forms(db: Session, skip: int = 0, limit: int = 10):
 # Question CRUD Operations
 def create_question(db: Session, question: QuestionCreate):
     try:
-        db_question = Question(question_text=question.question_text, question_type=question.question_type)
+        db_question = Question(
+            question_text=question.question_text,
+            question_type=question.question_type,
+            required=question.required  # Se pasa el valor de required
+        )
         db.add(db_question)
         db.commit()
         db.refresh(db_question)
         return db_question        
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Error to create a question with the provided information")
-
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Error to create a question with the provided information"
+        )
 
 def get_question_by_id(db: Session, question_id: int) -> Question:
     return db.query(Question).filter(Question.id == question_id).first()
