@@ -25,8 +25,8 @@ def get_user_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Los usuarios pueden ver su propio perfil, pero solo los admins pueden ver otros perfiles
-    if current_user.id != user_id and current_user.user_type != UserType.admin:
+    # Los usuarios pueden ver su propio perfil, pero solo los creators pueden ver otros perfiles
+    if current_user.id != user_id and current_user.user_type != UserType.creators:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to view this user"
@@ -43,8 +43,8 @@ def update_user_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Solo los admins pueden actualizar usuarios, o el propio usuario puede actualizar su perfil
-    if current_user.id != user_id and current_user.user_type != UserType.admin:
+    # Solo los creators pueden actualizar usuarios, o el propio usuario puede actualizar su perfil
+    if current_user.id != user_id and current_user.user_type != UserType.creator:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to update this user"
@@ -61,8 +61,8 @@ def get_user_by_email_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Los admins pueden buscar usuarios por correo electrónico
-    if current_user.user_type != UserType.admin:
+    # Los creators pueden buscar usuarios por correo electrónico
+    if current_user.user_type != UserType.creator:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to search for users by email"
@@ -79,8 +79,8 @@ def list_users_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Los admins pueden listar usuarios, otros usuarios pueden listar sólo su propio perfil
-    if current_user.user_type != UserType.admin:
+    # Los creator pueden listar usuarios, otros usuarios pueden listar sólo su propio perfil
+    if current_user.user_type != UserType.creator:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to list users"

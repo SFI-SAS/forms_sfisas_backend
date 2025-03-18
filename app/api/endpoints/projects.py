@@ -11,7 +11,7 @@ router = APIRouter()
 
 @router.post("/", response_model=ProjectResponse)
 def create_new_project(project: ProjectCreate, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
-    if current_user.user_type.name != UserType.admin.name:
+    if current_user.user_type.name != UserType.creator.name:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create forms"
@@ -30,7 +30,7 @@ def get_projects(db: Session = Depends(get_db), current_user: User = Depends(get
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_project_endpoint(project_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.user_type.name != UserType.admin.name:
+    if current_user.user_type.name != UserType.creator.name:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create forms"

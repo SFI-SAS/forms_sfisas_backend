@@ -8,7 +8,8 @@ import enum
 
 class UserType(enum.Enum):
     admin = "admin"
-    respondent = "respondent"
+    creator = "creator"
+    user = "user"
 
 # Definir ENUM para form_status
 
@@ -30,7 +31,7 @@ class User(Base):
     name = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
     telephone = Column(String(20), unique=True, nullable=False)
-    user_type = Column(Enum(UserType), default=UserType.respondent, nullable=False)
+    user_type = Column(Enum(UserType), default=UserType.user, nullable=False)
     nickname = Column(String(100), nullable=True)  # Nuevo campo agregado
     password = Column(Text, nullable=False)
 

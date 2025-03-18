@@ -6,7 +6,8 @@ from enum import Enum
 # Enum for UserType
 class UserType(str, Enum):
     admin = "admin"
-    respondent = "respondent"
+    creator = "creator"
+    user = "user"
 
 # Enum for FormStatus
 class FormStatus(str, Enum):
@@ -19,7 +20,7 @@ class UserBase(BaseModel):
     email: EmailStr = Field(..., example="john@example.com")
     num_document: str = Field(..., example="10203040506")
     telephone: str = Field(..., example="3013033435")
-    user_type: UserType = Field(default=UserType.respondent, example="respondent") 
+    user_type: UserType = Field(default=UserType.user, example="user") 
 
 class UserCreate(UserBase):
     password: str = Field(..., min_length=8, example="securepassword")

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
 from app.models import User, UserType
-from app.crud import  create_form, add_questions_to_form, get_form, get_forms
+from app.crud import  check_form_data, create_form, add_questions_to_form, get_form, get_forms
 from app.schemas import FormCreate, FormResponse, GetFormBase, QuestionAdd, FormBase
 from app.core.security import get_current_user
 
@@ -15,8 +15,8 @@ def create_form_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Solo los usuarios tipo admin pueden crear formularios
-    if current_user.user_type.name != UserType.admin.name:
+    # Solo los usuarios tipo creator pueden crear formularios
+    if current_user.user_type.name != UserType.creator.name:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create forms"
@@ -30,8 +30,8 @@ def add_questions_to_form_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Solo los usuarios tipo admin pueden agregar preguntas a formularios
-    if current_user.user_type.name != UserType.admin.name:
+    # Solo los usuarios tipo creator pueden agregar preguntas a formularios
+    if current_user.user_type.name != UserType.creator.name:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to modify forms"

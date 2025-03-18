@@ -24,7 +24,7 @@ def create_user(db: Session, user: UserCreate):
         email=user.email,
         telephone=user.telephone,
         password=user.password,
-        nickname=nickname  # Guardamos el nickname generado
+        nickname=nickname 
     )
     try:
         db.add(db_user)
@@ -296,3 +296,52 @@ def create_answer_in_db(answer, db: Session):
     db.commit()
     db.refresh(new_answer)
     return new_answer
+
+def check_form_data(db: Session, form_id: int):
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Form not found")
+    
+    responses = db.query(Response).filter(Response.form_id == form_id).all()
+    answers = db.query(Answer).join(Response).filter(Response.form_id == form_id).all()
+    questions = db.query(Question).all()
+    
+    form_data = {
+        "form_id": form.id,
+        "title": form.title,
+        "description": form.description,
+        "created_at": form.created_at,
+        "user": {
+            "id": form.user.id,
+            "name": form.user.name,
+            "nickname": form.user.nickname  # Nuevo campo agregado
+        } if form.user else None,
+        "project": {"id": form.project.id, "name": form.project.name} if form.project else None,
+        "has_responses": bool(responses),
+        "responses": [
+            {
+                "response_id": response.id,
+                "user": {
+                    "id": response.user.id,
+                    "name": response.user.name,
+                    "nickname": response.user.nickname  # Nuevo campo agregado
+                } if response.user else None,
+                "submitted_at": response.submitted_at,
+                "answers": [
+                    {
+                        "answer_id": answer.id,
+                        "question_id": answer.question_id,
+                        "answer_text": answer.answer_text,
+                        "question": {
+                            "id": question.id,
+                            "question_text": question.question_text,
+                            "question_type": question.question_type.name
+                        } if (question := next((q for q in questions if q.id == answer.question_id), None)) else None
+                    }
+                    for answer in answers if answer.response_id == response.id
+                ]
+            } for response in responses
+        ]
+    }
+    
+    return form_data
