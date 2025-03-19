@@ -57,3 +57,9 @@ def check_form_responses(form_id: int, db: Session = Depends(get_db),    current
         )
     else:    
         return check_form_data(db, form_id)
+    
+    
+@router.get("/emails/all-emails", response_model=list[str])
+def get_all_emails(db: Session = Depends(get_db)):
+    emails = db.query(User.email).all()
+    return [email[0] for email in emails]

@@ -87,3 +87,4 @@ def list_users_endpoint(
         )
     users = get_users(db, skip=skip, limit=limit)
     return users
+
