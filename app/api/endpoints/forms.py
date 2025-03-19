@@ -42,18 +42,11 @@ def add_questions_to_form_endpoint(
 def get_form_endpoint(
     form_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):  
-    if current_user == None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get form"
-        )
-    else:    
-        form = get_form(db, form_id)
-        if not form:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Form not found")
-        return form
+):   
+    form = get_form(db, form_id)
+    if not form:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Form not found")
+    return form
 
 @router.get("/{form_id}/has-responses")
 def check_form_responses(form_id: int, db: Session = Depends(get_db),    current_user: User = Depends(get_current_user)):

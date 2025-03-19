@@ -9,7 +9,7 @@ from app.core.security import get_current_user
 
 router = APIRouter()
 
-@router.post("/save-response/{form_id}")  # Nuevo nombre para el endpoint
+@router.post("/save-response/{form_id}") 
 def save_response(form_id: int,  current_user: User = Depends(get_current_user),  db: Session = Depends(get_db)):
     if current_user == None:
         raise HTTPException(

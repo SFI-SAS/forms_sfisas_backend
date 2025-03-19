@@ -267,6 +267,7 @@ def delete_question_from_db(question_id: int, db: Session):
 
 def post_create_response(db: Session, form_id: int, user_id: int):
     """Función para crear una nueva respuesta en la base de datos si la encuesta y el usuario existen."""
+
     form = db.query(Form).filter(Form.id == form_id).first()
     user = db.query(User).filter(User.id == user_id).first()
 
@@ -275,7 +276,16 @@ def post_create_response(db: Session, form_id: int, user_id: int):
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    # Crear la respuesta con la fecha de envío automática
+    # Verificar si ya existe una respuesta para el mismo form_id y user_id
+    existing_response = db.query(Response).filter(
+        Response.form_id == form_id,
+        Response.user_id == user_id
+    ).first()
+
+    if existing_response:
+        return {"message": "Respuesta ya existe", "response_id": existing_response.id}
+
+    # Si no existe, crear una nueva respuesta
     response = Response(form_id=form_id, user_id=user_id, submitted_at=func.now())
 
     db.add(response)
@@ -284,18 +294,33 @@ def post_create_response(db: Session, form_id: int, user_id: int):
 
     return {"message": "Respuesta guardada exitosamente", "response_id": response.id}
 
-
 def create_answer_in_db(answer, db: Session):
-    new_answer = Answer(
-        response_id=answer.response_id,
-        question_id=answer.question_id,
-        answer_text=answer.answer_text,
-        file_path=answer.file_path
-    )
-    db.add(new_answer)
+    existing_answer = db.query(Answer).filter(
+        Answer.response_id == answer.response_id,
+        Answer.question_id == answer.question_id
+    ).first()
+
+    if existing_answer:
+        # Actualizar la respuesta existente
+        existing_answer.answer_text = answer.answer_text
+        existing_answer.file_path = answer.file_path
+        message = "Respuesta actualizada exitosamente"
+    else:
+        # Crear una nueva respuesta si no existe
+        new_answer = Answer(
+            response_id=answer.response_id,
+            question_id=answer.question_id,
+            answer_text=answer.answer_text,
+            file_path=answer.file_path
+        )
+        db.add(new_answer)
+        existing_answer = new_answer
+        message = "Respuesta guardada exitosamente"
+
     db.commit()
-    db.refresh(new_answer)
-    return new_answer
+    db.refresh(existing_answer)
+
+    return {"message": message, "answer_id": existing_answer.id}
 
 def check_form_data(db: Session, form_id: int):
     form = db.query(Form).filter(Form.id == form_id).first()

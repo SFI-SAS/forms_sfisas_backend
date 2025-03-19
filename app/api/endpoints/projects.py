@@ -19,13 +19,7 @@ def create_new_project(project: ProjectCreate, db: Session = Depends(get_db),cur
     return create_project(db, project)
 
 @router.get("/all_projects/", response_model=List[ProjectResponse])
-def get_projects(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user == None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get all questions"
-        )
-    else: 
+def get_projects(db: Session = Depends(get_db)):
         return get_all_projects(db)
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -39,11 +33,6 @@ def delete_project_endpoint(project_id: int, db: Session = Depends(get_db), curr
 
 
 @router.get("/by-project/{project_id}", response_model=List[FormResponse])
-def get_forms_by_project_endpoint(project_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user == None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get all questions"
-        )
-    else: 
-        return get_forms_by_project(db, project_id)
+def get_forms_by_project_endpoint(project_id: int, db: Session = Depends(get_db)):
+
+    return get_forms_by_project(db, project_id)
