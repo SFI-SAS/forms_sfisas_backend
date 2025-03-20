@@ -1,11 +1,12 @@
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
-from app.models import Project, User, Form, Question, Option, Response, Answer, FormQuestion
+from app.models import FormSchedule, Project, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate
 from fastapi import HTTPException, status
 from typing import List
 from datetime import datetime
+
 
 def generate_nickname(name: str) -> str:
     parts = name.split()
@@ -370,3 +371,37 @@ def check_form_data(db: Session, form_id: int):
     }
     
     return form_data
+
+
+def create_form_schedule(db: Session, form_id: int, user_id: int, repeat_days: str | None, status: bool):
+    new_schedule = FormSchedule(
+        form_id=form_id,
+        user_id=user_id,
+        repeat_days=repeat_days,
+        status=status
+    )
+    db.add(new_schedule)
+    db.commit()
+    db.refresh(new_schedule)
+    return new_schedule
+
+def fetch_all_users(db: Session):
+    """Función para obtener todos los usuarios de la base de datos."""
+    stmt = select(User)
+    result = db.execute(stmt)  # No usar `await`
+    users = result.scalars().all()  # No usar `await`
+
+    if not users:
+        raise HTTPException(status_code=404, detail="No se encontraron usuarios")
+
+    return users
+
+def get_response_id(db: Session, form_id: int, user_id: int):
+    """Obtiene el ID de Response basado en form_id y user_id."""
+    stmt = select(Response.id).where(Response.form_id == form_id, Response.user_id == user_id)
+    result = db.execute(stmt).scalar()  # `.scalar()` devuelve solo el ID si existe
+
+    if result is None:
+        raise HTTPException(status_code=404, detail="No se encontró la respuesta")
+
+    return {"response_id": result}

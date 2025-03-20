@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
 from app.models import User, UserType
-from app.crud import create_user, get_user, update_user, get_user_by_email, get_users
+from app.crud import create_user, fetch_all_users, get_user, update_user, get_user_by_email, get_users
 from app.schemas import UserCreate, UserResponse, UserUpdate
 from app.core.security import get_current_user, hash_password
 
@@ -88,3 +88,13 @@ def list_users_endpoint(
     users = get_users(db, skip=skip, limit=limit)
     return users
 
+@router.get("/all-users/all")
+def get_all_users(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    
+    if current_user.user_type != UserType.creator:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to search for users by email"
+        )
+    """Endpoint que llama a la función fetch_all_users."""
+    return fetch_all_users(db)  # No necesita `await`

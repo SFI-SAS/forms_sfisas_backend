@@ -154,3 +154,9 @@ class PostCreate(BaseModel):
     question_id: int
     answer_text: str | None = None
     file_path: str | None = None
+    
+class FormScheduleCreate(BaseModel):
+    form_id: int
+    user_id: int
+    repeat_days: str | None = None
+    status: bool = True

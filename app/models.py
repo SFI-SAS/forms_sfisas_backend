@@ -123,3 +123,13 @@ class Project(Base):
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
     forms = relationship('Form', back_populates='project')  # Relación inversa con Form
+
+
+class FormSchedule(Base):
+    __tablename__ = 'form_schedules'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=False)
+    user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)  
+    repeat_days = Column(String(255), nullable=True)  
+    status = Column(Boolean, default=True, nullable=False)
