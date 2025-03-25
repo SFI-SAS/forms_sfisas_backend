@@ -15,8 +15,8 @@ def create_question_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Restringir la creación de preguntas solo a usuarios permitidos (e.g., creators)
-    if current_user.user_type.name != UserType.creator.name:
+    # Restringir la creación de preguntas solo a usuarios permitidos (e.g., admin)
+    if current_user.user_type.name != UserType.admin.name:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create questions"
@@ -30,8 +30,8 @@ def update_question_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Restringir la actualización de preguntas solo a usuarios permitidos (e.g., creators)
-    if current_user.user_type.name != UserType.creator.name:
+    # Restringir la actualización de preguntas solo a usuarios permitidos (e.g., admin)
+    if current_user.user_type.name != UserType.admin.name:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to update questions"

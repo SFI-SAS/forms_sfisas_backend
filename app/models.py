@@ -44,14 +44,12 @@ class Form(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
-    project_id = Column(BigInteger, ForeignKey('projects.id'), nullable=False)  # Relación con Project
 
     title = Column(String(255), nullable=False)
     description = Column(String(255), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
     user = relationship('User', back_populates='forms')
-    project = relationship('Project', back_populates='forms')  # Relación con el modelo Project
     questions = relationship("Question", secondary="form_questions", back_populates="forms")
     responses = relationship('Response', back_populates='form')
 
@@ -121,8 +119,6 @@ class Project(Base):
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
-
-    forms = relationship('Form', back_populates='project')  # Relación inversa con Form
 
 
 class FormSchedule(Base):

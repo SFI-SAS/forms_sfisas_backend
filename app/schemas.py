@@ -88,7 +88,7 @@ class FormBase(BaseModel):
    
     title: str = Field(..., example="Survey Form")
     description: Optional[str] = Field(None, example="This is a survey form description.")
-    project_id: int = Field(..., example=1) 
+
 
 class FormCreate(FormBase):
     pass

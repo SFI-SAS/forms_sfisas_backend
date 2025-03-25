@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
-from app.models import Response, User, UserType
+from app.models import Answer, Response, User, UserType
 from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, get_form, get_forms
 from app.schemas import FormCreate, FormResponse, FormScheduleCreate, GetFormBase, QuestionAdd, FormBase
 from app.core.security import get_current_user
@@ -49,7 +49,7 @@ def get_form_endpoint(
     return form
 
 @router.get("/{form_id}/has-responses")
-def check_form_responses(form_id: int, db: Session = Depends(get_db),    current_user: User = Depends(get_current_user)):
+def check_form_responses(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if current_user == None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -85,11 +85,14 @@ def get_response_with_answers(form_id: int, db: Session = Depends(get_db), curre
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to modify forms"
         )
-        
-    stmt = select(Response).where(Response.form_id == form_id, Response.user_id == current_user.id).options(joinedload(Response.answers))
-    result = db.execute(stmt).scalars().first()  # Obtener un solo resultado
-
+    stmt = (
+        select(Response)
+        .where(Response.form_id == form_id, Response.user_id == current_user.id)
+        .options(
+            joinedload(Response.answers).joinedload(Answer.question)
+        )
+    )
+    result = db.execute(stmt).scalars().first()
     if result is None:
         raise HTTPException(status_code=404, detail="No se encontró la respuesta")
-
-    return result  # FastAPI convierte automáticamente el objeto a JSON
+    return result

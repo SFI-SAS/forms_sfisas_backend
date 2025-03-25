@@ -68,7 +68,6 @@ def create_form(db: Session, form: FormCreate, user_id: int):
     try:
         db_form = Form(
             user_id=user_id,
-            project_id=form.project_id,  
             title=form.title,
             description=form.description,
             created_at=datetime.utcnow()  
@@ -248,6 +247,55 @@ def get_forms_by_project(db: Session, project_id: int):
         raise HTTPException(status_code=404, detail="No forms found for this project")
 
     return forms
+
+def get_responses_by_project(db: Session, project_id: int):
+    # Obtiene los formularios asociados al proyecto
+    forms = db.query(Form).filter(Form.project_id == project_id).all()
+
+    if not forms:
+        raise HTTPException(status_code=404, detail="No forms found for this project")
+
+    # Obtiene los IDs de los formularios
+    form_ids = [form.id for form in forms]
+
+    # Consulta las respuestas relacionadas con esos formularios
+    responses = (
+        db.query(Response)
+        .filter(Response.form_id.in_(form_ids))
+        .all()
+    )
+
+    # Combina los formularios y sus respuestas (solo si hay respuestas)
+    result = []
+    for form in forms:
+        form_responses = []
+        for response in responses:
+            if response.form_id == form.id:
+                # Obtiene las respuestas detalladas (answers) para cada response y su texto de pregunta
+                answers = db.query(Answer).filter(Answer.response_id == response.id).all()
+                detailed_answers = []
+                for answer in answers:
+                    question = db.query(Question).filter(Question.id == answer.question_id).first()
+                    detailed_answers.append({
+                        "id": answer.id,
+                        "answer_text": answer.answer_text,
+                        "response_id": answer.response_id,
+                        "question_id": answer.question_id,
+                        "file_path": answer.file_path,
+                        "question_text": question.question_text if question else None
+                    })
+                form_responses.append({
+                    "response": response,
+                    "answers": detailed_answers
+                })
+        if form_responses:  # Solo añade formularios con respuestas
+            result.append({"form": form, "responses": form_responses})
+
+    if not result:
+        raise HTTPException(status_code=404, detail="No responses found for this project's forms")
+
+    return result
+
 
 
 def delete_question_from_db(question_id: int, db: Session):
