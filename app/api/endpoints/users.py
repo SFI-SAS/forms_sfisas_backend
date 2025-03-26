@@ -26,11 +26,12 @@ def get_user_endpoint(
     current_user: User = Depends(get_current_user)
 ):
     # Los usuarios pueden ver su propio perfil, pero solo los creators pueden ver otros perfiles
-    if current_user.id != user_id and current_user.user_type != UserType.creators:
+    if current_user.id != user_id and current_user.user_type not in [UserType.creator, UserType.admin]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to view this user"
+            detail="User does not have permission to update this user"
         )
+
     user = get_user(db, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -44,11 +45,12 @@ def update_user_endpoint(
     current_user: User = Depends(get_current_user)
 ):
     # Solo los creators pueden actualizar usuarios, o el propio usuario puede actualizar su perfil
-    if current_user.id != user_id and current_user.user_type != UserType.creator:
+    if current_user.id != user_id and current_user.user_type not in [UserType.creator, UserType.admin]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to update this user"
         )
+
     updated_user = update_user(db=db, user_id=user_id, user=user)
     if not updated_user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -62,11 +64,12 @@ def get_user_by_email_endpoint(
     current_user: User = Depends(get_current_user)
 ):
     # Los creators pueden buscar usuarios por correo electrónico
-    if current_user.user_type != UserType.creator:
+    if current_user.user_type not in [UserType.creator, UserType.admin]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to search for users by email"
         )
+
     user = get_user_by_email(db, email)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -80,21 +83,25 @@ def list_users_endpoint(
     current_user: User = Depends(get_current_user)
 ):
     # Los creator pueden listar usuarios, otros usuarios pueden listar sólo su propio perfil
-    if current_user.user_type != UserType.creator:
+
+    if current_user.user_type not in [UserType.creator, UserType.admin]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to list users"
+            detail="User does not have permission to search for users by email"
         )
+
     users = get_users(db, skip=skip, limit=limit)
     return users
 
 @router.get("/all-users/all")
 def get_all_users(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     
-    if current_user.user_type != UserType.creator:
+
+    if current_user.user_type not in [UserType.creator, UserType.admin]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to search for users by email"
         )
+
     """Endpoint que llama a la función fetch_all_users."""
     return fetch_all_users(db)  # No necesita `await`

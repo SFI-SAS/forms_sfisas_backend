@@ -34,9 +34,11 @@ class User(Base):
     user_type = Column(Enum(UserType), default=UserType.user, nullable=False)
     nickname = Column(String(100), nullable=True)  # Nuevo campo agregado
     password = Column(Text, nullable=False)
-
+    
+    # Relaciones
+    form_moderators = relationship('FormModerators', back_populates='user')
     forms = relationship('Form', back_populates='user')
-    responses = relationship('Response', back_populates='user')
+    responses = relationship('Response', back_populates='user')  # Corrige esto si tienes definida la tabla Response
 
 # Modelo Forms
 class Form(Base):
@@ -44,15 +46,15 @@ class Form(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
-
     title = Column(String(255), nullable=False)
     description = Column(String(255), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
+    # Relaciones
     user = relationship('User', back_populates='forms')
+    form_moderators = relationship("FormModerators", back_populates="form", cascade="all, delete-orphan")
     questions = relationship("Question", secondary="form_questions", back_populates="forms")
-    responses = relationship('Response', back_populates='form')
-
+    responses = relationship('Response', back_populates='form')  # Esto debe coincidir con la tabla Response
 
 # Modelo Questions
 class Question(Base):
@@ -62,6 +64,8 @@ class Question(Base):
     question_text = Column(String(255), nullable=False)
     question_type = Column(Enum(QuestionType), server_default=QuestionType.text.name, nullable=False)
     required = Column(Boolean, nullable=False, server_default=text("1"))  # Solución aquí
+    default = Column(Boolean, nullable=False, server_default=text("0"))
+
 
     forms = relationship('Form', secondary='form_questions', back_populates='questions')
     options = relationship('Option', back_populates='question')
@@ -94,6 +98,7 @@ class Response(Base):
     submitted_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
     form = relationship('Form', back_populates='responses')
+    
     user = relationship('User', back_populates='responses')
     answers = relationship('Answer', back_populates='response')
 
@@ -129,3 +134,16 @@ class FormSchedule(Base):
     user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)  
     repeat_days = Column(String(255), nullable=True)  
     status = Column(Boolean, default=True, nullable=False)
+
+
+class FormModerators(Base):
+    __tablename__ = 'form_moderators'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete="CASCADE"), nullable=False)
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete="CASCADE"), nullable=False)
+    assigned_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    # Relaciones
+    form = relationship('Form', back_populates='form_moderators')
+    user = relationship('User', back_populates='form_moderators')

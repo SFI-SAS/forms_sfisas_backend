@@ -55,6 +55,7 @@ class QuestionBase(BaseModel):
     question_text: str = Field(..., example="What is your favorite color?")
     question_type: str = Field(..., example="multiple_choice")
     required: bool = Field(..., example=True) 
+    default:bool =  Field(..., example=True) 
 
 class QuestionCreate(QuestionBase):
     pass # Allow creation without assignment
@@ -88,7 +89,7 @@ class FormBase(BaseModel):
    
     title: str = Field(..., example="Survey Form")
     description: Optional[str] = Field(None, example="This is a survey form description.")
-
+    assing_user: list[int]
 
 class FormCreate(FormBase):
     pass

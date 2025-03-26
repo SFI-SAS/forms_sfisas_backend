@@ -16,11 +16,12 @@ def create_form_endpoint(
     current_user: User = Depends(get_current_user)
 ):
     # Solo los usuarios tipo creator pueden crear formularios
-    if current_user.user_type.name != UserType.creator.name:
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create forms"
         )
+
     return create_form(db=db, form=form, user_id=current_user.id)
 
 @router.post("/{form_id}/questions", response_model=FormResponse)
@@ -31,10 +32,10 @@ def add_questions_to_form_endpoint(
     current_user: User = Depends(get_current_user)
 ):
     # Solo los usuarios tipo creator pueden agregar preguntas a formularios
-    if current_user.user_type.name != UserType.creator.name:
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to modify forms"
+            detail="User does not have permission to create forms"
         )
     return add_questions_to_form(db, form_id, questions.question_ids)
 
@@ -80,10 +81,10 @@ def register_form_schedule(schedule_data: FormScheduleCreate, db: Session = Depe
 def get_response_with_answers(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Obtiene un Response junto con sus Answers basado en form_id y user_id."""
     
-    if current_user.user_type.name != UserType.creator.name:
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to modify forms"
+            detail="User does not have permission to create forms"
         )
     stmt = (
         select(Response)

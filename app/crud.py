@@ -1,7 +1,7 @@
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
-from app.models import FormSchedule, Project, User, Form, Question, Option, Response, Answer, FormQuestion
+from app.models import FormModerators, FormSchedule, Project, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate
 from fastapi import HTTPException, status
 from typing import List
@@ -66,6 +66,7 @@ def get_users(db: Session, skip: int = 0, limit: int = 10):
 # Form CRUD Operations
 def create_form(db: Session, form: FormCreate, user_id: int):
     try:
+        # Crear el formulario
         db_form = Form(
             user_id=user_id,
             title=form.title,
@@ -73,15 +74,21 @@ def create_form(db: Session, form: FormCreate, user_id: int):
             created_at=datetime.utcnow()  
         )
         
+        # Crear y asignar múltiples usuarios como moderadores del formulario
+        for assigned_user_id in form.assing_user:
+            db_form.assing_users.append(FormModerators(user_id=assigned_user_id))
+
         db.add(db_form)  # Agregar a la sesión
         db.commit()  # Confirmar cambios en la DB
         db.refresh(db_form)  # Actualizar el objeto con los valores generados
 
-        return db_form  # Devolver el formulario creado
+        return db_form  # Devolver el formulario creado con usuarios asignados
     except IntegrityError:
         db.rollback()  # Revertir cambios si hay un error
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Error to create form with the information provided")
-    
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="Error al crear el formulario con la información proporcionada"
+        )
     
 def get_form(db: Session, form_id: int):
     return db.query(Form).options(
@@ -97,7 +104,9 @@ def create_question(db: Session, question: QuestionCreate):
         db_question = Question(
             question_text=question.question_text,
             question_type=question.question_type,
-            required=question.required  # Se pasa el valor de required
+            required=question.required, 
+            default=question.default
+            
         )
         db.add(db_question)
         db.commit()
