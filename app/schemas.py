@@ -177,3 +177,10 @@ class FormSchema(BaseModel):
     title: str
     description: Optional[str]
     created_at: datetime
+    
+class AnswerSchema(BaseModel):
+    id: int
+    response_id: int
+    question_id: int
+    answer_text: Optional[str]
+    file_path: Optional[str]

@@ -3,8 +3,8 @@ from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
 from app.models import User, UserType
-from app.crud import create_question, delete_question_from_db, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
-from app.schemas import QuestionCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate
+from app.crud import create_question, delete_question_from_db, get_answers_by_question, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
+from app.schemas import AnswerSchema, QuestionCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate
 from app.core.security import get_current_user
 
 router = APIRouter()
@@ -90,3 +90,19 @@ def delete_question(question_id: int, db: Session = Depends(get_db), current_use
     else: 
         return delete_question_from_db(question_id, db)
 
+
+@router.get("/{question_id}/answers", response_model=List[AnswerSchema])
+def get_question_answers(question_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    try:
+        if current_user == None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User does not have permission to get options"
+            )
+        else: 
+            answers = get_answers_by_question(db, question_id)
+            if not answers:
+                raise HTTPException(status_code=404, detail="No se encontraron respuestas para esta pregunta")
+            return answers
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
