@@ -169,3 +169,11 @@ class FormScheduleCreate(BaseModel):
     user_id: int
     repeat_days: str | None = None
     status: bool = True
+    
+    
+class FormSchema(BaseModel):
+    id: int
+    user_id: int
+    title: str
+    description: Optional[str]
+    created_at: datetime

@@ -501,3 +501,8 @@ def get_all_forms(db: Session):
         }
         for form in forms
     ]
+    
+def get_forms_by_user(db: Session, user_id: int):
+    # Consulta todos los formularios relacionados con el user_id a través de la tabla form_moderators
+    forms = db.query(Form).join(FormModerators).filter(FormModerators.user_id == user_id).all()
+    return forms

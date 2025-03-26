@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
 from app.models import Answer, Response, User, UserType
-from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, get_all_forms, get_form, get_forms
-from app.schemas import FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, GetFormBase, QuestionAdd, FormBase
+from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, get_all_forms, get_form, get_forms, get_forms_by_user
+from app.schemas import FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormSchema, GetFormBase, QuestionAdd, FormBase
 from app.core.security import get_current_user
 router = APIRouter()
 
@@ -105,5 +105,21 @@ def get_forms_endpoint(db: Session = Depends(get_db)):
         if not forms:
             raise HTTPException(status_code=404, detail="No se encontraron formularios")
         return forms
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@router.get("/users/form_by_user", response_model=List[FormSchema])
+def get_user_forms( db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    try:
+        if current_user == None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User does not have permission to get all questions"
+            )
+        else: 
+            forms = get_forms_by_user(db, current_user.id)
+            if not forms:
+                raise HTTPException(status_code=404, detail="No se encontraron formularios para este usuario")
+            return forms
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
