@@ -83,13 +83,21 @@ class GetFormBase(BaseModel):
     description: Optional[str] = None
     project_id: int
     created_at: datetime
-    
+
+
+class FormBaseUser(BaseModel):
+   
+    title: str = Field(..., example="Survey Form")
+    description: Optional[str] = Field(None, example="This is a survey form description.")
+    assign_user: List[int]  # Corregido
+
     
 class FormBase(BaseModel):
    
     title: str = Field(..., example="Survey Form")
     description: Optional[str] = Field(None, example="This is a survey form description.")
-    assing_user: list[int]
+
+
 
 class FormCreate(FormBase):
     pass

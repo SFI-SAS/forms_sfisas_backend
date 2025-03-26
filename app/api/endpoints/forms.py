@@ -4,14 +4,14 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
 from app.models import Answer, Response, User, UserType
-from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, get_form, get_forms
-from app.schemas import FormCreate, FormResponse, FormScheduleCreate, GetFormBase, QuestionAdd, FormBase
+from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, get_all_forms, get_form, get_forms
+from app.schemas import FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, GetFormBase, QuestionAdd, FormBase
 from app.core.security import get_current_user
 router = APIRouter()
 
 @router.post("/", response_model=FormResponse, status_code=status.HTTP_201_CREATED)
 def create_form_endpoint(
-    form: FormCreate,
+    form: FormBaseUser,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -97,3 +97,13 @@ def get_response_with_answers(form_id: int, db: Session = Depends(get_db), curre
     if result is None:
         raise HTTPException(status_code=404, detail="No se encontró la respuesta")
     return result
+
+@router.get("/all/list", response_model=List[dict])
+def get_forms_endpoint(db: Session = Depends(get_db)):
+    try:
+        forms = get_all_forms(db)
+        if not forms:
+            raise HTTPException(status_code=404, detail="No se encontraron formularios")
+        return forms
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

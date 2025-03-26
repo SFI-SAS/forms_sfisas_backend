@@ -2,7 +2,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from app.models import FormModerators, FormSchedule, Project, User, Form, Question, Option, Response, Answer, FormQuestion
-from app.schemas import ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate
+from app.schemas import FormBaseUser, ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate
 from fastapi import HTTPException, status
 from typing import List
 from datetime import datetime
@@ -63,33 +63,57 @@ def get_user_by_email(db: Session, email: str):
 def get_users(db: Session, skip: int = 0, limit: int = 10):
     return db.query(User).offset(skip).limit(limit).all()
 
-# Form CRUD Operations
-def create_form(db: Session, form: FormCreate, user_id: int):
+def create_form(db: Session, form: FormBaseUser, user_id: int):
     try:
-        # Crear el formulario
+        # Verificar que los usuarios asignados existan en la base de datos
+        existing_users = db.query(User.id).filter(User.id.in_(form.assign_user)).all()
+        if len(existing_users) != len(form.assign_user):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Uno o más usuarios asignados no existen"
+            )
+
+        # Crear el formulario base
         db_form = Form(
             user_id=user_id,
             title=form.title,
             description=form.description,
-            created_at=datetime.utcnow()  
+            created_at=datetime.utcnow()
         )
-        
-        # Crear y asignar múltiples usuarios como moderadores del formulario
-        for assigned_user_id in form.assing_user:
-            db_form.assing_users.append(FormModerators(user_id=assigned_user_id))
 
-        db.add(db_form)  # Agregar a la sesión
-        db.commit()  # Confirmar cambios en la DB
-        db.refresh(db_form)  # Actualizar el objeto con los valores generados
+        # Crear relaciones con FormModerators para los usuarios asignados
+        for assigned_user_id in form.assign_user:
+            db_form.form_moderators.append(FormModerators(user_id=assigned_user_id))
 
-        return db_form  # Devolver el formulario creado con usuarios asignados
+        db.add(db_form)
+        db.commit()
+        db.refresh(db_form)
+
+        # Crear y devolver la respuesta con la estructura correcta
+        response = {
+            "id": db_form.id,
+            "user_id": db_form.user_id,  # Asegurar que el user_id del formulario esté presente
+            "title": db_form.title,
+            "description": db_form.description,
+            "created_at": db_form.created_at,  # Incluir created_at
+            "assign_user": [moderator.user_id for moderator in db_form.form_moderators]  # Lista de enteros
+        }
+
+        return response
+
     except IntegrityError:
-        db.rollback()  # Revertir cambios si hay un error
+        db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, 
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Error al crear el formulario con la información proporcionada"
         )
-    
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error interno del servidor: {str(e)}"
+        )
+
 def get_form(db: Session, form_id: int):
     return db.query(Form).options(
         joinedload(Form.questions).joinedload(Question.options)  # Cargar preguntas y opciones en una sola consulta
@@ -462,3 +486,18 @@ def get_response_id(db: Session, form_id: int, user_id: int):
         raise HTTPException(status_code=404, detail="No se encontró la respuesta")
 
     return {"response_id": result}
+
+
+def get_all_forms(db: Session):
+    # Realiza la consulta a la base de datos y devuelve los registros como diccionarios
+    forms = db.query(Form).all()
+    return [
+        {
+            "id": form.id,
+            "user_id": form.user_id,
+            "title": form.title,
+            "description": form.description,
+            "created_at": form.created_at,
+        }
+        for form in forms
+    ]
