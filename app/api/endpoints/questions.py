@@ -45,20 +45,19 @@ def update_question_endpoint(
 
 @router.get("/", response_model=List[QuestionResponse])
 def get_all_questions(
-    skip: int = 0,
-    limit: int = 10,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get all questions"
         )
-    else: 
-        # Este endpoint puede ser accesible para cualquier usuario autenticado
-        questions = get_questions(db, skip=skip, limit=limit)
+    else:
+        # Traer todas las preguntas de la base de datos
+        questions = get_questions(db)
         return questions
+    
     
 @router.post("/options/", response_model=List[OptionResponse])
 def create_multiple_options(options: List[OptionCreate], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -101,8 +100,10 @@ def get_question_answers(question_id: int, db: Session = Depends(get_db), curren
             )
         else: 
             answers = get_answers_by_question(db, question_id)
-            if not answers:
-                raise HTTPException(status_code=404, detail="No se encontraron respuestas para esta pregunta")
+
             return answers
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No se encontraron respuestas para esta pregunta"
+        )

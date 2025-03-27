@@ -22,14 +22,14 @@ def create_new_project(project: ProjectCreate, db: Session = Depends(get_db),cur
 def get_projects(db: Session = Depends(get_db)):
         return get_all_projects(db)
 
-@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_project_endpoint(project_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.user_type.name != UserType.admin.name:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to create forms"
-        )
-    return delete_project_by_id(db, project_id)
+# @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+# def delete_project_endpoint(project_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+#     if current_user.user_type.name != UserType.admin.name:
+#         raise HTTPException(
+#             status_code=status.HTTP_403_FORBIDDEN,
+#             detail="User does not have permission to create forms"
+#         )
+#     return delete_project_by_id(db, project_id)
 
 
 @router.get("/by-project/{project_id}", response_model=List[FormResponse])

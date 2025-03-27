@@ -146,8 +146,8 @@ def create_question(db: Session, question: QuestionCreate):
 def get_question_by_id(db: Session, question_id: int) -> Question:
     return db.query(Question).filter(Question.id == question_id).first()
 
-def get_questions(db: Session, skip: int = 0, limit: int = 10):
-    return db.query(Question).offset(skip).limit(limit).all()
+def get_questions(db: Session):
+    return db.query(Question).all()  # Trae todas las preguntas sin paginación
 
 def update_question(db: Session, question_id: int, question: QuestionUpdate) -> Question:
     try:
