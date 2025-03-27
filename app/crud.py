@@ -349,7 +349,6 @@ def delete_question_from_db(question_id: int, db: Session):
 
 def post_create_response(db: Session, form_id: int, user_id: int):
     """Función para crear una nueva respuesta en la base de datos si la encuesta y el usuario existen."""
-
     form = db.query(Form).filter(Form.id == form_id).first()
     user = db.query(User).filter(User.id == user_id).first()
 
@@ -358,23 +357,22 @@ def post_create_response(db: Session, form_id: int, user_id: int):
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    # Verificar si ya existe una respuesta para el mismo form_id y user_id
-    existing_response = db.query(Response).filter(
+    # Calcular el número de intento actual (incremental)
+    last_attempt = db.query(Response).filter(
         Response.form_id == form_id,
         Response.user_id == user_id
-    ).first()
+    ).order_by(Response.attempt_number.desc()).first()
 
-    if existing_response:
-        return {"message": "Respuesta ya existe", "response_id": existing_response.id}
+    new_attempt_number = last_attempt.attempt_number + 1 if last_attempt else 1
 
-    # Si no existe, crear una nueva respuesta
-    response = Response(form_id=form_id, user_id=user_id, submitted_at=func.now())
+    # Crear la nueva respuesta con el intento actualizado
+    response = Response(form_id=form_id, user_id=user_id, attempt_number=new_attempt_number, submitted_at=func.now())
 
     db.add(response)
     db.commit()
     db.refresh(response)
 
-    return {"message": "Respuesta guardada exitosamente", "response_id": response.id}
+    return {"message": "Nueva respuesta guardada exitosamente", "response_id": response.id, "attempt_number": new_attempt_number}
 
 def create_answer_in_db(answer, db: Session):
     existing_answer = db.query(Answer).filter(

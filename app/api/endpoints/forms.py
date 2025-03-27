@@ -76,16 +76,18 @@ def register_form_schedule(schedule_data: FormScheduleCreate, db: Session = Depe
         status=schedule_data.status
     )
     
-
 @router.get("/responses/")
-def get_response_with_answers(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """Obtiene un Response junto con sus Answers basado en form_id y user_id."""
-    
+def get_responses_with_answers(
+    form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+):
+    """Obtiene todas las Responses junto con sus Answers basado en form_id y user_id."""
+
     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to create forms"
+            detail="User does not have permission to access responses"
         )
+
     stmt = (
         select(Response)
         .where(Response.form_id == form_id, Response.user_id == current_user.id)
@@ -93,10 +95,15 @@ def get_response_with_answers(form_id: int, db: Session = Depends(get_db), curre
             joinedload(Response.answers).joinedload(Answer.question)
         )
     )
-    result = db.execute(stmt).scalars().first()
-    if result is None:
-        raise HTTPException(status_code=404, detail="No se encontró la respuesta")
-    return result
+    
+    # Usar .unique() para eliminar duplicados en las relaciones cargadas
+    results = db.execute(stmt).unique().scalars().all()
+
+    if not results:
+        raise HTTPException(status_code=404, detail="No se encontraron respuestas")
+
+    return results
+
 
 @router.get("/all/list", response_model=List[dict])
 def get_forms_endpoint(db: Session = Depends(get_db)):

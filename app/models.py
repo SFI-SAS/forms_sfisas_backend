@@ -1,6 +1,6 @@
 from datetime import datetime
 from sqlalchemy import (
-    Boolean, Column, BigInteger, DateTime, String, Text, ForeignKey, TIMESTAMP, Enum, func, text
+    Boolean, Column, BigInteger, DateTime, Integer, String, Text, ForeignKey, TIMESTAMP, Enum, func, text
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -95,10 +95,10 @@ class Response(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=False)
     user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
+    attempt_number = Column(Integer, nullable=False, default=1)  # Nuevo campo para identificar el intento
     submitted_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
     form = relationship('Form', back_populates='responses')
-    
     user = relationship('User', back_populates='responses')
     answers = relationship('Answer', back_populates='response')
 
