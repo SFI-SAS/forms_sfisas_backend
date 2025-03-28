@@ -110,9 +110,8 @@ class Answer(Base):
     response_id = Column(BigInteger, ForeignKey('responses.id'), nullable=False)
     question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=False)
     answer_text = Column(String(255), nullable=True)
-    document_id = Column(BigInteger, ForeignKey('documents.id'), nullable=True)  # Relación con Document
+    file_path = Column(Text, nullable=True)
 
-    document = relationship('Document')  # Relación para acceder al documento
     response = relationship('Response', back_populates='answers')
     question = relationship('Question', back_populates='answers')
     
@@ -150,10 +149,3 @@ class FormModerators(Base):
     user = relationship('User', back_populates='form_moderators')
     
     
-class Document(Base):
-    __tablename__ = 'documents'
-
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
-    file_name = Column(String(255), nullable=False)  # Nombre del archivo
-    file_type = Column(String(100), nullable=True)  # Tipo de archivo (pdf, docx, jpg)
-    file_data = Column(LargeBinary, nullable=False)  # Archivo binario almacenado directamente

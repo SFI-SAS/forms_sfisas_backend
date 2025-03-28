@@ -1,7 +1,7 @@
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
-from app.models import Document, FormModerators, FormSchedule, Project, User, Form, Question, Option, Response, Answer, FormQuestion
+from app.models import  FormModerators, FormSchedule, Project, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import FormBaseUser, ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate
 from fastapi import HTTPException, UploadFile, status
 from typing import List
@@ -237,7 +237,7 @@ def get_responses(db: Session, form_id: int):
 
 # Answer CRUD Operations
 def create_answer(db: Session, answer: AnswerCreate, response_id: int, question_id: int):
-    db_answer = Answer(response_id=response_id, question_id=question_id, answer_text=answer.answer_text, document_id=answer.document_id)
+    db_answer = Answer(response_id=response_id, question_id=question_id, answer_text=answer.answer_text, file_path=answer.file_path)
     db.add(db_answer)
     db.commit()
     db.refresh(db_answer)
@@ -314,7 +314,7 @@ def get_responses_by_project(db: Session, project_id: int):
                         "answer_text": answer.answer_text,
                         "response_id": answer.response_id,
                         "question_id": answer.question_id,
-                        "document_id": answer.document_id,
+                        "file_path": answer.file_path,
                         "question_text": question.question_text if question else None
                     })
                 form_responses.append({
@@ -383,7 +383,7 @@ def create_answer_in_db(answer, db: Session):
     if existing_answer:
         # Actualizar la respuesta existente
         existing_answer.answer_text = answer.answer_text
-        existing_answer.document_id = answer.document_id
+        existing_answer.file_path = answer.file_path
         message = "Respuesta actualizada exitosamente"
     else:
         # Crear una nueva respuesta si no existe
@@ -391,7 +391,7 @@ def create_answer_in_db(answer, db: Session):
             response_id=answer.response_id,
             question_id=answer.question_id,
             answer_text=answer.answer_text,
-            document_id=answer.document_id
+            file_path=answer.file_path
         )
         db.add(new_answer)
         existing_answer = new_answer
@@ -545,16 +545,16 @@ async def upload_and_associate_document(answer_id: int, file: UploadFile, db: Se
     if not answer:
         raise HTTPException(status_code=404, detail="Answer not found")
 
-    answer.document_id = document.id
+    answer.file_path = document.id
     db.commit()
 
-    return {"message": "Documento subido y asociado correctamente", "document_id": document.id}
+    return {"message": "Documento subido y asociado correctamente", "file_path": document.id}
 
-def get_document_by_id(document_id: int, db: Session):
+def get_document_by_id(file_path: int, db: Session):
     """
     Función para obtener un documento por su ID desde la base de datos.
     """
-    document = db.query(Document).filter(Document.id == document_id).first()
+    document = db.query(Document).filter(Document.id == file_path).first()
     if not document:
         raise HTTPException(status_code=404, detail="Documento no encontrado.")
     return document
