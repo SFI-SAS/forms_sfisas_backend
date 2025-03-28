@@ -1,9 +1,9 @@
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
-from app.models import FormModerators, FormSchedule, Project, User, Form, Question, Option, Response, Answer, FormQuestion
+from app.models import Document, FormModerators, FormSchedule, Project, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import FormBaseUser, ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate
-from fastapi import HTTPException, status
+from fastapi import HTTPException, UploadFile, status
 from typing import List
 from datetime import datetime
 
@@ -237,7 +237,7 @@ def get_responses(db: Session, form_id: int):
 
 # Answer CRUD Operations
 def create_answer(db: Session, answer: AnswerCreate, response_id: int, question_id: int):
-    db_answer = Answer(response_id=response_id, question_id=question_id, answer_text=answer.answer_text, file_path=answer.file_path)
+    db_answer = Answer(response_id=response_id, question_id=question_id, answer_text=answer.answer_text, document_id=answer.document_id)
     db.add(db_answer)
     db.commit()
     db.refresh(db_answer)
@@ -314,7 +314,7 @@ def get_responses_by_project(db: Session, project_id: int):
                         "answer_text": answer.answer_text,
                         "response_id": answer.response_id,
                         "question_id": answer.question_id,
-                        "file_path": answer.file_path,
+                        "document_id": answer.document_id,
                         "question_text": question.question_text if question else None
                     })
                 form_responses.append({
@@ -383,7 +383,7 @@ def create_answer_in_db(answer, db: Session):
     if existing_answer:
         # Actualizar la respuesta existente
         existing_answer.answer_text = answer.answer_text
-        existing_answer.file_path = answer.file_path
+        existing_answer.document_id = answer.document_id
         message = "Respuesta actualizada exitosamente"
     else:
         # Crear una nueva respuesta si no existe
@@ -391,7 +391,7 @@ def create_answer_in_db(answer, db: Session):
             response_id=answer.response_id,
             question_id=answer.question_id,
             answer_text=answer.answer_text,
-            file_path=answer.file_path
+            document_id=answer.document_id
         )
         db.add(new_answer)
         existing_answer = new_answer
@@ -510,3 +510,51 @@ def get_answers_by_question(db: Session, question_id: int):
     # Consulta todas las respuestas asociadas al question_id
     answers = db.query(Answer).filter(Answer.question_id == question_id).all()
     return answers
+
+
+
+async def upload_and_associate_document(answer_id: int, file: UploadFile, db: Session):
+    """
+    Función que sube un documento PDF y lo guarda correctamente en la base de datos.
+    """
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Solo se permiten archivos PDF")
+
+    # Leer el contenido del archivo completamente
+    file_data = await file.read()
+
+    # Verificar el tamaño del archivo leído
+    print(f"Tamaño del archivo PDF leído: {len(file_data)} bytes")
+
+    # Verificar si hay problemas antes de almacenar
+    if not file_data:
+        raise HTTPException(status_code=400, detail="No se pudo leer el archivo o está vacío")
+
+    # Crear el documento con el contenido binario leído
+    document = Document(
+        file_name=file.filename,
+        file_type=file.content_type,
+        file_data=file_data
+    )
+    db.add(document)
+    db.commit()
+    db.refresh(document)
+
+    # Asociar el documento a la respuesta
+    answer = db.query(Answer).filter(Answer.id == answer_id).first()
+    if not answer:
+        raise HTTPException(status_code=404, detail="Answer not found")
+
+    answer.document_id = document.id
+    db.commit()
+
+    return {"message": "Documento subido y asociado correctamente", "document_id": document.id}
+
+def get_document_by_id(document_id: int, db: Session):
+    """
+    Función para obtener un documento por su ID desde la base de datos.
+    """
+    document = db.query(Document).filter(Document.id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Documento no encontrado.")
+    return document

@@ -1,6 +1,6 @@
 from datetime import datetime
 from sqlalchemy import (
-    Boolean, Column, BigInteger, DateTime, Integer, String, Text, ForeignKey, TIMESTAMP, Enum, func, text
+    Boolean, Column, BigInteger, DateTime, Integer, LargeBinary, String, Text, ForeignKey, TIMESTAMP, Enum, func, text
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -110,8 +110,9 @@ class Answer(Base):
     response_id = Column(BigInteger, ForeignKey('responses.id'), nullable=False)
     question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=False)
     answer_text = Column(String(255), nullable=True)
-    file_path = Column(Text, nullable=True)
+    document_id = Column(BigInteger, ForeignKey('documents.id'), nullable=True)  # Relación con Document
 
+    document = relationship('Document')  # Relación para acceder al documento
     response = relationship('Response', back_populates='answers')
     question = relationship('Question', back_populates='answers')
     
@@ -147,3 +148,12 @@ class FormModerators(Base):
     # Relaciones
     form = relationship('Form', back_populates='form_moderators')
     user = relationship('User', back_populates='form_moderators')
+    
+    
+class Document(Base):
+    __tablename__ = 'documents'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    file_name = Column(String(255), nullable=False)  # Nombre del archivo
+    file_type = Column(String(100), nullable=True)  # Tipo de archivo (pdf, docx, jpg)
+    file_data = Column(LargeBinary, nullable=False)  # Archivo binario almacenado directamente

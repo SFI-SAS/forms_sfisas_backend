@@ -133,7 +133,7 @@ class ResponseResponse(ResponseBase):
 # Schemas for Answer
 class AnswerBase(BaseModel):
     answer_text: Optional[str] = Field(None, example="Red")
-    file_path: Optional[str] = Field(None, example="/uploads/answer123.png")
+    document_id: Optional[str] = Field(None, example="/uploads/answer123.png")
 
 class AnswerCreate(AnswerBase):
     pass
@@ -162,7 +162,7 @@ class PostCreate(BaseModel):
     response_id: int
     question_id: int
     answer_text: str | None = None
-    file_path: str | None = None
+    document_id: str | None = None
     
 class FormScheduleCreate(BaseModel):
     form_id: int
@@ -183,4 +183,4 @@ class AnswerSchema(BaseModel):
     response_id: int
     question_id: int
     answer_text: Optional[str]
-    file_path: Optional[str]
+    document_id: Optional[str]
