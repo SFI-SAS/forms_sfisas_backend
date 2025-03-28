@@ -1,4 +1,4 @@
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, not_, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from app.models import  FormModerators, FormSchedule, Project, User, Form, Question, Option, Response, Answer, FormQuestion
@@ -513,48 +513,30 @@ def get_answers_by_question(db: Session, question_id: int):
 
 
 
-async def upload_and_associate_document(answer_id: int, file: UploadFile, db: Session):
-    """
-    Función que sube un documento PDF y lo guarda correctamente en la base de datos.
-    """
-    if file.content_type != "application/pdf":
-        raise HTTPException(status_code=400, detail="Solo se permiten archivos PDF")
-
-    # Leer el contenido del archivo completamente
-    file_data = await file.read()
-
-    # Verificar el tamaño del archivo leído
-    print(f"Tamaño del archivo PDF leído: {len(file_data)} bytes")
-
-    # Verificar si hay problemas antes de almacenar
-    if not file_data:
-        raise HTTPException(status_code=400, detail="No se pudo leer el archivo o está vacío")
-
-    # Crear el documento con el contenido binario leído
-    document = Document(
-        file_name=file.filename,
-        file_type=file.content_type,
-        file_data=file_data
+def get_unrelated_questions(db: Session, form_id: int):
+    # Subconsulta para obtener todos los IDs de preguntas relacionadas con el form_id dado
+    subquery = (
+        select(FormQuestion.question_id)
+        .where(FormQuestion.form_id == form_id)
     )
-    db.add(document)
-    db.commit()
-    db.refresh(document)
 
-    # Asociar el documento a la respuesta
-    answer = db.query(Answer).filter(Answer.id == answer_id).first()
-    if not answer:
-        raise HTTPException(status_code=404, detail="Answer not found")
+    # Consulta principal para obtener preguntas que no estén relacionadas con el form_id
+    unrelated_questions = (
+        db.query(Question)
+        .filter(Question.id.not_in(subquery))
+        .all()
+    )
 
-    answer.file_path = document.id
-    db.commit()
+    return unrelated_questions
 
-    return {"message": "Documento subido y asociado correctamente", "file_path": document.id}
 
-def get_document_by_id(file_path: int, db: Session):
-    """
-    Función para obtener un documento por su ID desde la base de datos.
-    """
-    document = db.query(Document).filter(Document.id == file_path).first()
-    if not document:
-        raise HTTPException(status_code=404, detail="Documento no encontrado.")
-    return document
+def fetch_completed_forms_by_user(db: Session, user_id: int):
+    # Obtener los formularios que ya han sido completados por el usuario
+    completed_forms = (
+        db.query(Form)
+        .join(Response)  # Unión entre formularios y respuestas
+        .filter(Response.user_id == user_id)  # Filtrar por el usuario
+        .distinct()  # Evitar duplicados si hay múltiples respuestas a un mismo formulario
+        .all()
+    )
+    return completed_forms

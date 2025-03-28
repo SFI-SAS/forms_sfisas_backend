@@ -2,7 +2,7 @@
 import os
 import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 from typing import List
 from app.crud import create_answer_in_db, post_create_response
@@ -42,21 +42,42 @@ UPLOAD_FOLDER = "./documents"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 @router.post("/upload-file/")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
     try:
+        if current_user == None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User does not have permission to get all questions"
+            )
+        else: 
         # Generar un nombre único para el archivo usando uuid
-        unique_filename = f"{uuid.uuid4()}_{file.filename}"
-        file_path = os.path.join(UPLOAD_FOLDER, unique_filename)
-        
-        # Guardar el archivo en la carpeta "documents"
-        with open(file_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
+            unique_filename = f"{uuid.uuid4()}_{file.filename}"
+            file_path = os.path.join(UPLOAD_FOLDER, unique_filename)
+            
+            # Guardar el archivo en la carpeta "documents"
+            with open(file_path, "wb") as f:
+                content = await file.read()
+                f.write(content)
 
-        return JSONResponse(content={
-            "message": "File uploaded successfully",
-            "file_name": unique_filename
-        })
+            return JSONResponse(content={
+                "message": "File uploaded successfully",
+                "file_name": unique_filename
+            })
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+
+
+@router.get("/download-file/{file_name}")
+async def download_file(file_name: str, current_user: User = Depends(get_current_user)):
+    if current_user == None:
+        raise HTTPException(   
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get all questions"
+            )
+    else: 
+        file_path = os.path.join(UPLOAD_FOLDER, file_name)
+        if os.path.exists(file_path):
+            return FileResponse(path=file_path, filename=file_name, media_type='application/octet-stream')
+        else:
+            raise HTTPException(status_code=404, detail="File not found")

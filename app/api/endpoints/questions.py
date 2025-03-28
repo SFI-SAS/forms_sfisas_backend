@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
 from app.models import User, UserType
-from app.crud import create_question, delete_question_from_db, get_answers_by_question, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
+from app.crud import create_question, delete_question_from_db, get_answers_by_question, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
 from app.schemas import AnswerSchema, QuestionCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate
 from app.core.security import get_current_user
 
@@ -107,3 +107,8 @@ def get_question_answers(question_id: int, db: Session = Depends(get_db), curren
             status_code=status.HTTP_403_FORBIDDEN,
             detail="No se encontraron respuestas para esta pregunta"
         )
+        
+@router.get("/unrelated_questions/{form_id}")
+def get_unrelated_questions_endpoint(form_id: int, db: Session = Depends(get_db)):
+    unrelated_questions = get_unrelated_questions(db, form_id)
+    return unrelated_questions
