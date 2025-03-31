@@ -649,3 +649,41 @@ def link_moderator_to_form(form_id: int, user_id: int, db: Session):
     db.refresh(new_relation)
 
     return {"message": "Moderador agregado al formulario correctamente", "relation": new_relation.id}
+
+
+def remove_question_from_form(form_id: int, question_id: int, db: Session):
+    """Elimina una pregunta de un formulario en la tabla FormQuestion."""
+    
+    # Buscar la relación en FormQuestion
+    form_question = db.query(FormQuestion).filter(
+        FormQuestion.form_id == form_id,
+        FormQuestion.question_id == question_id
+    ).first()
+    
+    if not form_question:
+        raise HTTPException(status_code=404, detail="La pregunta no está asociada a este formulario")
+
+    # Eliminar la relación
+    db.delete(form_question)
+    db.commit()
+
+    return {"message": "Pregunta eliminada del formulario correctamente"}
+
+
+def remove_moderator_from_form(form_id: int, user_id: int, db: Session):
+    """Elimina la relación de un moderador con un formulario en FormModerators."""
+    
+    # Buscar la relación en FormModerators
+    form_moderator = db.query(FormModerators).filter(
+        FormModerators.form_id == form_id,
+        FormModerators.user_id == user_id
+    ).first()
+    
+    if not form_moderator:
+        raise HTTPException(status_code=404, detail="El usuario no es moderador de este formulario")
+
+    # Eliminar la relación
+    db.delete(form_moderator)
+    db.commit()
+
+    return {"message": "Moderador eliminado del formulario correctamente"}

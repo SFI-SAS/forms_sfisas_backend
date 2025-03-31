@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
 from app.models import Answer, Response, User, UserType
-from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_form, get_forms, get_forms_by_user, link_moderator_to_form, link_question_to_form
+from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_form, get_forms, get_forms_by_user, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form
 from app.schemas import FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormSchema, GetFormBase, QuestionAdd, FormBase
 from app.core.security import get_current_user
 router = APIRouter()
@@ -151,10 +151,10 @@ def get_completed_forms_for_user(
 @router.get("/{form_id}/questions_associated_and_unassociated")
 def get_form_questions(form_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
     
-    if not current_user:
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to access completed forms",
+            detail="User does not have permission to create forms"
         )
 
     return fetch_form_questions(form_id, db)
@@ -163,21 +163,47 @@ def get_form_questions(form_id: int, db: Session = Depends(get_db),current_user:
 
 @router.post("/{form_id}/questions/{question_id}")
 def add_question_to_form(form_id: int, question_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
-    if not current_user:
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to access completed forms",
+            detail="User does not have permission to create forms"
         )
-
     return link_question_to_form(form_id, question_id, db)
 
 @router.get("/{form_id}/users_associated_and_unassociated")
-def get_form_users(form_id: int, db: Session = Depends(get_db) ):
-
+def get_form_users(form_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user) ):
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to create forms"
+        )
     return fetch_form_users(form_id, db)
 
-
-
-@router.post("/{form_id}/schedules/{user_id}")
-def add_user_to_form_schedule(form_id: int, user_id: int, db: Session = Depends(get_db)):
+@router.post("/{form_id}/form_moderators/{user_id}")
+def add_user_to_form_schedule(form_id: int, user_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to create forms"
+        )
     return link_moderator_to_form(form_id, user_id, db)
+
+
+@router.delete("/{form_id}/questions/{question_id}/delete")
+def delete_question_from_form(form_id: int, question_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to create forms"
+        )
+    return remove_question_from_form(form_id, question_id, db)
+
+@router.delete("/forms/{form_id}/moderators/{user_id}/delete")
+def delete_moderator_from_form(form_id: int, user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to create forms"
+        )
+    return remove_moderator_from_form(form_id, user_id, db)

@@ -26,6 +26,7 @@ def get_user_endpoint(
     current_user: User = Depends(get_current_user)
 ):
     # Los usuarios pueden ver su propio perfil, pero solo los creators pueden ver otros perfiles
+
     if current_user.id != user_id and current_user.user_type not in [UserType.creator, UserType.admin]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -45,6 +46,7 @@ def update_user_endpoint(
     current_user: User = Depends(get_current_user)
 ):
     # Solo los creators pueden actualizar usuarios, o el propio usuario puede actualizar su perfil
+
     if current_user.id != user_id and current_user.user_type not in [UserType.creator, UserType.admin]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
