@@ -594,3 +594,27 @@ def link_question_to_form(form_id: int, question_id: int, db: Session):
     db.refresh(new_relation)
 
     return {"message": "Pregunta agregada al formulario correctamente", "relation": new_relation.id}
+
+
+def fetch_form_users(form_id: int, db: Session):
+    """Obtiene los usuarios asociados y no asociados a un formulario."""
+    
+    # Verificar si el formulario existe
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+
+    # Obtener todos los usuarios
+    all_users = db.query(User).all()
+
+    # Obtener IDs de usuarios asociados como moderadores
+    associated_users_ids = {moderator.user_id for moderator in form.form_moderators}
+
+    # Separar usuarios en asociados y no asociados
+    associated_users = [user for user in all_users if user.id in associated_users_ids]
+    unassociated_users = [user for user in all_users if user.id not in associated_users_ids]
+
+    return {
+        "associated_users": associated_users,
+        "unassociated_users": unassociated_users
+    }
