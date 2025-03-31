@@ -687,3 +687,34 @@ def remove_moderator_from_form(form_id: int, user_id: int, db: Session):
     db.commit()
 
     return {"message": "Moderador eliminado del formulario correctamente"}
+
+def get_filtered_questions(db: Session):
+    """Obtiene preguntas con default=True y sus respuestas únicas"""
+
+    # Obtener preguntas con default=True
+    default_questions = db.query(Question).filter(Question.default == True).all()
+    
+    # Obtener respuestas únicas para esas preguntas
+    question_ids = [q.id for q in default_questions]
+    
+    if not question_ids:
+        return {"default_questions": [], "answers": []}
+
+    unique_answers = (
+        db.query(Answer.answer_text, Answer.question_id)
+        .filter(Answer.question_id.in_(question_ids))
+        .group_by(Answer.answer_text, Answer.question_id)
+        .all()
+    )
+
+    # Formatear la salida
+    answers_dict = {}
+    for answer_text, question_id in unique_answers:
+        if question_id not in answers_dict:
+            answers_dict[question_id] = []
+        answers_dict[question_id].append(answer_text)
+
+    return {
+        "default_questions": [{"id": q.id, "text": q.question_text} for q in default_questions],
+        "answers": answers_dict
+    }

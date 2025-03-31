@@ -198,12 +198,12 @@ def delete_question_from_form(form_id: int, question_id: int, db: Session = Depe
         )
     return remove_question_from_form(form_id, question_id, db)
 
-@router.delete("/forms/{form_id}/moderators/{user_id}/delete")
+@router.delete("/{form_id}/moderators/{user_id}/delete")
 def delete_moderator_from_form(form_id: int, user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    
     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create forms"
         )
     return remove_moderator_from_form(form_id, user_id, db)
+
