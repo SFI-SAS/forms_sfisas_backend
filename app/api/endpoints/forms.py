@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
 from app.models import Answer, Response, User, UserType
-from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_form, get_forms, get_forms_by_user, link_question_to_form
+from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_form, get_forms, get_forms_by_user, link_moderator_to_form, link_question_to_form
 from app.schemas import FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormSchema, GetFormBase, QuestionAdd, FormBase
 from app.core.security import get_current_user
 router = APIRouter()
@@ -172,12 +172,12 @@ def add_question_to_form(form_id: int, question_id: int, db: Session = Depends(g
     return link_question_to_form(form_id, question_id, db)
 
 @router.get("/{form_id}/users_associated_and_unassociated")
-def get_form_users(form_id: int, db: Session = Depends(get_db) ,current_user: User = Depends(get_current_user)):
-    if not current_user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to access completed forms",
-        )
+def get_form_users(form_id: int, db: Session = Depends(get_db) ):
 
     return fetch_form_users(form_id, db)
 
+
+
+@router.post("/{form_id}/schedules/{user_id}")
+def add_user_to_form_schedule(form_id: int, user_id: int, db: Session = Depends(get_db)):
+    return link_moderator_to_form(form_id, user_id, db)

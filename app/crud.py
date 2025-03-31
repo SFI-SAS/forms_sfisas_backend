@@ -618,3 +618,34 @@ def fetch_form_users(form_id: int, db: Session):
         "associated_users": associated_users,
         "unassociated_users": unassociated_users
     }
+    
+
+def link_moderator_to_form(form_id: int, user_id: int, db: Session):
+    """Asocia un usuario como moderador de un formulario en la tabla FormModerators."""
+    
+    # Verificar si el formulario existe
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+
+    # Verificar si el usuario existe
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    # Verificar si la relación ya existe
+    existing_relation = db.query(FormModerators).filter(
+        FormModerators.form_id == form_id,
+        FormModerators.user_id == user_id
+    ).first()
+    
+    if existing_relation:
+        raise HTTPException(status_code=400, detail="El usuario ya es moderador de este formulario")
+
+    # Crear la nueva relación
+    new_relation = FormModerators(form_id=form_id, user_id=user_id)
+    db.add(new_relation)
+    db.commit()
+    db.refresh(new_relation)
+
+    return {"message": "Moderador agregado al formulario correctamente", "relation": new_relation.id}
