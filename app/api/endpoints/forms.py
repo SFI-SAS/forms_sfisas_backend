@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
 from app.models import Answer, Response, User, UserType
-from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, get_all_forms, get_form, get_forms, get_forms_by_user
+from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, get_all_forms, get_form, get_forms, get_forms_by_user, link_question_to_form
 from app.schemas import FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormSchema, GetFormBase, QuestionAdd, FormBase
 from app.core.security import get_current_user
 router = APIRouter()
@@ -146,3 +146,27 @@ def get_completed_forms_for_user(
         raise HTTPException(status_code=404, detail="No completed forms found for this user")
     
     return completed_forms
+
+
+@router.get("/{form_id}/questions_associated_and_unassociated")
+def get_form_questions(form_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
+    
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to access completed forms",
+        )
+
+    return fetch_form_questions(form_id, db)
+
+
+
+@router.post("/{form_id}/questions/{question_id}")
+def add_question_to_form(form_id: int, question_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to access completed forms",
+        )
+
+    return link_question_to_form(form_id, question_id, db)

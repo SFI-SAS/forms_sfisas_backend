@@ -540,3 +540,57 @@ def fetch_completed_forms_by_user(db: Session, user_id: int):
         .all()
     )
     return completed_forms
+
+
+def fetch_form_questions(form_id: int, db: Session):
+    """Obtiene las preguntas asociadas y no asociadas a un formulario."""
+    # Obtener todas las preguntas del sistema
+    all_questions = db.query(Question).all()
+
+    # Obtener el formulario y verificar si existe
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+
+    # Obtener IDs de las preguntas asociadas al formulario
+    associated_questions_ids = {q.id for q in form.questions}
+
+    # Separar preguntas en asociadas y no asociadas
+    associated_questions = [q for q in all_questions if q.id in associated_questions_ids]
+    unassociated_questions = [q for q in all_questions if q.id not in associated_questions_ids]
+
+    return {
+        "associated_questions": associated_questions,
+        "unassociated_questions": unassociated_questions
+    }
+    
+
+def link_question_to_form(form_id: int, question_id: int, db: Session):
+    """Asocia una pregunta a un formulario en la tabla FormQuestion."""
+    
+    # Verificar si el formulario existe
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+
+    # Verificar si la pregunta existe
+    question = db.query(Question).filter(Question.id == question_id).first()
+    if not question:
+        raise HTTPException(status_code=404, detail="Pregunta no encontrada")
+
+    # Verificar si la relación ya existe
+    existing_relation = db.query(FormQuestion).filter(
+        FormQuestion.form_id == form_id,
+        FormQuestion.question_id == question_id
+    ).first()
+    
+    if existing_relation:
+        raise HTTPException(status_code=400, detail="La pregunta ya está asociada a este formulario")
+
+    # Crear la nueva relación
+    new_relation = FormQuestion(form_id=form_id, question_id=question_id)
+    db.add(new_relation)
+    db.commit()
+    db.refresh(new_relation)
+
+    return {"message": "Pregunta agregada al formulario correctamente", "relation": new_relation.id}
