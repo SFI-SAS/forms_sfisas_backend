@@ -184,3 +184,8 @@ class AnswerSchema(BaseModel):
     question_id: int
     answer_text: Optional[str]
     file_path: Optional[str]
+
+
+class FormAnswerCreate(BaseModel):
+    form_id: int
+    answer_id: int

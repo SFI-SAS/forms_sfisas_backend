@@ -55,6 +55,7 @@ class Form(Base):
     form_moderators = relationship("FormModerators", back_populates="form", cascade="all, delete-orphan")
     questions = relationship("Question", secondary="form_questions", back_populates="forms")
     responses = relationship('Response', back_populates='form')  # Esto debe coincidir con la tabla Response
+    form_answers = relationship('FormAnswer', back_populates='form')  # Nueva relación
 
 # Modelo Questions
 class Question(Base):
@@ -114,7 +115,7 @@ class Answer(Base):
 
     response = relationship('Response', back_populates='answers')
     question = relationship('Question', back_populates='answers')
-    
+    form_answers = relationship('FormAnswer', back_populates='answer') 
     
 # Modelo Project
 class Project(Base):
@@ -150,3 +151,13 @@ class FormModerators(Base):
     
     
 
+class FormAnswer(Base):
+    __tablename__ = 'form_answers'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=False)
+    answer_id = Column(BigInteger, ForeignKey('answers.id'), nullable=False)
+
+    # Relaciones
+    form = relationship('Form', back_populates='form_answers')
+    answer = relationship('Answer', back_populates='form_answers')

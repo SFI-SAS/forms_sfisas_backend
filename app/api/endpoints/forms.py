@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
 from app.models import Answer, Response, User, UserType
-from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_form, get_forms, get_forms_by_user, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form
-from app.schemas import FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormSchema, GetFormBase, QuestionAdd, FormBase
+from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_form, get_forms, get_forms_by_user, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_answer
+from app.schemas import FormAnswerCreate, FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormSchema, GetFormBase, QuestionAdd, FormBase
 from app.core.security import get_current_user
 router = APIRouter()
 
@@ -114,7 +114,7 @@ def get_forms_endpoint(db: Session = Depends(get_db)):
         return forms
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 @router.get("/users/form_by_user", response_model=List[FormSchema])
 def get_user_forms( db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     try:
@@ -130,7 +130,37 @@ def get_user_forms( db: Session = Depends(get_db), current_user: User = Depends(
             return forms
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+      
+# @router.get("/users/form_by_user")
+# def get_user_forms( db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+
+#     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
+#         raise HTTPException(
+#             status_code=status.HTTP_403_FORBIDDEN,
+#             detail="User does not have permission to access responses"
+#         )
+
+#     stmt = (
+#         select(Response)
+#         .where(Response.user_id == current_user.id)
+#         .options(
+#             joinedload(Response.form),  # 🔥 Carga el Form asociado
+#             joinedload(Response.answers).joinedload(Answer.question)
+#         )
+#     )
+
+#     results = db.execute(stmt).unique().scalars().all()
+
+#     # 🔥 Filtrar solo preguntas con default=True y sus respuestas
+#     for response in results:
+#         response.answers = [answer for answer in response.answers if answer.question.default]
+
+#     if not results:
+#         raise HTTPException(status_code=404, detail="No se encontraron respuestas")
+
+#     return results  
+
+
 @router.get("/users/completed_forms", response_model=List[FormSchema])
 def get_completed_forms_for_user(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
@@ -207,3 +237,13 @@ def delete_moderator_from_form(form_id: int, user_id: int, db: Session = Depends
         )
     return remove_moderator_from_form(form_id, user_id, db)
 
+
+@router.post("/form-answers/")
+def create_form_answer(form_answer: FormAnswerCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to create forms"
+        )
+    saved_form_answer = save_form_answer(db, form_answer)
+    return {"message": "Form answer saved successfully", "form_answer": saved_form_answer}

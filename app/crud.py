@@ -1,8 +1,8 @@
 from sqlalchemy import exists, func, not_, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
-from app.models import  FormModerators, FormSchedule, Project, User, Form, Question, Option, Response, Answer, FormQuestion
-from app.schemas import FormBaseUser, ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate
+from app.models import  FormAnswer, FormModerators, FormSchedule, Project, User, Form, Question, Option, Response, Answer, FormQuestion
+from app.schemas import FormAnswerCreate, FormBaseUser, ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate
 from fastapi import HTTPException, UploadFile, status
 from typing import List
 from datetime import datetime
@@ -718,3 +718,13 @@ def get_filtered_questions(db: Session):
         "default_questions": [{"id": q.id, "text": q.question_text} for q in default_questions],
         "answers": answers_dict
     }
+    
+def save_form_answer(db: Session, form_answer: FormAnswerCreate):
+    new_form_answer = FormAnswer(
+        form_id=form_answer.form_id,
+        answer_id=form_answer.answer_id
+    )
+    db.add(new_form_answer)
+    db.commit()
+    db.refresh(new_form_answer)
+    return new_form_answer
