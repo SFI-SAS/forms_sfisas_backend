@@ -78,7 +78,9 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             user_id=user_id,
             title=form.title,
             description=form.description,
+            is_root= form.is_root,
             created_at=datetime.utcnow()
+            
         )
 
         # Crear relaciones con FormModerators para los usuarios asignados
@@ -689,7 +691,7 @@ def remove_moderator_from_form(form_id: int, user_id: int, db: Session):
     return {"message": "Moderador eliminado del formulario correctamente"}
 
 def get_filtered_questions(db: Session):
-    """Obtiene preguntas con default=True y sus respuestas únicas"""
+    """Obtiene preguntas con default=True, sus respuestas únicas y formularios con is_root=False"""
 
     # Obtener preguntas con default=True
     default_questions = db.query(Question).filter(Question.default == True).all()
@@ -698,7 +700,7 @@ def get_filtered_questions(db: Session):
     question_ids = [q.id for q in default_questions]
     
     if not question_ids:
-        return {"default_questions": [], "answers": []}
+        return {"default_questions": [], "answers": [], "non_root_forms": []}
 
     unique_answers = (
         db.query(Answer.answer_text, Answer.question_id)
@@ -706,6 +708,9 @@ def get_filtered_questions(db: Session):
         .group_by(Answer.answer_text, Answer.question_id)
         .all()
     )
+
+    # Obtener formularios con is_root=False
+    non_root_forms = db.query(Form).filter(Form.is_root == False).all()
 
     # Formatear la salida
     answers_dict = {}
@@ -716,8 +721,10 @@ def get_filtered_questions(db: Session):
 
     return {
         "default_questions": [{"id": q.id, "text": q.question_text} for q in default_questions],
-        "answers": answers_dict
+        "answers": answers_dict,
+        "non_root_forms": [{"id": f.id, "title": f.title, "description": f.description} for f in non_root_forms]
     }
+
     
 def save_form_answer(db: Session, form_answer: FormAnswerCreate):
     new_form_answer = FormAnswer(

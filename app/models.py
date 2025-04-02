@@ -48,6 +48,7 @@ class Form(Base):
     user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
     title = Column(String(255), nullable=False)
     description = Column(String(255), nullable=True)
+    is_root = Column(Boolean, nullable=False, default=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
     # Relaciones

@@ -90,6 +90,7 @@ class FormBaseUser(BaseModel):
     title: str = Field(..., example="Survey Form")
     description: Optional[str] = Field(None, example="This is a survey form description.")
     assign_user: List[int]  # Corregido
+    is_root:bool =  Field(..., example=True) 
 
     
 class FormBase(BaseModel):
