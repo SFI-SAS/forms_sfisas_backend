@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
-import app
 from app.database import get_db
 from app.models import User, UserType
 from app.crud import create_question, delete_question_from_db, get_answers_by_question, get_filtered_questions, get_schedules_by_day, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
@@ -150,43 +149,3 @@ def get_schedules_for_today(db: Session = Depends(get_db)):
 
 
 
-DIAS_SEMANA = {
-    "monday": "lunes",
-    "tuesday": "martes",
-    "wednesday": "miércoles",
-    "thursday": "jueves",
-    "friday": "viernes",
-    "saturday": "sábado",
-    "sunday": "domingo"
-}
-
-def daily_schedule_task():
-    """Obtiene los registros activos para el día actual y ejecuta la lógica necesaria."""
-    print("⏳ Ejecutando tarea diaria...")
-
-    db = SessionLocal()
-    try:
-        today_english = datetime.today().strftime('%A').lower()
-        today_spanish = DIAS_SEMANA.get(today_english, "lunes")  # Default a lunes si hay error
-
-        schedules = get_schedules_by_day(db, today_spanish)
-        
-        print(f"📆 Registros obtenidos para {today_spanish}: {len(schedules)}")
-
-        # Aquí podrías llamar a la función que envía correos u otra acción
-        # send_reminder_emails(schedules)
-
-    except Exception as e:
-        print(f"⚠️ Error en la tarea diaria: {str(e)}")
-    finally:
-        db.close()
-
-# Configurar el scheduler
-scheduler = BackgroundScheduler()
-scheduler.add_job(daily_schedule_task, "cron", hour=7, minute=0)  # Ejecutar todos los días a las 7:00 AM
-scheduler.start()
-
-# Detener el scheduler al apagar la app
-@app.on_event("shutdown")
-def shutdown_event():
-    scheduler.shutdown()
