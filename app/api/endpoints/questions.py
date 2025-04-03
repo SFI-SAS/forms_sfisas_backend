@@ -116,12 +116,7 @@ def get_unrelated_questions_endpoint(form_id: int, db: Session = Depends(get_db)
 
 
 @router.get("/filtered")
-def fetch_filtered_questions(db: Session = Depends(get_db),  current_user: User = Depends(get_current_user)):
+def fetch_filtered_questions(db: Session = Depends(get_db)):
     """Endpoint para obtener preguntas filtradas"""
-    if current_user == None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
-        )
-    else: 
-        return get_filtered_questions(db)
+
+    return get_filtered_questions(db)

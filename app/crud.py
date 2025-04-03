@@ -691,7 +691,7 @@ def remove_moderator_from_form(form_id: int, user_id: int, db: Session):
     return {"message": "Moderador eliminado del formulario correctamente"}
 
 def get_filtered_questions(db: Session):
-    """Obtiene preguntas con default=True, sus respuestas únicas y formularios con is_root=False"""
+    """Obtiene preguntas con default=True, sus respuestas únicas con sus IDs y formularios con is_root=False"""
 
     # Obtener preguntas con default=True
     default_questions = db.query(Question).filter(Question.default == True).all()
@@ -703,9 +703,9 @@ def get_filtered_questions(db: Session):
         return {"default_questions": [], "answers": [], "non_root_forms": []}
 
     unique_answers = (
-        db.query(Answer.answer_text, Answer.question_id)
+        db.query(Answer.id, Answer.answer_text, Answer.question_id)
         .filter(Answer.question_id.in_(question_ids))
-        .group_by(Answer.answer_text, Answer.question_id)
+        .group_by(Answer.id, Answer.answer_text, Answer.question_id)
         .all()
     )
 
@@ -714,17 +714,16 @@ def get_filtered_questions(db: Session):
 
     # Formatear la salida
     answers_dict = {}
-    for answer_text, question_id in unique_answers:
+    for answer_id, answer_text, question_id in unique_answers:
         if question_id not in answers_dict:
             answers_dict[question_id] = []
-        answers_dict[question_id].append(answer_text)
+        answers_dict[question_id].append({"id": answer_id, "text": answer_text})
 
     return {
         "default_questions": [{"id": q.id, "text": q.question_text} for q in default_questions],
         "answers": answers_dict,
         "non_root_forms": [{"id": f.id, "title": f.title, "description": f.description} for f in non_root_forms]
     }
-
     
 def save_form_answer(db: Session, form_answer: FormAnswerCreate):
     new_form_answer = FormAnswer(
@@ -735,3 +734,32 @@ def save_form_answer(db: Session, form_answer: FormAnswerCreate):
     db.commit()
     db.refresh(new_form_answer)
     return new_form_answer
+
+
+def get_moderated_forms_by_answers(answer_ids: List[int], user_id: int, db: Session):
+    """
+    Busca los formularios asociados a las respuestas y verifica si el usuario es moderador de ellos.
+    """
+    # Obtener los formularios relacionados con las respuestas
+    form_ids = (
+        db.query(FormAnswer.form_id)
+        .filter(FormAnswer.answer_id.in_(answer_ids))
+        .distinct()
+        .all()
+    )
+    
+    form_ids = [f[0] for f in form_ids]  # Extraer solo los IDs
+
+    if not form_ids:
+        return []
+
+    # Verificar si el usuario es moderador de esos formularios
+    user_moderated_forms = (
+        db.query(Form)
+        .join(FormModerators, Form.id == FormModerators.form_id)
+        .filter(FormModerators.user_id == user_id, Form.id.in_(form_ids))
+        .all()
+    )
+
+    return user_moderated_forms
+

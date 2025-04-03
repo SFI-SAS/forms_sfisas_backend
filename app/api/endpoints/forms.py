@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
 from app.models import Answer, Response, User, UserType
-from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_form, get_forms, get_forms_by_user, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_answer
+from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_form, get_forms, get_forms_by_user, get_moderated_forms_by_answers, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_answer
 from app.schemas import FormAnswerCreate, FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormSchema, GetFormBase, QuestionAdd, FormBase
 from app.core.security import get_current_user
 router = APIRouter()
@@ -247,3 +247,20 @@ def create_form_answer(form_answer: FormAnswerCreate, db: Session = Depends(get_
         )
     saved_form_answer = save_form_answer(db, form_answer)
     return {"message": "Form answer saved successfully", "form_answer": saved_form_answer}
+
+
+@router.post("/forms-by-answers/", response_model=List[FormResponse])
+def get_forms_by_answers(
+    answer_ids: List[int], 
+    db: Session = Depends(get_db), 
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Endpoint que obtiene los formularios asociados a respuestas y verifica si el usuario es moderador de ellos.
+    """
+    forms = get_moderated_forms_by_answers(answer_ids, current_user.id, db)
+
+    if not forms:
+        raise HTTPException(status_code=403, detail="No tienes permisos para ver estos formularios.")
+
+    return forms
