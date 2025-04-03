@@ -1,6 +1,8 @@
+import json
 from sqlalchemy import exists, func, not_, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
+from app.api.controllers.mail import send_email_daily_forms
 from app.models import  FormAnswer, FormModerators, FormSchedule, Project, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import FormAnswerCreate, FormBaseUser, ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate
 from fastapi import HTTPException, UploadFile, status
@@ -79,6 +81,7 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             title=form.title,
             description=form.description,
             is_root= form.is_root,
+            is_sequential= form.is_sequential,
             created_at=datetime.utcnow()
             
         )
@@ -454,11 +457,11 @@ def check_form_data(db: Session, form_id: int):
     return form_data
 
 
-def create_form_schedule(db: Session, form_id: int, user_id: int, repeat_days: str | None, status: bool):
+def create_form_schedule(db: Session, form_id: int, user_id: int, repeat_days: list | None, status: bool):
     new_schedule = FormSchedule(
         form_id=form_id,
         user_id=user_id,
-        repeat_days=repeat_days,
+        repeat_days=json.dumps(repeat_days) if repeat_days else None,  # Convertir a JSON
         status=status
     )
     db.add(new_schedule)
@@ -690,15 +693,15 @@ def remove_moderator_from_form(form_id: int, user_id: int, db: Session):
 
     return {"message": "Moderador eliminado del formulario correctamente"}
 
-def get_filtered_questions(db: Session):
-    """Obtiene preguntas con default=True, sus respuestas únicas con sus IDs y formularios con is_root=False"""
+def get_filtered_questions(db: Session, id_user: int):
+    """Obtiene preguntas con default=True, sus respuestas únicas con sus IDs y formularios asignados al usuario con is_root=False"""
 
     # Obtener preguntas con default=True
     default_questions = db.query(Question).filter(Question.default == True).all()
-    
+
     # Obtener respuestas únicas para esas preguntas
     question_ids = [q.id for q in default_questions]
-    
+
     if not question_ids:
         return {"default_questions": [], "answers": [], "non_root_forms": []}
 
@@ -709,8 +712,13 @@ def get_filtered_questions(db: Session):
         .all()
     )
 
-    # Obtener formularios con is_root=False
-    non_root_forms = db.query(Form).filter(Form.is_root == False).all()
+    # Obtener formularios con is_root=False que están asignados al usuario
+    non_root_forms = (
+        db.query(Form)
+        .join(FormModerators, Form.id == FormModerators.form_id)
+        .filter(Form.is_root == False, FormModerators.user_id == id_user)
+        .all()
+    )
 
     # Formatear la salida
     answers_dict = {}
@@ -722,9 +730,11 @@ def get_filtered_questions(db: Session):
     return {
         "default_questions": [{"id": q.id, "text": q.question_text} for q in default_questions],
         "answers": answers_dict,
-        "non_root_forms": [{"id": f.id, "title": f.title, "description": f.description} for f in non_root_forms]
+        "non_root_forms": [
+            {"id": f.id, "title": f.title, "description": f.description} for f in non_root_forms
+        ],
     }
-    
+
 def save_form_answer(db: Session, form_answer: FormAnswerCreate):
     new_form_answer = FormAnswer(
         form_id=form_answer.form_id,
@@ -763,3 +773,55 @@ def get_moderated_forms_by_answers(answer_ids: List[int], user_id: int, db: Sess
 
     return user_moderated_forms
 
+
+def get_schedules_by_day(db: Session, day: str) -> List[dict]:
+    schedules = db.query(FormSchedule).filter(FormSchedule.status == True).all()
+    users_forms = {}
+
+    for schedule in schedules:
+        if schedule.repeat_days and day in json.loads(schedule.repeat_days):
+            user = db.query(User).filter(User.id == schedule.user_id).first()
+            form = db.query(Form).filter(Form.id == schedule.form_id).first()
+
+            if user and form:
+                if user.email not in users_forms:
+                    users_forms[user.email] = {
+                        "user_name": user.name,
+                        "forms": []
+                    }
+
+                users_forms[user.email]["forms"].append({
+                    "title": form.title,
+                    "description": form.description or "Sin descripción"
+                })
+
+    # Enviar un email a cada usuario con sus formularios
+    for email, data in users_forms.items():
+        send_email_daily_forms(
+            user_email=email,
+            user_name=data["user_name"],
+            forms=data["forms"]
+        )
+
+    return [
+        {
+            "id": schedule.id,
+            "form": {
+                "id": form.id,
+                "title": form.title,
+                "description": form.description
+            } if form else None,
+            "user": {
+                "id": user.id,
+                "num_document": user.num_document,
+                "name": user.name,
+                "email": user.email,
+                "telephone": user.telephone,
+                "nickname": user.nickname
+            } if user else None,
+            "repeat_days": json.loads(schedule.repeat_days),
+            "status": schedule.status
+        }
+        for schedule in schedules
+        if schedule.repeat_days and day in json.loads(schedule.repeat_days)
+    ]

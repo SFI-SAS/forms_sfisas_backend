@@ -91,6 +91,7 @@ class FormBaseUser(BaseModel):
     description: Optional[str] = Field(None, example="This is a survey form description.")
     assign_user: List[int]  # Corregido
     is_root:bool =  Field(..., example=True) 
+    is_sequential:bool =  Field(..., example=True) 
 
     
 class FormBase(BaseModel):
@@ -168,8 +169,8 @@ class PostCreate(BaseModel):
 class FormScheduleCreate(BaseModel):
     form_id: int
     user_id: int
-    repeat_days: str | None = None
-    status: bool = True
+    repeat_days: List[str]  # Asegura que sea una lista de strings
+    status: bool
     
     
 class FormSchema(BaseModel):

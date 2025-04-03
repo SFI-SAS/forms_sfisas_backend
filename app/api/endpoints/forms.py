@@ -259,8 +259,4 @@ def get_forms_by_answers(
     Endpoint que obtiene los formularios asociados a respuestas y verifica si el usuario es moderador de ellos.
     """
     forms = get_moderated_forms_by_answers(answer_ids, current_user.id, db)
-
-    if not forms:
-        raise HTTPException(status_code=403, detail="No tienes permisos para ver estos formularios.")
-
     return forms
