@@ -474,16 +474,29 @@ def check_form_data(db: Session, form_id: int):
 
 
 def create_form_schedule(db: Session, form_id: int, user_id: int, repeat_days: list | None, status: bool):
-    new_schedule = FormSchedule(
-        form_id=form_id,
-        user_id=user_id,
-        repeat_days=json.dumps(repeat_days) if repeat_days else None,  # Convertir a JSON
-        status=status
-    )
-    db.add(new_schedule)
-    db.commit()
-    db.refresh(new_schedule)
-    return new_schedule
+    # Verificar si ya existe un registro con esa combinación
+    existing_schedule = db.query(FormSchedule).filter_by(form_id=form_id, user_id=user_id).first()
+
+    if existing_schedule:
+        # Si existe, actualiza el registro
+        existing_schedule.repeat_days = json.dumps(repeat_days) if repeat_days else None
+        existing_schedule.status = status
+        db.commit()
+        db.refresh(existing_schedule)
+        return existing_schedule
+    else:
+        # Si no existe, crea uno nuevo
+        new_schedule = FormSchedule(
+            form_id=form_id,
+            user_id=user_id,
+            repeat_days=json.dumps(repeat_days) if repeat_days else None,
+            status=status
+        )
+        db.add(new_schedule)
+        db.commit()
+        db.refresh(new_schedule)
+        return new_schedule
+
 
 def fetch_all_users(db: Session):
     """Función para obtener todos los usuarios de la base de datos."""
@@ -751,15 +764,22 @@ def get_filtered_questions(db: Session, id_user: int):
         ],
     }
 
-def save_form_answer(db: Session, form_answer: FormAnswerCreate):
-    new_form_answer = FormAnswer(
-        form_id=form_answer.form_id,
-        answer_id=form_answer.answer_id
-    )
-    db.add(new_form_answer)
+def save_form_answers(db: Session, form_id: int, answer_ids: List[int]):
+    saved = []
+    for answer_id in answer_ids:
+        form_answer = FormAnswer(
+            form_id=form_id,
+            answer_id=answer_id
+        )
+        db.add(form_answer)
+        saved.append(form_answer)
+
     db.commit()
-    db.refresh(new_form_answer)
-    return new_form_answer
+    for answer in saved:
+        db.refresh(answer)
+
+    return saved
+
 
 
 def get_moderated_forms_by_answers(answer_ids: List[int], user_id: int, db: Session):

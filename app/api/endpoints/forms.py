@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
 from app.models import Answer, Response, User, UserType
-from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_form, get_forms, get_forms_by_user, get_moderated_forms_by_answers, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_answer
+from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_form, get_forms, get_forms_by_user, get_moderated_forms_by_answers, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_answers
 from app.schemas import FormAnswerCreate, FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormSchema, GetFormBase, QuestionAdd, FormBase
 from app.core.security import get_current_user
 router = APIRouter()
@@ -245,7 +245,8 @@ def create_form_answer(form_answer: FormAnswerCreate, db: Session = Depends(get_
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create forms"
         )
-    saved_form_answer = save_form_answer(db, form_answer)
+    saved_form_answer = save_form_answers(db, form_answer.form_id, form_answer.answer_ids)
+
     return {"message": "Form answer saved successfully", "form_answer": saved_form_answer}
 
 

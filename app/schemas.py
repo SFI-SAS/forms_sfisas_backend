@@ -193,4 +193,4 @@ class AnswerSchema(BaseModel):
 
 class FormAnswerCreate(BaseModel):
     form_id: int
-    answer_id: int
+    answer_ids: List[int]
