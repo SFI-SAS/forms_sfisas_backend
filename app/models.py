@@ -98,7 +98,9 @@ class Response(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=False)
     user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
-    attempt_number = Column(Integer, nullable=False, default=1)  # Nuevo campo para identificar el intento
+    mode = Column(String(20), nullable=False)  # "online" o "offline"
+    mode_sequence = Column(Integer, nullable=False)  # contador separado por modo
+
     submitted_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
     form = relationship('Form', back_populates='responses')
@@ -163,3 +165,5 @@ class FormAnswer(Base):
     # Relaciones
     form = relationship('Form', back_populates='form_answers')
     answer = relationship('Answer', back_populates='form_answers')
+
+

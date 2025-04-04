@@ -98,7 +98,7 @@ class FormBase(BaseModel):
    
     title: str = Field(..., example="Survey Form")
     description: Optional[str] = Field(None, example="This is a survey form description.")
-
+    is_sequential:bool =  Field(..., example=True) 
 
 
 class FormCreate(FormBase):
@@ -178,6 +178,7 @@ class FormSchema(BaseModel):
     user_id: int
     title: str
     description: Optional[str]
+    
     created_at: datetime
     
 class AnswerSchema(BaseModel):

@@ -115,7 +115,7 @@ def get_forms_endpoint(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/users/form_by_user", response_model=List[FormSchema])
+@router.get("/users/form_by_user")
 def get_user_forms( db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     try:
         if current_user == None:

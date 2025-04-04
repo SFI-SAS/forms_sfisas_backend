@@ -731,7 +731,7 @@ def get_filtered_questions(db: Session, id_user: int):
         "default_questions": [{"id": q.id, "text": q.question_text} for q in default_questions],
         "answers": answers_dict,
         "non_root_forms": [
-            {"id": f.id, "title": f.title, "description": f.description} for f in non_root_forms
+            {"id": f.id, "title": f.title, "description": f.description, "is_sequential": f.is_sequential} for f in non_root_forms
         ],
     }
 
