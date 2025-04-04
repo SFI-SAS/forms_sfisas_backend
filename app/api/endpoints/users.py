@@ -109,8 +109,6 @@ def get_all_users(db: Session = Depends(get_db), current_user: User = Depends(ge
     """Endpoint que llama a la función fetch_all_users."""
     return fetch_all_users(db)  # No necesita `await`
 
-
-
 @router.post("/send-file-emails")
 async def send_file_to_emails(
     file: UploadFile = File(...),

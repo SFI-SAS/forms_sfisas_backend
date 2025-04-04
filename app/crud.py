@@ -871,8 +871,7 @@ def prepare_and_send_file_to_emails(
 ) -> dict:
     success_emails = []
     failed_emails = []
-
-    # Buscar al usuario
+    
     user = db.query(User).filter(User.id == id_user).first()
     user_name = user.name if user else "Usuario"
 
