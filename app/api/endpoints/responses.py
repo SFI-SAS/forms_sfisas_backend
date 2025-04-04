@@ -1,7 +1,7 @@
 
 import os
 import uuid
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 from typing import List
@@ -15,15 +15,20 @@ from app.core.security import get_current_user
 router = APIRouter()
 
         
-@router.post("/save-response/{form_id}") 
-def save_response(form_id: int,  current_user: User = Depends(get_current_user),  db: Session = Depends(get_db)):
-    if current_user == None:
+@router.post("/save-response/{form_id}")
+def save_response(
+    form_id: int,
+    mode: str = Body("online"),  # o usa Query si lo prefieres
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get all questions"
+            detail="User does not have permission to respond"
         )
-    else: 
-        return post_create_response(db, form_id, current_user.id)
+
+    return post_create_response(db, form_id, current_user.id, mode)
 
 
 @router.post("/save-answers/")  

@@ -81,7 +81,6 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             title=form.title,
             description=form.description,
             is_root= form.is_root,
-            is_sequential= form.is_sequential,
             created_at=datetime.utcnow()
             
         )
@@ -352,8 +351,9 @@ def delete_question_from_db(question_id: int, db: Session):
     db.commit()
     return {"message": "Pregunta eliminada correctamente"}
 
-def post_create_response(db: Session, form_id: int, user_id: int):
+def post_create_response(db: Session, form_id: int, user_id: int, mode: str = "online"):
     """Función para crear una nueva respuesta en la base de datos si la encuesta y el usuario existen."""
+
     form = db.query(Form).filter(Form.id == form_id).first()
     user = db.query(User).filter(User.id == user_id).first()
 
@@ -362,22 +362,34 @@ def post_create_response(db: Session, form_id: int, user_id: int):
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    # Calcular el número de intento actual (incremental)
-    last_attempt = db.query(Response).filter(
-        Response.form_id == form_id,
-        Response.user_id == user_id
-    ).order_by(Response.attempt_number.desc()).first()
+    # Contador separado por modo
+    last_mode_response = (
+        db.query(Response)
+        .filter(Response.mode == mode)
+        .order_by(Response.mode_sequence.desc())
+        .first()
+    )
 
-    new_attempt_number = last_attempt.attempt_number + 1 if last_attempt else 1
+    new_mode_sequence = last_mode_response.mode_sequence + 1 if last_mode_response else 1
 
-    # Crear la nueva respuesta con el intento actualizado
-    response = Response(form_id=form_id, user_id=user_id, attempt_number=new_attempt_number, submitted_at=func.now())
+    response = Response(
+        form_id=form_id,
+        user_id=user_id,
+        mode=mode,
+        mode_sequence=new_mode_sequence,
+        submitted_at=func.now()
+    )
 
     db.add(response)
     db.commit()
     db.refresh(response)
 
-    return {"message": "Nueva respuesta guardada exitosamente", "response_id": response.id, "attempt_number": new_attempt_number}
+    return {
+        "message": "Nueva respuesta guardada exitosamente",
+        "response_id": response.id,
+        "mode": mode,
+        "mode_sequence": new_mode_sequence
+    }
 
 def create_answer_in_db(answer, db: Session):
     existing_answer = db.query(Answer).filter(
@@ -731,7 +743,7 @@ def get_filtered_questions(db: Session, id_user: int):
         "default_questions": [{"id": q.id, "text": q.question_text} for q in default_questions],
         "answers": answers_dict,
         "non_root_forms": [
-            {"id": f.id, "title": f.title, "description": f.description, "is_sequential": f.is_sequential} for f in non_root_forms
+            {"id": f.id, "title": f.title, "description": f.description} for f in non_root_forms
         ],
     }
 

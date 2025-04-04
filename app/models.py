@@ -49,7 +49,6 @@ class Form(Base):
     title = Column(String(255), nullable=False)
     description = Column(String(255), nullable=True)
     is_root = Column(Boolean, nullable=False, default=False)
-    is_sequential = Column(Boolean, nullable=False, default=False) 
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
     # Relaciones

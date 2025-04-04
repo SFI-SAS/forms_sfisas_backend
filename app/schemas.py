@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List
+from typing import Literal, Optional, List
 from datetime import datetime
 from enum import Enum
 
@@ -84,21 +84,28 @@ class GetFormBase(BaseModel):
     project_id: int
     created_at: datetime
 
-
 class FormBaseUser(BaseModel):
    
     title: str = Field(..., example="Survey Form")
     description: Optional[str] = Field(None, example="This is a survey form description.")
     assign_user: List[int]  # Corregido
     is_root:bool =  Field(..., example=True) 
-    is_sequential:bool =  Field(..., example=True) 
+
+
+
+class FormBaseUserCreate(BaseModel):
+   
+    title: str = Field(..., example="Survey Form")
+    description: Optional[str] = Field(None, example="This is a survey form description.")
+    assign_user: List[int]  # Corregido
+    is_root:bool =  Field(..., example=True) 
+    mode: Literal["online", "offline"]  # Nuevo campo
 
     
 class FormBase(BaseModel):
    
     title: str = Field(..., example="Survey Form")
     description: Optional[str] = Field(None, example="This is a survey form description.")
-    is_sequential:bool =  Field(..., example=True) 
 
 
 class FormCreate(FormBase):
@@ -112,6 +119,8 @@ class FormResponse(FormBase):
     
     class Config:
         from_attributes = True
+        
+
 
 class QuestionAdd(BaseModel):
     question_ids: List[int]
