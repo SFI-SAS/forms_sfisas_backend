@@ -1,7 +1,7 @@
 
 import os
 import uuid
-from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 from typing import List
@@ -18,7 +18,7 @@ router = APIRouter()
 @router.post("/save-response/{form_id}")
 def save_response(
     form_id: int,
-    mode: str = Body("online"),  # o usa Query si lo prefieres
+    mode: str = Query("online", enum=["online", "offline"]),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -29,7 +29,6 @@ def save_response(
         )
 
     return post_create_response(db, form_id, current_user.id, mode)
-
 
 @router.post("/save-answers/")  
 def create_answer(answer: PostCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

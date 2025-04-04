@@ -88,18 +88,16 @@ class FormBaseUser(BaseModel):
    
     title: str = Field(..., example="Survey Form")
     description: Optional[str] = Field(None, example="This is a survey form description.")
-    assign_user: List[int]  # Corregido
+    assign_user: List[int]  
     is_root:bool =  Field(..., example=True) 
-
-
 
 class FormBaseUserCreate(BaseModel):
    
     title: str = Field(..., example="Survey Form")
     description: Optional[str] = Field(None, example="This is a survey form description.")
-    assign_user: List[int]  # Corregido
+    assign_user: List[int]
     is_root:bool =  Field(..., example=True) 
-    mode: Literal["online", "offline"]  # Nuevo campo
+    mode: Literal["online", "offline"]  
 
     
 class FormBase(BaseModel):
@@ -107,10 +105,8 @@ class FormBase(BaseModel):
     title: str = Field(..., example="Survey Form")
     description: Optional[str] = Field(None, example="This is a survey form description.")
 
-
 class FormCreate(FormBase):
     pass
-
 class FormResponse(FormBase):
     id:int
     user_id: int
@@ -120,11 +116,8 @@ class FormResponse(FormBase):
     class Config:
         from_attributes = True
         
-
-
 class QuestionAdd(BaseModel):
     question_ids: List[int]
-
 
 # Schemas for Response
 class ResponseBase(BaseModel):
@@ -178,7 +171,7 @@ class PostCreate(BaseModel):
 class FormScheduleCreate(BaseModel):
     form_id: int
     user_id: int
-    repeat_days: List[str]  # Asegura que sea una lista de strings
+    repeat_days: List[str]  
     status: bool
     
     

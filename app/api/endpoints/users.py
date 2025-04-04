@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
 from app.models import User, UserType
-from app.crud import create_user, fetch_all_users, get_user, update_user, get_user_by_email, get_users
+from app.crud import create_user, fetch_all_users, get_user, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users
 from app.schemas import UserCreate, UserResponse, UserUpdate
 from app.core.security import get_current_user, hash_password
 
@@ -107,3 +108,19 @@ def get_all_users(db: Session = Depends(get_db), current_user: User = Depends(ge
 
     """Endpoint que llama a la función fetch_all_users."""
     return fetch_all_users(db)  # No necesita `await`
+
+
+
+@router.post("/send-file-emails")
+async def send_file_to_emails(
+    file: UploadFile = File(...),
+    emails: List[str] = Form(...),
+    name_form: str = Form(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Archivo no proporcionado.")
+
+    result = prepare_and_send_file_to_emails(file, emails,name_form, current_user.id,db )
+    return JSONResponse(content=result)

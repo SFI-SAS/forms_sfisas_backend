@@ -1,3 +1,4 @@
+import mimetypes
 import os
 import smtplib
 import json
@@ -5,6 +6,8 @@ from email.message import EmailMessage
 from email.utils import formataddr
 from datetime import datetime
 from typing import List, Dict
+
+from fastapi import UploadFile
 
 # Configuración del servidor SMTP alternativo
 MAIL_HOST_ALT = os.getenv("MAIL_HOST_ALT")
@@ -68,15 +71,13 @@ def send_email_daily_forms(user_email: str, user_name: str, forms: List[Dict]) -
                 </table>
 
                 <p style="margin-top: 20px;">Le solicitamos que complete estos formularios a la brevedad.</p>
+                                        <hr style="margin: 30px 0;">
+                        <p style="font-size: 13px; color: #888;">Enviado el <strong>{current_date}</strong></p>
             </td>
         </tr>
     </table>
 
-    <br>
-
-
-
-    <p style="font-size: 12px;"><strong>{current_date}</strong></p>
+    
 
 </body>
 </html>
@@ -99,4 +100,82 @@ def send_email_daily_forms(user_email: str, user_name: str, forms: List[Dict]) -
 
     except Exception as e:
         print(f"❌ Error al enviar el correo a {user_email}: {str(e)}")
+        return False
+
+
+from datetime import datetime
+
+def send_email_with_attachment(
+    to_email: str,
+    name_form: str,
+    to_name: str,
+    upload_file: UploadFile,
+) -> bool:
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = "📎 Respuestas adjuntas - Isometría"
+        msg["From"] = formataddr(("SFI SAS", MAIL_FROM_ADDRESS_ALT))
+        msg["To"] = formataddr((to_name, to_email))
+
+        current_date = datetime.now().strftime("%d/%m/%Y")
+
+        # HTML elegante con name_form
+        html_content = f"""
+        <html>
+        <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="font-family: Arial, sans-serif; font-size: 16px; text-align: center; padding: 40px; background-color: #f4f4f4;">
+
+            <table align="center" style="width: 100%; max-width: 520px; background-color: white; border-radius: 12px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); padding: 25px;">
+                <tr>
+                    <td align="center">
+                        <h2 style="color: #00498C;">📋 Respuestas de formulario</h2>
+                        
+                        <p>Se adjunta el archivo que contiene las respuestas proporcionadas por el usuario <strong>{to_name}</strong> correspondientes al formulario <strong>“{name_form}”</strong>.</p>
+                        <p>Por favor, revise el documento adjunto.</p>
+
+                        <hr style="margin: 30px 0;">
+                        <p style="font-size: 13px; color: #888;">Enviado el <strong>{current_date}</strong></p>
+                    </td>
+                </tr>
+            </table>
+
+        </body>
+        </html>
+        """
+
+        # Texto alternativo por si el correo no soporta HTML
+        msg.set_content(
+            f"Estimado/a {to_name},\n\nAdjunto encontrará el archivo con las respuestas del formulario \"{name_form}\"."
+        )
+
+        msg.add_alternative(html_content, subtype="html")
+
+        # Adjuntar archivo tal cual fue subido
+        upload_file.file.seek(0)
+        file_data = upload_file.file.read()
+
+        mime_type, _ = mimetypes.guess_type(upload_file.filename)
+        maintype, subtype = ("application", "octet-stream")
+        if mime_type:
+            maintype, subtype = mime_type.split("/")
+
+        msg.add_attachment(
+            file_data,
+            maintype=maintype,
+            subtype=subtype,
+            filename=upload_file.filename
+        )
+
+        # Envío del correo
+        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
+            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
+            smtp.send_message(msg)
+
+        print(f"✅ Archivo enviado a {to_email}")
+        return True
+
+    except Exception as e:
+        print(f"❌ Error al enviar archivo a {to_email}: {str(e)}")
         return False

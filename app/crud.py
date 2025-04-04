@@ -1,13 +1,17 @@
 import json
+import os
 from sqlalchemy import exists, func, not_, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
-from app.api.controllers.mail import send_email_daily_forms
+from app.api.controllers.mail import send_email_daily_forms, send_email_with_attachment
 from app.models import  FormAnswer, FormModerators, FormSchedule, Project, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import FormAnswerCreate, FormBaseUser, ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate
 from fastapi import HTTPException, UploadFile, status
 from typing import List
 from datetime import datetime
+
+import os
+
 
 
 def generate_nickname(name: str) -> str:
@@ -837,3 +841,36 @@ def get_schedules_by_day(db: Session, day: str) -> List[dict]:
         for schedule in schedules
         if schedule.repeat_days and day in json.loads(schedule.repeat_days)
     ]
+
+def prepare_and_send_file_to_emails(
+    file: UploadFile,
+    emails: List[str],
+    name_form: str,
+    id_user: int,
+    db: Session  # Asegúrate de pasar la sesión desde el endpoint
+) -> dict:
+    success_emails = []
+    failed_emails = []
+
+    # Buscar al usuario
+    user = db.query(User).filter(User.id == id_user).first()
+    user_name = user.name if user else "Usuario"
+
+    for email in emails:
+        result = send_email_with_attachment(
+            to_email=email,
+            name_form=name_form,
+            to_name=user_name,
+            upload_file=file,
+        )
+        if result:
+            success_emails.append(email)
+        else:
+            failed_emails.append(email)
+
+        file.file.seek(0)
+
+    return {
+        "success": success_emails,
+        "failed": failed_emails
+    }
