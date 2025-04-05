@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
 from app.models import User, UserType
-from app.crud import create_user, fetch_all_users, get_user, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users
-from app.schemas import UserCreate, UserResponse, UserUpdate
+from app.crud import create_user, fetch_all_users, get_user, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
+from app.schemas import UserCreate, UserResponse, UserUpdate, UserUpdateInfo
 from app.core.security import get_current_user, hash_password
 
 router = APIRouter()
@@ -122,3 +122,14 @@ async def send_file_to_emails(
 
     result = prepare_and_send_file_to_emails(file, emails,name_form, current_user.id,db )
     return JSONResponse(content=result)
+
+
+
+@router.put("/info/update-profile")
+def update_user_info(
+    update_data: UserUpdateInfo,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    result = update_user_info_in_db(db, current_user, update_data)
+    return result

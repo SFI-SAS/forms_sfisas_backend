@@ -3,6 +3,7 @@ import os
 import uuid
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
+from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 from typing import List
 from app.crud import create_answer_in_db, post_create_response
@@ -85,3 +86,15 @@ async def download_file(file_name: str, current_user: User = Depends(get_current
             return FileResponse(path=file_path, filename=file_name, media_type='application/octet-stream')
         else:
             raise HTTPException(status_code=404, detail="File not found")
+
+
+@router.get("/db/columns/{table_name}")
+def get_table_columns(table_name: str, db: Session = Depends(get_db)):
+    inspector = inspect(db.bind)
+    try:
+        columns = inspector.get_columns(table_name)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Tabla '{table_name}' no encontrada")
+
+    column_names = [col["name"] for col in columns if col["name"] != "created_at"]
+    return {"columns": column_names}

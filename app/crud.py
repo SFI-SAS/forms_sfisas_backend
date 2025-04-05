@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from app.api.controllers.mail import send_email_daily_forms, send_email_with_attachment
 from app.models import  FormAnswer, FormModerators, FormSchedule, Project, User, Form, Question, Option, Response, Answer, FormQuestion
-from app.schemas import FormAnswerCreate, FormBaseUser, ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate
+from app.schemas import FormAnswerCreate, FormBaseUser, ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import List
 from datetime import datetime
@@ -892,4 +892,42 @@ def prepare_and_send_file_to_emails(
     return {
         "success": success_emails,
         "failed": failed_emails
+    }
+
+
+def update_user_info_in_db(db: Session, user: User, update_data: UserUpdateInfo):
+    # Validar email duplicado (si cambió)
+    if update_data.email != user.email:
+        if db.query(User).filter(User.email == update_data.email, User.id != user.id).first():
+            raise HTTPException(status_code=400, detail="Email ya está en uso por otro usuario")
+        email_changed = True
+    else:
+        email_changed = False
+
+    # Validar teléfono duplicado (si cambió)
+    if update_data.telephone != user.telephone:
+        if db.query(User).filter(User.telephone == update_data.telephone, User.id != user.id).first():
+            raise HTTPException(status_code=400, detail="Teléfono ya está en uso por otro usuario")
+
+    # Actualizar campos
+    user.email = update_data.email
+    user.name = update_data.name
+    user.num_document = update_data.num_document
+    user.telephone = update_data.telephone
+
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": "Información actualizada exitosamente",
+        "email_changed": email_changed,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "num_document": user.num_document,
+            "telephone": user.telephone,
+            "nickname": user.nickname,
+            "user_type": user.user_type
+        }
     }
