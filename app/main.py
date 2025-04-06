@@ -37,7 +37,7 @@ def read_root():
 
 
 DIAS_SEMANA = {
-    "monday": "l    unes",
+    "monday": "lunes",
     "tuesday": "martes",
     "wednesday": "miercoles",
     "thursday": "jueves",

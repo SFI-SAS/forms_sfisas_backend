@@ -49,7 +49,6 @@ class Form(Base):
     user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
     title = Column(String(255), nullable=False)
     description = Column(String(255), nullable=True)
-    is_root = Column(Boolean, nullable=False, default=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
     # Relaciones
@@ -67,7 +66,7 @@ class Question(Base):
     question_text = Column(String(255), nullable=False)
     question_type = Column(Enum(QuestionType), server_default=QuestionType.text.name, nullable=False)
     required = Column(Boolean, nullable=False, server_default=text("1"))  # Solución aquí
-    default = Column(Boolean, nullable=False, server_default=text("0"))
+    root = Column(Boolean, nullable=False, server_default=text("0"))
 
 
     forms = relationship('Form', secondary='form_questions', back_populates='questions')
@@ -168,11 +167,14 @@ class FormAnswer(Base):
 
 
 
+
 class QuestionTableRelation(Base):
     __tablename__ = 'question_table_relations'
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=False, unique=True)
+    related_question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=True)
     name_table = Column(String(255), nullable=False)
+    question = relationship('Question', foreign_keys=[question_id], backref='table_relation', uselist=False)
 
-    question = relationship('Question', backref='table_relation', uselist=False)
+    related_question = relationship('Question', foreign_keys=[related_question_id], backref='related_table_relations', uselist=False)

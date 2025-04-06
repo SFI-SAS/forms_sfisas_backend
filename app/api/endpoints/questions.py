@@ -156,7 +156,8 @@ def create_question_table_relation(
     relation = create_question_table_relation_logic(
         db=db,
         question_id=relation_data.question_id,
-        name_table=relation_data.name_table
+        name_table=relation_data.name_table,
+        related_question_id=relation_data.related_question_id
     )
 
     return {
@@ -164,6 +165,7 @@ def create_question_table_relation(
         "data": {
             "id": relation.id,
             "question_id": relation.question_id,
+            "related_question_id": relation.related_question_id,
             "name_table": relation.name_table
         }
     }

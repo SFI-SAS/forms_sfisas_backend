@@ -7,7 +7,7 @@ from app.api.controllers.mail import send_email_daily_forms, send_email_with_att
 from app.models import  FormAnswer, FormModerators, FormSchedule, Project, QuestionTableRelation, QuestionType, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import FormAnswerCreate, FormBaseUser, ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 
 import os
@@ -84,7 +84,6 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             user_id=user_id,
             title=form.title,
             description=form.description,
-            is_root= form.is_root,
             created_at=datetime.utcnow()
             
         )
@@ -137,7 +136,7 @@ def create_question(db: Session, question: QuestionCreate):
             question_text=question.question_text,
             question_type=question.question_type,
             required=question.required, 
-            default=question.default
+            root=question.root
             
         )
         db.add(db_question)
@@ -723,13 +722,13 @@ def remove_moderator_from_form(form_id: int, user_id: int, db: Session):
     return {"message": "Moderador eliminado del formulario correctamente"}
 
 def get_filtered_questions(db: Session, id_user: int):
-    """Obtiene preguntas con default=True, sus respuestas únicas con sus IDs y formularios asignados al usuario con is_root=False"""
+    """Obtiene preguntas con root=True, sus respuestas únicas con sus IDs y formularios asignados al usuario con is_root=False"""
 
-    # Obtener preguntas con default=True
-    default_questions = db.query(Question).filter(Question.default == True).all()
+    # Obtener preguntas con root=True
+    root_questions = db.query(Question).filter(Question.root == True).all()
 
     # Obtener respuestas únicas para esas preguntas
-    question_ids = [q.id for q in default_questions]
+    question_ids = [q.id for q in root_questions]
 
     if not question_ids:
         return {"default_questions": [], "answers": [], "non_root_forms": []}
@@ -757,7 +756,7 @@ def get_filtered_questions(db: Session, id_user: int):
         answers_dict[question_id].append({"id": answer_id, "text": answer_text})
 
     return {
-        "default_questions": [{"id": q.id, "text": q.question_text} for q in default_questions],
+        "default_questions": [{"id": q.id, "text": q.question_text} for q in root_questions],
         "answers": answers_dict,
         "non_root_forms": [
             {"id": f.id, "title": f.title, "description": f.description} for f in non_root_forms
@@ -934,13 +933,25 @@ def update_user_info_in_db(db: Session, user: User, update_data: UserUpdateInfo)
 
 
 
-def create_question_table_relation_logic(db: Session, question_id: int, name_table: str) -> QuestionTableRelation:
-    # Verificar si la pregunta existe
+def create_question_table_relation_logic(
+    db: Session,
+    question_id: int,
+    name_table: str,
+    related_question_id: Optional[int] = None
+) -> QuestionTableRelation:
+    
+    # Verificar si la pregunta principal existe
     question = db.query(Question).filter(Question.id == question_id).first()
     if not question:
         raise HTTPException(status_code=404, detail="Question not found")
 
-    # Verificar si ya existe
+    # Si viene la relacionada, verificar que exista
+    if related_question_id:
+        related_question = db.query(Question).filter(Question.id == related_question_id).first()
+        if not related_question:
+            raise HTTPException(status_code=404, detail="Related question not found")
+
+    # Verificar si ya existe relación para esa pregunta
     existing_relation = db.query(QuestionTableRelation).filter(
         QuestionTableRelation.question_id == question_id
     ).first()
@@ -951,7 +962,8 @@ def create_question_table_relation_logic(db: Session, question_id: int, name_tab
     # Crear la nueva relación
     new_relation = QuestionTableRelation(
         question_id=question_id,
-        name_table=name_table
+        name_table=name_table,
+        related_question_id=related_question_id
     )
 
     db.add(new_relation)

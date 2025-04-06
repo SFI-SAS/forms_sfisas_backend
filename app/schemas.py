@@ -55,7 +55,7 @@ class QuestionBase(BaseModel):
     question_text: str = Field(..., example="What is your favorite color?")
     question_type: str = Field(..., example="multiple_choice")
     required: bool = Field(..., example=True) 
-    default:bool =  Field(..., example=True) 
+    root:bool =  Field(..., example=True) 
 
 class QuestionCreate(QuestionBase):
     pass # Allow creation without assignment
@@ -89,14 +89,13 @@ class FormBaseUser(BaseModel):
     title: str = Field(..., example="Survey Form")
     description: Optional[str] = Field(None, example="This is a survey form description.")
     assign_user: List[int]  
-    is_root:bool =  Field(..., example=True) 
+
 
 class FormBaseUserCreate(BaseModel):
    
     title: str = Field(..., example="Survey Form")
     description: Optional[str] = Field(None, example="This is a survey form description.")
     assign_user: List[int]
-    is_root:bool =  Field(..., example=True) 
     mode: Literal["online", "offline"]  
 
     
@@ -206,3 +205,4 @@ class UserUpdateInfo(BaseModel):
 class QuestionTableRelationCreate(BaseModel):
     question_id: int
     name_table: str
+    related_question_id: Optional[int] = None
