@@ -971,3 +971,53 @@ def create_question_table_relation_logic(
     db.refresh(new_relation)
 
     return new_relation
+
+
+
+def get_related_answers_logic(db: Session, question_id: int):
+    # Verificar si existe una relación para la pregunta
+    relation = db.query(QuestionTableRelation).filter_by(question_id=question_id).first()
+    if not relation:
+        raise HTTPException(status_code=404, detail="No relation found for this question")
+
+    # Si tiene related_question_id, buscar answers relacionadas
+    if relation.related_question_id:
+        answers = db.query(Answer).filter_by(question_id=relation.related_question_id).all()
+        return {
+            "source": "related_question",
+            "related_question_id": relation.related_question_id,
+            "answers": [
+                {"answer_text": ans.answer_text, "file_path": ans.file_path}
+                for ans in answers
+            ]
+        }
+
+    # Si no tiene related_question_id, buscar en la tabla especificada
+    name_table = relation.name_table
+
+    # Definir tablas válidas
+    valid_tables = {
+        "answers": Answer,
+        "users": User,
+        "forms": Form,
+        "options": Option,
+        # Agrega más modelos si necesitas
+    }
+
+    Model = valid_tables.get(name_table)
+    if not Model:
+        raise HTTPException(status_code=400, detail=f"Table '{name_table}' is not supported")
+
+    # Serializador seguro
+    def serialize(instance):
+        data = instance.__dict__.copy()
+        data.pop("_sa_instance_state", None)
+        data.pop("password", None)  # Evita exponer contraseñas
+        return data
+
+    # Consultar y serializar
+    results = db.query(Model).all()
+    return {
+        "source": name_table,
+        "data": [serialize(r) for r in results]
+    }
