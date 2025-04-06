@@ -196,10 +196,13 @@ class FormAnswerCreate(BaseModel):
     answer_ids: List[int]
     
     
-from pydantic import BaseModel, EmailStr, Field
-
 class UserUpdateInfo(BaseModel):
     email: EmailStr
     name: str = Field(..., min_length=1)
     num_document: str = Field(..., min_length=3)
     telephone: str = Field(..., min_length=7)
+
+
+class QuestionTableRelationCreate(BaseModel):
+    question_id: int
+    name_table: str

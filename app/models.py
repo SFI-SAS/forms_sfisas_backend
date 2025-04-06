@@ -13,11 +13,12 @@ class UserType(enum.Enum):
 
 # Definir ENUM para form_status
 
-    
 class QuestionType(enum.Enum):
     text = "text"
     multiple_choice = "multiple_choice"
     file = "file"
+    table = "table"
+
 
 class Models(Base):
     __abstract__ = True
@@ -166,3 +167,12 @@ class FormAnswer(Base):
     answer = relationship('Answer', back_populates='form_answers')
 
 
+
+class QuestionTableRelation(Base):
+    __tablename__ = 'question_table_relations'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=False, unique=True)
+    name_table = Column(String(255), nullable=False)
+
+    question = relationship('Question', backref='table_relation', uselist=False)

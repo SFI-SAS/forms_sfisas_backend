@@ -3,7 +3,7 @@ import os
 import uuid
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 from typing import List
 from app.crud import create_answer_in_db, post_create_response
@@ -89,12 +89,29 @@ async def download_file(file_name: str, current_user: User = Depends(get_current
 
 
 @router.get("/db/columns/{table_name}")
-def get_table_columns(table_name: str, db: Session = Depends(get_db)):
+def get_table_columns_and_data(table_name: str, db: Session = Depends(get_db)):
     inspector = inspect(db.bind)
+
+    # Verificar existencia de la tabla
     try:
         columns = inspector.get_columns(table_name)
     except Exception:
         raise HTTPException(status_code=404, detail=f"Tabla '{table_name}' no encontrada")
 
     column_names = [col["name"] for col in columns if col["name"] != "created_at"]
-    return {"columns": column_names}
+
+    # Ejecutar query y obtener resultados como diccionarios
+    try:
+        result = db.execute(text(f"SELECT * FROM {table_name}")).mappings().all()
+    except Exception:
+        raise HTTPException(status_code=500, detail="Error al consultar la tabla")
+
+    # Transponer los datos: columna -> [valores]
+    column_data = {col: [] for col in column_names}
+    for row in result:
+        for col in column_names:
+            column_data[col].append(row[col])
+
+    return {
+        "columns": column_data
+    }

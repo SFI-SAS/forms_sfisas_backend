@@ -4,7 +4,7 @@ from sqlalchemy import exists, func, not_, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from app.api.controllers.mail import send_email_daily_forms, send_email_with_attachment
-from app.models import  FormAnswer, FormModerators, FormSchedule, Project, User, Form, Question, Option, Response, Answer, FormQuestion
+from app.models import  FormAnswer, FormModerators, FormSchedule, Project, QuestionTableRelation, QuestionType, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import FormAnswerCreate, FormBaseUser, ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import List
@@ -931,3 +931,31 @@ def update_user_info_in_db(db: Session, user: User, update_data: UserUpdateInfo)
             "user_type": user.user_type
         }
     }
+
+
+
+def create_question_table_relation_logic(db: Session, question_id: int, name_table: str) -> QuestionTableRelation:
+    # Verificar si la pregunta existe
+    question = db.query(Question).filter(Question.id == question_id).first()
+    if not question:
+        raise HTTPException(status_code=404, detail="Question not found")
+
+    # Verificar si ya existe
+    existing_relation = db.query(QuestionTableRelation).filter(
+        QuestionTableRelation.question_id == question_id
+    ).first()
+
+    if existing_relation:
+        raise HTTPException(status_code=400, detail="Relation already exists for this question")
+
+    # Crear la nueva relación
+    new_relation = QuestionTableRelation(
+        question_id=question_id,
+        name_table=name_table
+    )
+
+    db.add(new_relation)
+    db.commit()
+    db.refresh(new_relation)
+
+    return new_relation
