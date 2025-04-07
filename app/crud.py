@@ -973,7 +973,6 @@ def create_question_table_relation_logic(
     return new_relation
 
 
-
 def get_related_answers_logic(db: Session, question_id: int):
     # Verificar si existe una relación para la pregunta
     relation = db.query(QuestionTableRelation).filter_by(question_id=question_id).first()
@@ -984,10 +983,13 @@ def get_related_answers_logic(db: Session, question_id: int):
     if relation.related_question_id:
         answers = db.query(Answer).filter_by(question_id=relation.related_question_id).all()
         return {
-            "source": "related_question",
+            "source": "pregunta_relacionada",
             "related_question_id": relation.related_question_id,
-            "answers": [
-                {"answer_text": ans.answer_text, "file_path": ans.file_path}
+            "respuestas": [
+                {
+                    "id": ans.id,
+                    "respuesta": ans.answer_text
+                }
                 for ans in answers
             ]
         }
@@ -995,29 +997,69 @@ def get_related_answers_logic(db: Session, question_id: int):
     # Si no tiene related_question_id, buscar en la tabla especificada
     name_table = relation.name_table
 
-    # Definir tablas válidas
+    # Modelos válidos
     valid_tables = {
         "answers": Answer,
         "users": User,
         "forms": Form,
         "options": Option,
-        # Agrega más modelos si necesitas
+        # Agrega más modelos si es necesario
+    }
+
+    # Campos permitidos por tabla
+    allowed_fields = {
+        "users": ["num_document", "name", "email", "telephone"],
+        "forms": ["title", "description"],
+        "answers": ["answer_text", "file_path"],
+        "options": ["option_text"],
+    }
+
+    # Traducciones de nombre de tabla
+    table_translations = {
+        "users": "usuarios",
+        "forms": "formularios",
+        "answers": "respuestas",
+        "options": "opciones"
+    }
+
+    # Traducciones de campos
+    field_translations = {
+        "users": {
+            "num_document": "documento",
+            "name": "nombre",
+            "email": "correo",
+            "telephone": "teléfono"
+        },
+        "forms": {
+            "title": "título",
+            "description": "descripción"
+        },
+        "answers": {
+            "answer_text": "respuesta",
+            "file_path": "archivo"
+        },
+        "options": {
+            "option_text": "opción"
+        }
     }
 
     Model = valid_tables.get(name_table)
-    if not Model:
-        raise HTTPException(status_code=400, detail=f"Table '{name_table}' is not supported")
+    fields = allowed_fields.get(name_table)
 
-    # Serializador seguro
+    if not Model or not fields:
+        raise HTTPException(status_code=400, detail=f"Table '{name_table}' is not supported or fields not defined")
+
+    results = db.query(Model).all()
+
+    # Serialización con traducción + id
     def serialize(instance):
-        data = instance.__dict__.copy()
-        data.pop("_sa_instance_state", None)
-        data.pop("password", None)  # Evita exponer contraseñas
+        data = {"id": getattr(instance, "id", None)}
+        for field in fields:
+            translated_field = field_translations.get(name_table, {}).get(field, field)
+            data[translated_field] = getattr(instance, field, None)
         return data
 
-    # Consultar y serializar
-    results = db.query(Model).all()
     return {
-        "source": name_table,
+        "source": table_translations.get(name_table, name_table),
         "data": [serialize(r) for r in results]
     }
