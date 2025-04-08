@@ -89,29 +89,18 @@ async def download_file(file_name: str, current_user: User = Depends(get_current
 
 
 @router.get("/db/columns/{table_name}")
-def get_table_columns_and_data(table_name: str, db: Session = Depends(get_db)):
+def get_table_columns(table_name: str, db: Session = Depends(get_db)):
     inspector = inspect(db.bind)
 
-    # Verificar existencia de la tabla
+    # Verificar existencia de la tabla y obtener columnas
     try:
         columns = inspector.get_columns(table_name)
     except Exception:
         raise HTTPException(status_code=404, detail=f"Tabla '{table_name}' no encontrada")
 
+    # Filtrar columnas (por ejemplo, excluir 'created_at')
     column_names = [col["name"] for col in columns if col["name"] != "created_at"]
 
-    # Ejecutar query y obtener resultados como diccionarios
-    try:
-        result = db.execute(text(f"SELECT * FROM {table_name}")).mappings().all()
-    except Exception:
-        raise HTTPException(status_code=500, detail="Error al consultar la tabla")
-
-    # Transponer los datos: columna -> [valores]
-    column_data = {col: [] for col in column_names}
-    for row in result:
-        for col in column_names:
-            column_data[col].append(row[col])
-
     return {
-        "columns": column_data
+        "columns": column_names
     }

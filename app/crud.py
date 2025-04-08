@@ -937,21 +937,19 @@ def create_question_table_relation_logic(
     db: Session,
     question_id: int,
     name_table: str,
-    related_question_id: Optional[int] = None
+    related_question_id: Optional[int] = None,
+    field_name: Optional[str] = None  # <-- NUEVO
 ) -> QuestionTableRelation:
     
-    # Verificar si la pregunta principal existe
     question = db.query(Question).filter(Question.id == question_id).first()
     if not question:
         raise HTTPException(status_code=404, detail="Question not found")
 
-    # Si viene la relacionada, verificar que exista
     if related_question_id:
         related_question = db.query(Question).filter(Question.id == related_question_id).first()
         if not related_question:
             raise HTTPException(status_code=404, detail="Related question not found")
 
-    # Verificar si ya existe relación para esa pregunta
     existing_relation = db.query(QuestionTableRelation).filter(
         QuestionTableRelation.question_id == question_id
     ).first()
@@ -959,11 +957,12 @@ def create_question_table_relation_logic(
     if existing_relation:
         raise HTTPException(status_code=400, detail="Relation already exists for this question")
 
-    # Crear la nueva relación
+    # Crear relación con field_name incluido
     new_relation = QuestionTableRelation(
         question_id=question_id,
         name_table=name_table,
-        related_question_id=related_question_id
+        related_question_id=related_question_id,
+        field_name=field_name  # <-- INCLUIDO
     )
 
     db.add(new_relation)
@@ -971,6 +970,7 @@ def create_question_table_relation_logic(
     db.refresh(new_relation)
 
     return new_relation
+
 
 
 def get_related_answers_logic(db: Session, question_id: int):
@@ -994,8 +994,9 @@ def get_related_answers_logic(db: Session, question_id: int):
             ]
         }
 
-    # Si no tiene related_question_id, buscar en la tabla especificada
+    # Si no tiene related_question_id, usar tabla y campo especificados
     name_table = relation.name_table
+    field_name = relation.field_name  # Nuevo: nombre del campo a traer
 
     # Modelos válidos
     valid_tables = {
@@ -1006,14 +1007,6 @@ def get_related_answers_logic(db: Session, question_id: int):
         # Agrega más modelos si es necesario
     }
 
-    # Campos permitidos por tabla
-    allowed_fields = {
-        "users": ["num_document", "name", "email", "telephone"],
-        "forms": ["title", "description"],
-        "answers": ["answer_text", "file_path"],
-        "options": ["option_text"],
-    }
-
     # Traducciones de nombre de tabla
     table_translations = {
         "users": "usuarios",
@@ -1022,42 +1015,22 @@ def get_related_answers_logic(db: Session, question_id: int):
         "options": "opciones"
     }
 
-    # Traducciones de campos
-    field_translations = {
-        "users": {
-            "num_document": "documento",
-            "name": "nombre",
-            "email": "correo",
-            "telephone": "teléfono"
-        },
-        "forms": {
-            "title": "título",
-            "description": "descripción"
-        },
-        "answers": {
-            "answer_text": "respuesta",
-            "file_path": "archivo"
-        },
-        "options": {
-            "option_text": "opción"
-        }
-    }
-
     Model = valid_tables.get(name_table)
-    fields = allowed_fields.get(name_table)
+    if not Model:
+        raise HTTPException(status_code=400, detail=f"Table '{name_table}' is not supported")
 
-    if not Model or not fields:
-        raise HTTPException(status_code=400, detail=f"Table '{name_table}' is not supported or fields not defined")
+    # Validar que el campo exista en el modelo
+    if not hasattr(Model, field_name):
+        raise HTTPException(status_code=400, detail=f"Field '{field_name}' does not exist in model '{name_table}'")
 
     results = db.query(Model).all()
 
-    # Serialización con traducción + id
+    # Serialización con id y campo específico
     def serialize(instance):
-        data = {"id": getattr(instance, "id", None)}
-        for field in fields:
-            translated_field = field_translations.get(name_table, {}).get(field, field)
-            data[translated_field] = getattr(instance, field, None)
-        return data
+        return {
+            "id": getattr(instance, "id", None),
+            field_name: getattr(instance, field_name, None)
+        }
 
     return {
         "source": table_translations.get(name_table, name_table),

@@ -18,7 +18,7 @@ class QuestionType(enum.Enum):
     multiple_choice = "multiple_choice"
     file = "file"
     table = "table"
-
+    date = "date"   
 
 class Models(Base):
     __abstract__ = True
@@ -175,6 +175,8 @@ class QuestionTableRelation(Base):
     question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=False, unique=True)
     related_question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=True)
     name_table = Column(String(255), nullable=False)
+    field_name = Column(String(255), nullable=True)
+
     question = relationship('Question', foreign_keys=[question_id], backref='table_relation', uselist=False)
 
     related_question = relationship('Question', foreign_keys=[related_question_id], backref='related_table_relations', uselist=False)
