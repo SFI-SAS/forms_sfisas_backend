@@ -92,15 +92,21 @@ async def download_file(file_name: str, current_user: User = Depends(get_current
 def get_table_columns(table_name: str, db: Session = Depends(get_db)):
     inspector = inspect(db.bind)
 
-    # Verificar existencia de la tabla y obtener columnas
+    # Mapear nombre de tabla en plural a nombre de tabla en base de datos si es necesario
+    special_columns = {
+        "users": ["num_document", "name", "email", "telephone"]
+    }
+
+    # Si la tabla es "users", retornar solo los campos definidos manualmente
+    if table_name in special_columns:
+        return {"columns": special_columns[table_name]}
+
+    # Obtener columnas desde la base de datos
     try:
         columns = inspector.get_columns(table_name)
     except Exception:
         raise HTTPException(status_code=404, detail=f"Tabla '{table_name}' no encontrada")
 
-    # Filtrar columnas (por ejemplo, excluir 'created_at')
     column_names = [col["name"] for col in columns if col["name"] != "created_at"]
 
-    return {
-        "columns": column_names
-    }
+    return {"columns": column_names}

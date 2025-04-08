@@ -987,7 +987,7 @@ def get_related_answers_logic(db: Session, question_id: int):
             "related_question_id": relation.related_question_id,
             "respuestas": [
                 {
-                    "id": ans.id,
+    
                     "respuesta": ans.answer_text
                 }
                 for ans in answers
@@ -1028,7 +1028,6 @@ def get_related_answers_logic(db: Session, question_id: int):
     # Serialización con id y campo específico
     def serialize(instance):
         return {
-            "id": getattr(instance, "id", None),
             field_name: getattr(instance, field_name, None)
         }
 

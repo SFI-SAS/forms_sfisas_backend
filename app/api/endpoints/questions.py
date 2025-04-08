@@ -174,6 +174,11 @@ def create_question_table_relation(
 
     
 @router.get("/question-table-relation/answers/{question_id}")
-def get_related_answers(question_id: int, db: Session = Depends(get_db)):
-
+def get_related_answers(question_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user == None:
+        raise HTTPException(   
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get all questions"
+            )
+    else: 
         return get_related_answers_logic(db, question_id)
