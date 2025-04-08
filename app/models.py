@@ -16,9 +16,11 @@ class UserType(enum.Enum):
 class QuestionType(enum.Enum):
     text = "text"
     multiple_choice = "multiple_choice"
+    one_choice = "one_choice" 
     file = "file"
     table = "table"
-    date = "date"   
+    date = "date"
+
 
 class Models(Base):
     __abstract__ = True
