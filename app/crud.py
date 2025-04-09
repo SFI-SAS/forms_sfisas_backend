@@ -1076,3 +1076,40 @@ def get_questions_and_answers_by_form_id(db: Session, form_id: int):
         "questions": [q.question_text for q in questions],
         "data": data
     }
+
+
+def get_questions_and_answers_by_form_id_and_user(db: Session, form_id: int, user_id: int):
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        return None
+
+    questions = db.query(Question).join(Form.questions).filter(Form.id == form_id).all()
+
+    responses = db.query(Response).filter(Response.form_id == form_id, Response.user_id == user_id)\
+        .options(
+            joinedload(Response.answers).joinedload(Answer.question),
+            joinedload(Response.user)
+        ).all()
+
+    data = []
+    for response in responses:
+        row = {
+            "Nombre": response.user.name,
+            "Documento": response.user.num_document,
+            "Fecha de Envío": response.submitted_at.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        for question in questions:
+            answer_text = ""
+            for answer in response.answers:
+                if answer.question_id == question.id:
+                    answer_text = answer.answer_text or answer.file_path or ""
+                    break
+            row[question.question_text] = answer_text
+        data.append(row)
+
+    return {
+        "form_id": form.id,
+        "form_title": form.title,
+        "questions": [q.question_text for q in questions],
+        "data": data
+    }
