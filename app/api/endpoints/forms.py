@@ -267,7 +267,7 @@ import pandas as pd
 from fastapi.responses import StreamingResponse
 
 
-@router.get("/forms/{form_id}/questions-answers/excel")
+@router.get("/{form_id}/questions-answers/excel")
 def download_questions_answers_excel(form_id: int, db: Session = Depends(get_db)):
     data = get_questions_and_answers_by_form_id(db, form_id)
     if not data:
@@ -284,9 +284,9 @@ def download_questions_answers_excel(form_id: int, db: Session = Depends(get_db)
         headers={"Content-Disposition": f"attachment; filename=Formulario_{form_id}_respuestas.xlsx"}
     )
                                                                                                          
-@router.get("/forms/{form_id}/questions-answers/excel/user/{user_id}")
-def download_user_responses_excel(form_id: int, user_id: int, db: Session = Depends(get_db)):
-    data = get_questions_and_answers_by_form_id_and_user(db, form_id, user_id)
+@router.get("/{form_id}/questions-answers/excel/user")
+def download_user_responses_excel(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    data = get_questions_and_answers_by_form_id_and_user(db, form_id, current_user.id)
     if not data or not data["data"]:
         raise HTTPException(status_code=404, detail="No se encontraron respuestas para este usuario en el formulario")
 
@@ -298,7 +298,7 @@ def download_user_responses_excel(form_id: int, user_id: int, db: Session = Depe
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename=Respuestas_usuario_{user_id}_formulario_{form_id}.xlsx"}
+        headers={"Content-Disposition": f"attachment; filename=Respuestas_usuario_{current_user.id}_formulario_{form_id}.xlsx"}
     )
                                                                                                       
                                                                                                          
