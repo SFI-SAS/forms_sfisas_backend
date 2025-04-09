@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
 from app.models import Answer, Response, User, UserType
-from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_form, get_forms, get_forms_by_user, get_moderated_forms_by_answers, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_answers
+from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_form, get_forms, get_forms_by_user, get_moderated_forms_by_answers, get_questions_and_answers_by_form_id, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_answers
 from app.schemas import FormAnswerCreate, FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormSchema, GetFormBase, QuestionAdd, FormBase
 from app.core.security import get_current_user
 router = APIRouter()
@@ -261,3 +261,49 @@ def get_forms_by_answers(
     """
     forms = get_moderated_forms_by_answers(answer_ids, current_user.id, db)
     return forms
+
+from io import BytesIO
+import pandas as pd
+from fastapi.responses import StreamingResponse
+
+
+@router.get("/forms/{form_id}/questions-answers/excel")
+def download_questions_answers_excel(form_id: int, db: Session = Depends(get_db)):
+    data = get_questions_and_answers_by_form_id(db, form_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+
+    # Encabezados dinámicos
+    questions = data["questions"]
+    headers = ["Nombre", "Documento", "Correo", "Fecha de Envío"]
+    question_map = {}
+    for q in questions:
+        question_map[q.id] = q.question_text
+        headers.append(q.question_text)
+
+    # Crear filas
+    rows = []
+    for user_key, user_info in data["users_data"].items():
+        row = {
+            "Nombre": user_info["name"],
+            "Documento": user_info["num_document"],
+            "Correo": user_info["email"],
+            "Fecha de Envío": user_info["submitted_at"]
+        }
+        user_answers = data["data_by_user"].get(user_key, {})
+        for q in questions:
+            answer = user_answers.get(q.id)
+            row[q.question_text] = answer["answer_text"] if answer else ""
+        rows.append(row)
+
+    # Crear Excel
+    df = pd.DataFrame(rows)
+    output = BytesIO()
+    df.to_excel(output, index=False, sheet_name="Respuestas")
+    output.seek(0)
+
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=Formulario_{form_id}_respuestas.xlsx"}
+    )
