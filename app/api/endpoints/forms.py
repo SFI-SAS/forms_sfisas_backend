@@ -273,31 +273,7 @@ def download_questions_answers_excel(form_id: int, db: Session = Depends(get_db)
     if not data:
         raise HTTPException(status_code=404, detail="Formulario no encontrado")
 
-    # Encabezados dinámicos
-    questions = data["questions"]
-    headers = ["Nombre", "Documento", "Correo", "Fecha de Envío"]
-    question_map = {}
-    for q in questions:
-        question_map[q.id] = q.question_text
-        headers.append(q.question_text)
-
-    # Crear filas
-    rows = []
-    for user_key, user_info in data["users_data"].items():
-        row = {
-            "Nombre": user_info["name"],
-            "Documento": user_info["num_document"],
-            "Correo": user_info["email"],
-            "Fecha de Envío": user_info["submitted_at"]
-        }
-        user_answers = data["data_by_user"].get(user_key, {})
-        for q in questions:
-            answer = user_answers.get(q.id)
-            row[q.question_text] = answer["answer_text"] if answer else ""
-        rows.append(row)
-
-    # Crear Excel
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(data["data"])
     output = BytesIO()
     df.to_excel(output, index=False, sheet_name="Respuestas")
     output.seek(0)
@@ -307,3 +283,4 @@ def download_questions_answers_excel(form_id: int, db: Session = Depends(get_db)
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=Formulario_{form_id}_respuestas.xlsx"}
     )
+                                                                                                         

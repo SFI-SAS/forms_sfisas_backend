@@ -1038,46 +1038,41 @@ def get_related_answers_logic(db: Session, question_id: int):
 
 
 def get_questions_and_answers_by_form_id(db: Session, form_id: int):
-    from app.models import Form, Question, Response, Answer, User
-
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         return None
 
+    # Traer preguntas relacionadas al formulario
     questions = db.query(Question).join(Form.questions).filter(Form.id == form_id).all()
 
+    # Traer respuestas, con usuario y respuestas anidadas
     responses = db.query(Response).filter(Response.form_id == form_id)\
-        .options(joinedload(Response.answers).joinedload(Answer.question),
-                 joinedload(Response.user))\
-        .all()
+        .options(
+            joinedload(Response.answers).joinedload(Answer.question),
+            joinedload(Response.user)
+        ).all()
 
-    users_data = {}
-    data_by_user = {}
-
+    # Preparar data para el Excel
+    data = []
     for response in responses:
-        user = response.user
-        user_key = f"{user.id}"
-        users_data[user_key] = {
-            "user_id": user.id,
-            "name": user.name,
-            "num_document": user.num_document,
-            "email": user.email,
-            "submitted_at": response.submitted_at
+        row = {
+            "Nombre": response.user.name,
+            "Documento": response.user.num_document,
+            "Fecha de Envío": response.submitted_at.strftime("%Y-%m-%d %H:%M:%S")
         }
-
-        if user_key not in data_by_user:
-            data_by_user[user_key] = {}
-
-        for answer in response.answers:
-            data_by_user[user_key][answer.question_id] = {
-                "answer_text": answer.answer_text,
-                "file_path": answer.file_path
-            }
+        for question in questions:
+            # Buscar respuesta de esta pregunta
+            answer_text = ""
+            for answer in response.answers:
+                if answer.question_id == question.id:
+                    answer_text = answer.answer_text or answer.file_path or ""
+                    break
+            row[question.question_text] = answer_text
+        data.append(row)
 
     return {
         "form_id": form.id,
         "form_title": form.title,
-        "questions": questions,
-        "users_data": users_data,
-        "data_by_user": data_by_user
+        "questions": [q.question_text for q in questions],
+        "data": data
     }
