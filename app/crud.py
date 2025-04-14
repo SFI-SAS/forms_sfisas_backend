@@ -403,22 +403,17 @@ def create_answer_in_db(answer, db: Session):
         Answer.question_id == answer.question_id
     ).first()
 
-    if existing_answer:
-        # Actualizar la respuesta existente
-        existing_answer.answer_text = answer.answer_text
-        existing_answer.file_path = answer.file_path
-        message = "Respuesta actualizada exitosamente"
-    else:
-        # Crear una nueva respuesta si no existe
-        new_answer = Answer(
+
+    new_answer = Answer(
             response_id=answer.response_id,
             question_id=answer.question_id,
             answer_text=answer.answer_text,
             file_path=answer.file_path
         )
-        db.add(new_answer)
-        existing_answer = new_answer
-        message = "Respuesta guardada exitosamente"
+    print(new_answer.response_id)
+    db.add(new_answer)
+    existing_answer = new_answer
+    message = "Respuesta guardada exitosamente"
 
     db.commit()
     db.refresh(existing_answer)
