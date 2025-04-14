@@ -83,13 +83,19 @@ class GetFormBase(BaseModel):
     description: Optional[str] = None
     project_id: int
     created_at: datetime
+    
+    
+class FormatTypeEnum(str, Enum):
+    abierto = "abierto"
+    cerrado = "cerrado"
+    semi_abierto = "semi_abierto"
 
 class FormBaseUser(BaseModel):
    
     title: str = Field(..., example="Survey Form")
     description: Optional[str] = Field(None, example="This is a survey form description.")
     assign_user: List[int]  
-
+    format_type: FormatTypeEnum = Field(..., example="abierto") 
 
 class FormBaseUserCreate(BaseModel):
    

@@ -22,6 +22,12 @@ class QuestionType(enum.Enum):
     date = "date"
 
 
+class FormatType(enum.Enum):
+    abierto = "abierto"
+    cerrado = "cerrado"
+    semi_abierto = "semi_abierto"
+
+
 class Models(Base):
     __abstract__ = True
 
@@ -51,6 +57,8 @@ class Form(Base):
     user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
     title = Column(String(255), nullable=False)
     description = Column(String(255), nullable=True)
+    # format_type = Column(Enum(FormatType), nullable=False, default=FormatType.abierto)
+    # max_responses = Column(Integer, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
     # Relaciones

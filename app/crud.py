@@ -84,8 +84,8 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             user_id=user_id,
             title=form.title,
             description=form.description,
+            format_type=form.format_type,  
             created_at=datetime.utcnow()
-            
         )
 
         # Crear relaciones con FormModerators para los usuarios asignados
@@ -99,11 +99,12 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
         # Crear y devolver la respuesta con la estructura correcta
         response = {
             "id": db_form.id,
-            "user_id": db_form.user_id,  # Asegurar que el user_id del formulario esté presente
+            "user_id": db_form.user_id,
             "title": db_form.title,
             "description": db_form.description,
-            "created_at": db_form.created_at,  # Incluir created_at
-            "assign_user": [moderator.user_id for moderator in db_form.form_moderators]  # Lista de enteros
+            "format_type": db_form.format_type.value,  # ← Añadido
+            "created_at": db_form.created_at,
+            "assign_user": [moderator.user_id for moderator in db_form.form_moderators]
         }
 
         return response
@@ -120,7 +121,7 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno del servidor: {str(e)}"
         )
-
+        
 def get_form(db: Session, form_id: int):
     return db.query(Form).options(
         joinedload(Form.questions).joinedload(Question.options)  # Cargar preguntas y opciones en una sola consulta
