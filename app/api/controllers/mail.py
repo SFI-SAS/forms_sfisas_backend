@@ -179,3 +179,56 @@ def send_email_with_attachment(
     except Exception as e:
         print(f"❌ Error al enviar archivo a {to_email}: {str(e)}")
         return False
+
+
+
+def send_welcome_email(email: str, name: str, password: str) -> bool:
+    try:
+        current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        msg = EmailMessage()
+        msg["Subject"] = "👋 ¡Bienvenido a Isometría!"
+        msg["From"] = formataddr(("Isometría", MAIL_FROM_ADDRESS_ALT))
+        msg["To"] = formataddr((name, email))
+
+        html_content = f"""
+        <html>
+        <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="font-family: Arial, sans-serif; font-size: 16px; text-align: center; padding: 40px; background-color: #f4f4f4;">
+
+            <table align="center" style="width: 100%; max-width: 520px; background-color: white; border-radius: 12px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); padding: 25px;">
+                <tr>
+                    <td align="center">
+                        <h2 style="color: #00498C;">¡Bienvenido a Isometría, {name}!</h2>
+                        
+                        <p>Tu cuenta ha sido creada con éxito. A continuación, te compartimos tus credenciales de acceso:</p>            
+                        <ul style="list-style: none; padding: 0; text-align: left; display: inline-block;">
+                            <li><strong>Email:</strong> {email}</li>
+                            <li><strong>Contraseña:</strong> {password}</li>
+                        </ul>
+
+
+                        <hr style="margin: 30px 0;">
+                        <p style="font-size: 13px; color: #888;">Enviado el <strong>{current_date}</strong></p>
+                    </td>
+                </tr>
+            </table>
+
+        </body>
+        </html>
+        """
+
+        msg.set_content(html_content, subtype="html")
+
+        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
+            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
+            smtp.send_message(msg)
+
+        print(f"📧 Correo de bienvenida enviado exitosamente a {email}.")
+        return True
+
+    except Exception as e:
+        print(f"❌ Error al enviar el correo de bienvenida a {email}: {str(e)}")
+        return False

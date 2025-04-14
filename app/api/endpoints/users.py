@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
 from app.models import User, UserType
-from app.crud import create_user, fetch_all_users, get_user, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
-from app.schemas import UserCreate, UserResponse, UserUpdate, UserUpdateInfo
+from app.crud import create_user, create_user_with_random_password, fetch_all_users, get_user, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
+from app.schemas import UserBaseCreate, UserCreate, UserResponse, UserUpdate, UserUpdateInfo
 from app.core.security import get_current_user, hash_password
 
 router = APIRouter()
@@ -133,3 +133,12 @@ def update_user_info(
 ):
     result = update_user_info_in_db(db, current_user, update_data)
     return result
+
+
+
+@router.post("/auto", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+def create_user_auto_password(
+    user: UserBaseCreate,
+    db: Session = Depends(get_db),
+):
+    return create_user_with_random_password(db, user)

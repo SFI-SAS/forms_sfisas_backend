@@ -3,15 +3,17 @@ import os
 from sqlalchemy import exists, func, not_, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
-from app.api.controllers.mail import send_email_daily_forms, send_email_with_attachment
+from app.api.controllers.mail import send_email_daily_forms, send_email_with_attachment, send_welcome_email
+from app.core.security import hash_password
 from app.models import  FormAnswer, FormModerators, FormSchedule, Project, QuestionTableRelation, QuestionType, User, Form, Question, Option, Response, Answer, FormQuestion
-from app.schemas import FormAnswerCreate, FormBaseUser, ProjectCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
+from app.schemas import FormAnswerCreate, FormBaseUser, ProjectCreate, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import List, Optional
 from datetime import datetime
 
 import os
-
+import secrets
+import string
 
 
 def generate_nickname(name: str) -> str:
@@ -1114,3 +1116,46 @@ def get_questions_and_answers_by_form_id_and_user(db: Session, form_id: int, use
         "questions": [q.question_text for q in questions],
         "data": data
     }
+def generate_random_password(length=10):
+    chars = string.ascii_letters + string.digits + "!@#$%^&*"
+    return ''.join(secrets.choice(chars) for _ in range(length))
+
+def create_user_with_random_password(db: Session, user: UserBaseCreate) -> User:
+    password = generate_random_password()
+    hashed = hash_password(password)
+
+    user_data = UserCreate(
+        num_document=user.num_document,
+        name=user.name,
+        email=user.email,
+        telephone=user.telephone,
+        password=hashed,
+    )
+
+    nickname = generate_nickname(user.name)
+
+    db_user = User(
+        num_document=user_data.num_document,
+        name=user_data.name,
+        email=user_data.email,
+        telephone=user_data.telephone,
+        password=user_data.password,
+        nickname=nickname
+    )
+
+    try:
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+
+        # Enviar correo con contraseña generada
+        send_welcome_email(db_user.email, db_user.name, password)
+
+        return db_user
+
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )

@@ -213,3 +213,10 @@ class QuestionTableRelationCreate(BaseModel):
     name_table: str
     related_question_id: Optional[int] = None
     field_name: Optional[str] = None 
+    
+    
+class UserBaseCreate(BaseModel):
+    num_document: str
+    name: str
+    email: EmailStr
+    telephone: str
