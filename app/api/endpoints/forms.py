@@ -39,12 +39,13 @@ def add_questions_to_form_endpoint(
         )
     return add_questions_to_form(db, form_id, questions.question_ids)
 
-@router.get("/{form_id}", response_model=FormResponse)
+@router.get("/{form_id}")
 def get_form_endpoint(
     form_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):   
-    form = get_form(db, form_id)
+    form = get_form(db, form_id, current_user.id)
     if not form:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Form not found")
     return form

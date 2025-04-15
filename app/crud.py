@@ -124,10 +124,23 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             detail=f"Error interno del servidor: {str(e)}"
         )
         
-def get_form(db: Session, form_id: int):
-    return db.query(Form).options(
-        joinedload(Form.questions).joinedload(Question.options)  # Cargar preguntas y opciones en una sola consulta
+def get_form(db: Session, form_id: int, user_id: int):
+    form = db.query(Form).options(
+        joinedload(Form.questions).joinedload(Question.options),
+        joinedload(Form.responses).joinedload(Response.answers)
     ).filter(Form.id == form_id).first()
+
+    if not form:
+        return None
+
+    if form.format_type.name in ['abierto', 'semi_abierto']:
+        form.responses = [resp for resp in form.responses if resp.user_id == user_id]
+    else:
+        form.responses = []  
+
+    return form
+
+
 
 def get_forms(db: Session, skip: int = 0, limit: int = 10):
     return db.query(Form).offset(skip).limit(limit).all()
