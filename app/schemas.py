@@ -220,3 +220,7 @@ class UserBaseCreate(BaseModel):
     name: str
     email: EmailStr
     telephone: str
+    
+class UpdateAnswerText(BaseModel):
+    id: int
+    answer_text: str

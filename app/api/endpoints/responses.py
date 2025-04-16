@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 from typing import List
 from app.crud import create_answer_in_db, post_create_response
 from app.database import get_db
-from app.schemas import PostCreate
-from app.models import User, UserType
+from app.schemas import PostCreate, UpdateAnswerText
+from app.models import Answer, User, UserType
 from app.core.security import get_current_user
 
 
@@ -110,3 +110,23 @@ def get_table_columns(table_name: str, db: Session = Depends(get_db)):
     column_names = [col["name"] for col in columns if col["name"] != "created_at"]
 
     return {"columns": column_names}
+
+
+@router.put("/answers/update-answer-text")
+def update_answer_text(payload: UpdateAnswerText, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user == None:
+        raise HTTPException(   
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get all questions"
+            )
+    else: 
+        answer = db.query(Answer).filter(Answer.id == payload.id).first()
+
+        if not answer:
+            raise HTTPException(status_code=404, detail="Respuesta no encontrada")
+
+        answer.answer_text = payload.answer_text
+        db.commit()
+        db.refresh(answer)
+
+        return {"message": "Respuesta actualiszada correctamente", "answer_id": answer.id}

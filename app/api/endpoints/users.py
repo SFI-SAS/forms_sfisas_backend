@@ -2,9 +2,10 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import List
+from app import models
 from app.database import get_db
 from app.models import User, UserType
-from app.crud import create_user, create_user_with_random_password, fetch_all_users, get_user, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
+from app.crud import create_user, create_user_with_random_password, fetch_all_users, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
 from app.schemas import UserBaseCreate, UserCreate, UserResponse, UserUpdate, UserUpdateInfo
 from app.core.security import get_current_user, hash_password
 
@@ -142,3 +143,39 @@ def create_user_auto_password(
     db: Session = Depends(get_db),
 ):
     return create_user_with_random_password(db, user)
+
+@router.put("/users/update_user_type")
+async def update_user_type(
+    num_document: str, 
+    user_type: str, 
+    db: Session = Depends(get_db), 
+    current_user: models.User = Depends(get_current_user)
+):
+    # Verificar si el número de documento del usuario a actualizar es el mismo que el del current_user
+    if num_document == current_user.num_document:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Admin cannot update their own user type."
+        )
+    
+    # Verificar permisos de administrador
+    if current_user.user_type.name != models.UserType.admin.name:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to update user types"
+        )
+    
+    # Validar que el tipo de usuario sea válido
+    if user_type not in [item.value for item in models.UserType]:
+        raise HTTPException(status_code=400, detail="Invalid user type")
+    
+    # Buscar el usuario en la base de datos por su número de documento
+    user = get_user_by_document(db, num_document)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Actualizar el tipo de usuario
+    user.user_type = user_type
+    db.commit()
+    
+    return {"message": f"User type for {num_document} updated successfully", "user_type": user.user_type}
