@@ -170,12 +170,11 @@ class FormAnswer(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=False)
     answer_id = Column(BigInteger, ForeignKey('answers.id'), nullable=False)
+    is_repeated = Column(Boolean, default=False, nullable=False)  # Nuevo campo
 
     # Relaciones
     form = relationship('Form', back_populates='form_answers')
     answer = relationship('Answer', back_populates='form_answers')
-
-
 
 
 class QuestionTableRelation(Base):

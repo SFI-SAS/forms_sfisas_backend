@@ -196,10 +196,7 @@ class AnswerSchema(BaseModel):
     file_path: Optional[str]
 
 
-class FormAnswerCreate(BaseModel):
-    form_id: int
-    answer_ids: List[int]
-    
+
     
 class UserUpdateInfo(BaseModel):
     email: EmailStr
@@ -224,3 +221,9 @@ class UserBaseCreate(BaseModel):
 class UpdateAnswerText(BaseModel):
     id: int
     answer_text: str
+    
+    
+class FormAnswerCreate(BaseModel):
+    form_id: int
+    answer_id: int
+    is_repeated: bool = False
