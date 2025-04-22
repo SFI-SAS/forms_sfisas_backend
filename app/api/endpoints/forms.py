@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
 from app.models import Answer, FormAnswer, Response, User, UserType
-from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_form, get_forms, get_forms_by_user, get_moderated_forms_by_answers, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_answers
+from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_form, get_forms, get_forms_by_user, get_moderated_forms_by_answers, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form
 from app.schemas import FormAnswerCreate, FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormSchema, GetFormBase, QuestionAdd, FormBase
 from app.core.security import get_current_user
 router = APIRouter()
@@ -244,7 +244,7 @@ def delete_moderator_from_form(form_id: int, user_id: int, db: Session = Depends
 def create_form_answer(payload: FormAnswerCreate, db: Session = Depends(get_db)):
     form_answer = FormAnswer(
         form_id=payload.form_id,
-        answer_id=payload.answer_id,
+        question_id=payload.question_id,
         is_repeated=payload.is_repeated
     )
     db.add(form_answer)
@@ -255,7 +255,7 @@ def create_form_answer(payload: FormAnswerCreate, db: Session = Depends(get_db))
         "data": {
             "id": form_answer.id,
             "form_id": form_answer.form_id,
-            "answer_id": form_answer.answer_id,
+            "question_id": form_answer.question_id,
             "is_repeated": form_answer.is_repeated
         }
     }

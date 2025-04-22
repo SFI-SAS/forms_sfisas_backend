@@ -225,5 +225,5 @@ class UpdateAnswerText(BaseModel):
     
 class FormAnswerCreate(BaseModel):
     form_id: int
-    answer_id: int
+    question_id: int
     is_repeated: bool = False

@@ -82,6 +82,7 @@ class Question(Base):
     forms = relationship('Form', secondary='form_questions', back_populates='questions')
     options = relationship('Option', back_populates='question')
     answers = relationship('Answer', back_populates='question')
+    form_answers = relationship('FormAnswer', back_populates='question') 
 # Tabla intermedia para la relación muchos a muchos entre Form y Question
 class FormQuestion(Base):
     __tablename__ = 'form_questions'
@@ -128,7 +129,7 @@ class Answer(Base):
 
     response = relationship('Response', back_populates='answers')
     question = relationship('Question', back_populates='answers')
-    form_answers = relationship('FormAnswer', back_populates='answer') 
+
     
 # Modelo Project
 class Project(Base):
@@ -169,12 +170,12 @@ class FormAnswer(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=False)
-    answer_id = Column(BigInteger, ForeignKey('answers.id'), nullable=False)
-    is_repeated = Column(Boolean, default=False, nullable=False)  # Nuevo campo
+    question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=False)
+    is_repeated = Column(Boolean, default=False, nullable=False)
 
     # Relaciones
     form = relationship('Form', back_populates='form_answers')
-    answer = relationship('Answer', back_populates='form_answers')
+    question = relationship('Question', back_populates='form_answers')
 
 
 class QuestionTableRelation(Base):
