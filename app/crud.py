@@ -126,6 +126,7 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
         )
         
 def get_form(db: Session, form_id: int, user_id: int):
+    # Cargar el formulario con sus preguntas y respuestas
     form = db.query(Form).options(
         joinedload(Form.questions).joinedload(Question.options),
         joinedload(Form.responses).joinedload(Response.answers)
@@ -134,12 +135,67 @@ def get_form(db: Session, form_id: int, user_id: int):
     if not form:
         return None
 
+    # Filtrar las respuestas según el tipo de formato del formulario
     if form.format_type.name in ['abierto', 'semi_abierto']:
         form.responses = [resp for resp in form.responses if resp.user_id == user_id]
     else:
         form.responses = []  
 
-    return form
+    # Ahora agregamos is_repeated a cada pregunta
+    for question in form.questions:
+        # Buscar si hay algún registro de FormAnswer relacionado con esta pregunta
+        form_answer = db.query(FormAnswer).filter(
+            FormAnswer.form_id == form_id,
+            FormAnswer.question_id == question.id
+        ).first()
+
+        # Si se encuentra un registro en form_answers, asignamos el valor de is_repeated
+        if form_answer:
+            question.is_repeated = form_answer.is_repeated
+        else:
+            question.is_repeated = False  # Si no se encuentra, asumimos que no es repetido
+
+    # Ahora devolvemos el formulario con las preguntas y el valor de is_repeated
+    form_data = {
+        "id": form.id,
+        "description": form.description,
+        "created_at": form.created_at.isoformat(),
+        "user_id": form.user_id,
+        "title": form.title,
+        "format_type": form.format_type.name,
+        "questions": [
+            {
+                "id": question.id,
+                "required": question.required,
+                "question_text": question.question_text,
+                "question_type": question.question_type,
+                "root": question.root,
+                "options": [
+                    {"id": option.id, "option_text": option.option_text}
+                    for option in question.options
+                ],
+                "is_repeated": getattr(question, 'is_repeated', False)  # Incluir is_repeated en la pregunta
+            }
+            for question in form.questions
+        ],
+        "responses": [
+            {
+                "id": response.id,
+                "user_id": response.user_id,
+                "answers": [
+                    {
+                        "id": answer.id,
+                        "question_id": answer.question_id,
+                        "answer_text": answer.answer_text,
+                    }
+                    for answer in response.answers
+                ]
+            }
+            for response in form.responses
+        ]
+    }
+
+    return form_data
 
 
 

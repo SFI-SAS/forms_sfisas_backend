@@ -108,8 +108,8 @@ class Response(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=False)
     user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
-    mode = Column(String(20), nullable=False)  # "online" o "offline"
-    mode_sequence = Column(Integer, nullable=False)  # contador separado por modo
+    mode = Column(String(20), nullable=False) 
+    mode_sequence = Column(Integer, nullable=False)  
 
     submitted_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
