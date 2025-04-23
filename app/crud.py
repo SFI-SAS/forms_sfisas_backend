@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from app import models
 from app.api.controllers.mail import send_email_daily_forms, send_email_with_attachment, send_welcome_email
 from app.core.security import hash_password
-from app.models import  FormAnswer, FormModerators, FormSchedule, Project, QuestionTableRelation, QuestionType, User, Form, Question, Option, Response, Answer, FormQuestion
+from app.models import  AnswerFileSerial, FormAnswer, FormModerators, FormSchedule, Project, QuestionTableRelation, QuestionType, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import FormBaseUser, ProjectCreate, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import List, Optional
@@ -16,6 +16,7 @@ import os
 import secrets
 import string
 
+import random
 
 def generate_nickname(name: str) -> str:
     parts = name.split()
@@ -1229,3 +1230,11 @@ def create_user_with_random_password(db: Session, user: UserBaseCreate) -> User:
 
 def get_user_by_document(db: Session, num_document: str):
     return db.query(models.User).filter(models.User.num_document == num_document).first()
+
+
+def generate_unique_serial(db: Session, length: int = 5) -> str:
+    while True:
+        serial = ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
+        exists = db.query(AnswerFileSerial).filter(AnswerFileSerial.serial == serial).first()
+        if not exists:
+            return serial

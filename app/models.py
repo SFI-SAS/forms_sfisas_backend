@@ -90,6 +90,7 @@ class FormQuestion(Base):
     form_id = Column(BigInteger, ForeignKey('forms.id'))
     question_id = Column(BigInteger, ForeignKey('questions.id'))
     
+
 # Modelo Options
 class Option(Base):
     __tablename__ = 'options'
@@ -128,6 +129,7 @@ class Answer(Base):
 
     response = relationship('Response', back_populates='answers')
     question = relationship('Question', back_populates='answers')
+    file_serial = relationship('AnswerFileSerial', back_populates='answer', uselist=False, cascade='all, delete-orphan')
 
     
 # Modelo Project
@@ -189,3 +191,14 @@ class QuestionTableRelation(Base):
     question = relationship('Question', foreign_keys=[question_id], backref='table_relation', uselist=False)
 
     related_question = relationship('Question', foreign_keys=[related_question_id], backref='related_table_relations', uselist=False)
+    
+    
+
+class AnswerFileSerial(Base):
+    __tablename__ = 'answer_file_serials'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    serial = Column(String(100), nullable=False)
+    answer_id = Column(BigInteger, ForeignKey('answers.id'), nullable=False)
+
+    answer = relationship('Answer', back_populates='file_serial')

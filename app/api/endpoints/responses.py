@@ -6,10 +6,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 from typing import List
-from app.crud import create_answer_in_db, post_create_response
+from app.crud import create_answer_in_db, generate_unique_serial, post_create_response
 from app.database import get_db
-from app.schemas import PostCreate, UpdateAnswerText
-from app.models import Answer, User, UserType
+from app.schemas import FileSerialCreate, PostCreate, UpdateAnswerText
+from app.models import Answer, AnswerFileSerial, User, UserType
 from app.core.security import get_current_user
 
 
@@ -130,3 +130,29 @@ def update_answer_text(payload: UpdateAnswerText, db: Session = Depends(get_db),
         db.refresh(answer)
 
         return {"message": "Respuesta actualiszada correctamente", "answer_id": answer.id}
+    
+    
+    
+@router.post("/file-serials/")
+def create_file_serial(data: FileSerialCreate, db: Session = Depends(get_db)):
+    # Verificamos si el answer existe
+    answer = db.query(Answer).filter(Answer.id == data.answer_id).first()
+    if not answer:
+        raise HTTPException(status_code=404, detail="Answer not found")
+
+    # Creamos y guardamos el nuevo serial
+    file_serial = AnswerFileSerial(answer_id=data.answer_id, serial=data.serial)
+    db.add(file_serial)
+    db.commit()
+    db.refresh(file_serial)
+
+    return {
+        "message": "Serial saved successfully",
+        "file_serial_id": file_serial.id,
+        "serial": file_serial.serial
+    }
+    
+@router.post("/file-serials/generate")
+def generate_serial(db: Session = Depends(get_db)):
+    serial = generate_unique_serial(db)
+    return {"serial": serial}

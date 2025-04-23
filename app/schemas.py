@@ -227,3 +227,7 @@ class FormAnswerCreate(BaseModel):
     form_id: int
     question_id: int
     is_repeated: bool = False
+    
+class FileSerialCreate(BaseModel):
+    answer_id: int
+    serial: str
