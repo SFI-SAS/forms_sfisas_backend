@@ -44,7 +44,6 @@ class User(Base):
     nickname = Column(String(100), nullable=True)  # Nuevo campo agregado
     password = Column(Text, nullable=False)
     
-    # Relaciones
     form_moderators = relationship('FormModerators', back_populates='user')
     forms = relationship('Form', back_populates='user')
     responses = relationship('Response', back_populates='user')  # Corrige esto si tienes definida la tabla Response
