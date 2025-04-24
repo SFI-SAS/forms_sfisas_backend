@@ -645,27 +645,43 @@ def fetch_completed_forms_by_user(db: Session, user_id: int):
 
 
 def fetch_form_questions(form_id: int, db: Session):
-    """Obtiene las preguntas asociadas y no asociadas a un formulario."""
-    # Obtener todas las preguntas del sistema
+    """Obtiene las preguntas asociadas y no asociadas a un formulario con is_repeated."""
+    # Obtener todas las preguntas
     all_questions = db.query(Question).all()
 
-    # Obtener el formulario y verificar si existe
+    # Obtener el formulario
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Formulario no encontrado")
 
-    # Obtener IDs de las preguntas asociadas al formulario
+    # Obtener IDs de las preguntas asociadas
     associated_questions_ids = {q.id for q in form.questions}
 
-    # Separar preguntas en asociadas y no asociadas
+    # Obtener todos los form_answers relacionados a este form
+    form_answers = db.query(FormAnswer).filter(FormAnswer.form_id == form_id).all()
+    question_id_to_is_repeated = {
+        fa.question_id: fa.is_repeated for fa in form_answers
+    }
+
+    # Separar preguntas asociadas y no asociadas
     associated_questions = [q for q in all_questions if q.id in associated_questions_ids]
     unassociated_questions = [q for q in all_questions if q.id not in associated_questions_ids]
 
+    def serialize_question(q, is_associated=False):
+        return {
+            "id": q.id,
+            "question_text": q.question_text,
+            "question_type": q.question_type.value,
+            "required": q.required,
+            "root": q.root,
+            "is_repeated": question_id_to_is_repeated.get(q.id) if is_associated else None
+        }
+
     return {
-        "associated_questions": associated_questions,
-        "unassociated_questions": unassociated_questions
+        "associated_questions": [serialize_question(q, is_associated=True) for q in associated_questions],
+        "unassociated_questions": [serialize_question(q) for q in unassociated_questions],
     }
-    
+
 
 def link_question_to_form(form_id: int, question_id: int, db: Session):
     """Asocia una pregunta a un formulario en la tabla FormQuestion."""
