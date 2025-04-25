@@ -1254,3 +1254,95 @@ def generate_unique_serial(db: Session, length: int = 5) -> str:
         exists = db.query(AnswerFileSerial).filter(AnswerFileSerial.serial == serial).first()
         if not exists:
             return serial
+        
+def get_form_responses_data(form_id: int, db: Session):
+    form = db.query(Form).options(
+        joinedload(Form.responses)
+        .joinedload(Response.user),  # ← Atributo de clase, no string
+        joinedload(Form.responses)
+        .joinedload(Response.answers)
+        .joinedload(Answer.question),  # ← Encadenamiento correcto
+    ).filter(Form.id == form_id).first()
+
+    if not form:
+        return None
+
+    results = []
+    for response in form.responses:
+        user_info = {
+            "user_id": response.user.id,
+            "name": response.user.name,
+            "email": response.user.email,
+            "num_document": response.user.num_document,
+            "submitted_at": response.submitted_at
+        }
+
+        answers_info = []
+        for answer in response.answers:
+            answers_info.append({
+                "question_id": answer.question.id,
+                "question_text": answer.question.question_text,
+                "question_type": answer.question.question_type,
+                "answer_text": answer.answer_text,
+                "file_path": answer.file_path
+            })
+
+        results.append({
+            "response_id": response.id,
+            "mode": response.mode,
+            "mode_sequence": response.mode_sequence,
+            "user": user_info,
+            "answers": answers_info
+        })
+
+    return {
+        "form_id": form.id,
+        "form_title": form.title,
+        "responses": results
+    }
+    
+def get_user_responses_data(user_id: int, db: Session):
+    user = db.query(User).options(
+        joinedload(User.responses)
+        .joinedload(Response.form),
+        joinedload(User.responses)
+        .joinedload(Response.answers)
+        .joinedload(Answer.question)
+    ).filter(User.id == user_id).first()
+
+    if not user:
+        return None
+
+    results = []
+    for response in user.responses:
+        form_info = {
+            "form_id": response.form.id,
+            "form_title": response.form.title,
+            "form_description": response.form.description
+        }
+
+        answers_info = []
+        for answer in response.answers:
+            answers_info.append({
+                "question_id": answer.question.id,
+                "question_text": answer.question.question_text,
+                "question_type": answer.question.question_type,
+                "answer_text": answer.answer_text,
+                "file_path": answer.file_path
+            })
+
+        results.append({
+            "response_id": response.id,
+            "mode": response.mode,
+            "mode_sequence": response.mode_sequence,
+            "submitted_at": response.submitted_at,
+            "form": form_info,
+            "answers": answers_info
+        })
+
+    return {
+        "user_id": user.id,
+        "user_name": user.name,
+        "email": user.email,
+        "responses": results
+    }
