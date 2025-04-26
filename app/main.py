@@ -9,7 +9,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = FastAPI()
 
-origins = ["https://forms.sfisas.com.co/"]
+origins = ["https://forms.sfisas.com.co"]
 
 app.add_middleware(
     CORSMiddleware,
