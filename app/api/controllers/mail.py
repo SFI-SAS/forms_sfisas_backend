@@ -71,6 +71,10 @@ def send_email_daily_forms(user_email: str, user_name: str, forms: List[Dict]) -
                 </table>
 
                 <p style="margin-top: 20px;">Le solicitamos que complete estos formularios a la brevedad.</p>
+                
+                 <a href="https://forms.sfisas.com.co/" style="color: #007bff; text-decoration: underline;" target="_blank">
+  Ir al Formulario
+</a>
                                         <hr style="margin: 30px 0;">
                         <p style="font-size: 13px; color: #888;">Enviado el <strong>{current_date}</strong></p>
             </td>
