@@ -3,9 +3,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
-from app.models import Answer, FormAnswer, Response, User, UserType
+from app.models import Answer, FormAnswer, FormSchedule, Response, User, UserType
 from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_form, get_form_responses_data, get_forms, get_forms_by_user, get_moderated_forms_by_answers, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form
-from app.schemas import FormAnswerCreate, FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormSchema, GetFormBase, QuestionAdd, FormBase
+from app.schemas import FormAnswerCreate, FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, GetFormBase, QuestionAdd, FormBase
 from app.core.security import get_current_user
 from io import BytesIO
 import pandas as pd
@@ -78,7 +78,10 @@ def register_form_schedule(schedule_data: FormScheduleCreate, db: Session = Depe
         db=db,
         form_id=schedule_data.form_id,
         user_id=schedule_data.user_id,
+        frequency_type=schedule_data.frequency_type,
         repeat_days=schedule_data.repeat_days,
+        interval_days=schedule_data.interval_days,
+        specific_date=schedule_data.specific_date,
         status=schedule_data.status
     )
     
@@ -343,3 +346,22 @@ def download_user_responses_excel(
             "Content-Disposition": f"attachment; filename=Respuestas_usuario_{id_user}_formulario_{form_id}.xlsx"
         }
     )
+
+@router.get("/form-schedules_table/", response_model=List[FormScheduleOut], )
+def get_form_schedules(form_id: int, user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get all questions"
+        )
+    else:
+        schedules = db.query(FormSchedule).filter(
+            FormSchedule.form_id == form_id,
+            FormSchedule.user_id == user_id
+        ).all()
+
+        if not schedules:
+            raise HTTPException(status_code=404, detail="No se encontraron programaciones para ese formulario y usuario.")
+
+        return schedules

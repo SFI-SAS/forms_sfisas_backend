@@ -176,10 +176,22 @@ class PostCreate(BaseModel):
 class FormScheduleCreate(BaseModel):
     form_id: int
     user_id: int
-    repeat_days: List[str]  
+    frequency_type: str  # daily, weekly, monthly, periodic, specific_date
+    repeat_days: Optional[list[str]] = None  # para weekly
+    interval_days: Optional[int] = None      # para periodic
+    specific_date: Optional[datetime] = None # para specific_date
+    status: bool = True
+    
+class FormScheduleOut(BaseModel):
+    id: int
+    form_id: int
+    user_id: int
+    frequency_type: str
+    repeat_days: Optional[str] = None
+    interval_days: Optional[int] = None
+    specific_date: Optional[datetime] = None
     status: bool
-    
-    
+
 class FormSchema(BaseModel):
     id: int
     user_id: int

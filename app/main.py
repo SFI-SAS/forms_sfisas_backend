@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.crud import get_schedules_by_day
+from app.crud import  get_schedules_by_frequency
 from app.database import SessionLocal, engine
 from app.models import Base
 from app.api.endpoints import projects, responses, users, forms, auth, questions
@@ -52,12 +52,9 @@ def daily_schedule_task():
 
     db = SessionLocal()
     try:
-        today_english = datetime.today().strftime('%A').lower()
-        today_spanish = DIAS_SEMANA.get(today_english, "lunes")  # Default a lunes si hay error
-
-        schedules = get_schedules_by_day(db, today_spanish)
+        schedules = get_schedules_by_frequency(db)
         
-        print(f"📆 Registros obtenidos para {today_spanish}: {len(schedules)}")
+        print(f"📆 Registros obtenidos para hoy: {len(schedules)}")
 
         # Aquí podrías llamar a la función que envía correos u otra acción
         # send_reminder_emails(schedules)
@@ -71,6 +68,8 @@ def daily_schedule_task():
 scheduler = BackgroundScheduler()
 scheduler.add_job(daily_schedule_task, "cron", hour=7, minute=0)  # Ejecutar todos los días a las 7:00 AM
 scheduler.start()
+
+
 
 # Detener el scheduler al apagar la app
 @app.on_event("shutdown")

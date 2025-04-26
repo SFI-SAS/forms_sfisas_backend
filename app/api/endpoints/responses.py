@@ -156,3 +156,4 @@ def create_file_serial(data: FileSerialCreate, db: Session = Depends(get_db)):
 def generate_serial(db: Session = Depends(get_db)):
     serial = generate_unique_serial(db)
     return {"serial": serial}
+

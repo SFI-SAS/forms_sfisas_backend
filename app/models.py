@@ -145,10 +145,23 @@ class Project(Base):
 class FormSchedule(Base):
     __tablename__ = 'form_schedules'
 
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=False)
-    user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)  
+    user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
+
+    frequency_type = Column(String(50), nullable=False)  
+    # "daily", "weekly", "monthly", "periodic", "specific_date"
+    
     repeat_days = Column(String(255), nullable=True)  
+    # Para "weekly" -> ejemplo: "monday,wednesday,friday"
+
+    interval_days = Column(Integer, nullable=True)  
+    # Para "periodic" -> cada X días (por ejemplo cada 3 días)
+
+    specific_date = Column(DateTime, nullable=True)  
+    # Para "specific_date" -> fecha exacta
+
     status = Column(Boolean, default=True, nullable=False)
 
 

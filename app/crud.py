@@ -541,13 +541,27 @@ def check_form_data(db: Session, form_id: int):
     return form_data
 
 
-def create_form_schedule(db: Session, form_id: int, user_id: int, repeat_days: list | None, status: bool):
+import json
+
+def create_form_schedule(
+    db: Session, 
+    form_id: int, 
+    user_id: int, 
+    frequency_type: str,
+    repeat_days: list[str] | None, 
+    interval_days: int | None, 
+    specific_date: datetime | None,
+    status: bool
+):
     # Verificar si ya existe un registro con esa combinación
     existing_schedule = db.query(FormSchedule).filter_by(form_id=form_id, user_id=user_id).first()
 
     if existing_schedule:
         # Si existe, actualiza el registro
+        existing_schedule.frequency_type = frequency_type
         existing_schedule.repeat_days = json.dumps(repeat_days) if repeat_days else None
+        existing_schedule.interval_days = interval_days
+        existing_schedule.specific_date = specific_date
         existing_schedule.status = status
         db.commit()
         db.refresh(existing_schedule)
@@ -557,7 +571,10 @@ def create_form_schedule(db: Session, form_id: int, user_id: int, repeat_days: l
         new_schedule = FormSchedule(
             form_id=form_id,
             user_id=user_id,
+            frequency_type=frequency_type,
             repeat_days=json.dumps(repeat_days) if repeat_days else None,
+            interval_days=interval_days,
+            specific_date=specific_date,
             status=status
         )
         db.add(new_schedule)
@@ -893,29 +910,134 @@ def get_moderated_forms_by_answers(answer_ids: List[int], user_id: int, db: Sess
 
     return user_moderated_forms
 
+DIAS_SEMANA = {
+    "monday": "lunes",
+    "tuesday": "martes",
+    "wednesday": "miercoles",
+    "thursday": "jueves",
+    "friday": "viernes",
+    "saturday": "sabado",
+    "sunday": "domingo"
+}
 
-def get_schedules_by_day(db: Session, day: str) -> List[dict]:
+
+def get_schedules_by_frequency(db: Session) -> List[dict]:
     schedules = db.query(FormSchedule).filter(FormSchedule.status == True).all()
     users_forms = {}
+    logs = []  # Lista para almacenar los registros de cumplimiento
+
+    # Obtener la fecha actual
+    today_english = datetime.today().strftime('%A').lower()
+    today_spanish = DIAS_SEMANA.get(today_english, "lunes")  # Default a lunes si hay error
+    today_date = datetime.today().date()
+
+    print(f"\n🗓️  Hoy es (en inglés): {today_english}")
+    print(f"🗓️  Hoy es (en español): {today_spanish}")
+    print(f"📅 Fecha completa: {today_date}\n")
 
     for schedule in schedules:
-        if schedule.repeat_days and day in json.loads(schedule.repeat_days):
+        frequency_type = schedule.frequency_type
+        repeat_days = json.loads(schedule.repeat_days) if schedule.repeat_days else []
+        interval_days = schedule.interval_days
+        specific_date = schedule.specific_date
+
+        print(f"\n🔎 Evaluando programación ID {schedule.id}:")
+        print(f"    - frequency_type: {frequency_type}")
+        print(f"    - repeat_days: {repeat_days}")
+        print(f"    - interval_days: {interval_days}")
+        print(f"    - specific_date: {specific_date}")
+
+        # Lógica según el tipo de frecuencia
+        if frequency_type == "daily":
+            # Enviar todos los días
+            print("➡️  Es daily, se enviará.")
             user = db.query(User).filter(User.id == schedule.user_id).first()
             form = db.query(Form).filter(Form.id == schedule.form_id).first()
-
             if user and form:
                 if user.email not in users_forms:
-                    users_forms[user.email] = {
-                        "user_name": user.name,
-                        "forms": []
-                    }
-
+                    users_forms[user.email] = {"user_name": user.name, "forms": []}
                 users_forms[user.email]["forms"].append({
                     "title": form.title,
                     "description": form.description or "Sin descripción"
                 })
+                logs.append(f"Frecuencia diaria: Correo enviado a {user.email}.")
+            else:
+                logs.append(f"Frecuencia diaria: No se pudo encontrar el usuario o el formulario para el ID de programación {schedule.id}.")
 
-    # Enviar un email a cada usuario con sus formularios
+        elif frequency_type == "weekly":
+            print(f"    Hoy en inglés: {today_english}")
+            print(f"    Revisando si '{today_english}' está en {repeat_days}")
+            if today_english in repeat_days:
+                print("✅ El día coincide, se enviará correo.")
+                user = db.query(User).filter(User.id == schedule.user_id).first()
+                form = db.query(Form).filter(Form.id == schedule.form_id).first()
+                if user and form:
+                    if user.email not in users_forms:
+                        users_forms[user.email] = {"user_name": user.name, "forms": []}
+                    users_forms[user.email]["forms"].append({
+                        "title": form.title,
+                        "description": form.description or "Sin descripción"
+                    })
+                    logs.append(f"Frecuencia semanal: Correo enviado a {user.email} el día {today_english}.")
+                else:
+                    logs.append(f"Frecuencia semanal: No se pudo encontrar el usuario o el formulario para el ID de programación {schedule.id}.")
+            else:
+                print("❌ Hoy no está en repeat_days, no se enviará correo.")
+
+        elif frequency_type == "monthly":
+            if today_date.day == 1:
+                print("➡️  Es el primer día del mes, se enviará.")
+                user = db.query(User).filter(User.id == schedule.user_id).first()
+                form = db.query(Form).filter(Form.id == schedule.form_id).first()
+                if user and form:
+                    if user.email not in users_forms:
+                        users_forms[user.email] = {"user_name": user.name, "forms": []}
+                    users_forms[user.email]["forms"].append({
+                        "title": form.title,
+                        "description": form.description or "Sin descripción"
+                    })
+                    logs.append(f"Frecuencia mensual: Correo enviado a {user.email}.")
+                else:
+                    logs.append(f"Frecuencia mensual: No se pudo encontrar el usuario o el formulario para el ID de programación {schedule.id}.")
+            else:
+                print("🛑 No es el primer día del mes, no se enviará.")
+
+        elif frequency_type == "periodic":
+            if interval_days and today_date.day % interval_days == 0:
+                print("➡️  Cumple el intervalo, se enviará.")
+                user = db.query(User).filter(User.id == schedule.user_id).first()
+                form = db.query(Form).filter(Form.id == schedule.form_id).first()
+                if user and form:
+                    if user.email not in users_forms:
+                        users_forms[user.email] = {"user_name": user.name, "forms": []}
+                    users_forms[user.email]["forms"].append({
+                        "title": form.title,
+                        "description": form.description or "Sin descripción"
+                    })
+                    logs.append(f"Frecuencia periódica: Correo enviado a {user.email} (intervalo {interval_days} días).")
+                else:
+                    logs.append(f"Frecuencia periódica: No se pudo encontrar el usuario o el formulario para el ID de programación {schedule.id}.")
+            else:
+                print("🛑 No cumple el intervalo, no se enviará.")
+
+        elif frequency_type == "specific_date" and specific_date.date() == today_date:
+            print("➡️  Es la fecha específica, se enviará.")
+            user = db.query(User).filter(User.id == schedule.user_id).first()
+            form = db.query(Form).filter(Form.id == schedule.form_id).first()
+            if user and form:
+                if user.email not in users_forms:
+                    users_forms[user.email] = {"user_name": user.name, "forms": []}
+                users_forms[user.email]["forms"].append({
+                    "title": form.title,
+                    "description": form.description or "Sin descripción"
+                })
+                logs.append(f"Frecuencia por fecha específica: Correo enviado a {user.email}.")
+            else:
+                logs.append(f"Frecuencia por fecha específica: No se pudo encontrar el usuario o el formulario para el ID de programación {schedule.id}.")
+        else:
+            print("🛑 No cumple ninguna condición para enviar.")
+
+    # Enviar correos a los usuarios
     for email, data in users_forms.items():
         send_email_daily_forms(
             user_email=email,
@@ -923,28 +1045,13 @@ def get_schedules_by_day(db: Session, day: str) -> List[dict]:
             forms=data["forms"]
         )
 
-    return [
-        {
-            "id": schedule.id,
-            "form": {
-                "id": form.id,
-                "title": form.title,
-                "description": form.description
-            } if form else None,
-            "user": {
-                "id": user.id,
-                "num_document": user.num_document,
-                "name": user.name,
-                "email": user.email,
-                "telephone": user.telephone,
-                "nickname": user.nickname
-            } if user else None,
-            "repeat_days": json.loads(schedule.repeat_days),
-            "status": schedule.status
-        }
-        for schedule in schedules
-        if schedule.repeat_days and day in json.loads(schedule.repeat_days)
-    ]
+    # Imprimir los logs para ver cuál frecuencia se cumplió
+    print("\n🔍 Logs de cumplimiento de frecuencias:")
+    for log in logs:
+        print(log)
+
+    return schedules
+
 
 def prepare_and_send_file_to_emails(
     file: UploadFile,
@@ -1143,7 +1250,6 @@ def get_questions_and_answers_by_form_id(db: Session, form_id: int):
         row = {
             "Nombre": response.user.name,
             "Documento": response.user.num_document,
-            "Fecha de Envío": response.submitted_at.strftime("%Y-%m-%d %H:%M:%S")
         }
         for question in questions:
             # Buscar respuesta de esta pregunta
@@ -1181,8 +1287,8 @@ def get_questions_and_answers_by_form_id_and_user(db: Session, form_id: int, use
         row = {
             "Nombre": response.user.name,
             "Documento": response.user.num_document,
-            "Fecha de Envío": response.submitted_at.strftime("%Y-%m-%d %H:%M:%S")
         }
+
         for question in questions:
             answer_text = ""
             for answer in response.answers:

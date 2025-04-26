@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
 from app.models import User, UserType
-from app.crud import create_question, create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_filtered_questions, get_related_answers_logic, get_schedules_by_day, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
+from app.crud import create_question, create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_filtered_questions, get_related_answers_logic, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
 from app.schemas import AnswerSchema, QuestionCreate, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate
 from app.core.security import get_current_user
 
@@ -126,26 +126,6 @@ def fetch_filtered_questions(db: Session = Depends(get_db), current_user: User =
     else: 
 
         return get_filtered_questions(db, current_user.id)
-
-
-from datetime import datetime
-@router.get("/form_schedules/today/", response_model=List[dict])
-def get_schedules_for_today(db: Session = Depends(get_db)):
-    """Endpoint que devuelve los registros activos para el día actual."""
-    DIAS_SEMANA = {
-        "monday": "lunes",
-        "tuesday": "martes",
-        "wednesday": "miercoles",
-        "thursday": "jueves",
-        "friday": "viernes",
-        "saturday": "sabado",
-        "sunday": "domingo"
-    }
-
-    # Obtener el día de hoy en inglés y convertirlo a español
-    today_english = datetime.today().strftime('%A').lower()  # e.g., "thursday"
-    today_spanish = DIAS_SEMANA[today_english]  # Convertir a "jueves"
-    return get_schedules_by_day(db, today_spanish)
 
 
 @router.post("/question-table-relation/")
