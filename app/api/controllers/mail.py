@@ -64,7 +64,7 @@ def send_email_daily_forms(user_email: str, user_name: str, forms: List[Dict]) -
             <td align="center">
                 <h2 style="color: #00498C;">📋 Formularios Pendientes</h2>
                 <p>Estimado/a <strong>{user_name}</strong>,</p>
-                <p>Isometría le recuerda que tiene formularios asignados a su usuario que deben ser completados el día de hoy.</p>
+                <p>Isometría le recuerda que tiene formularios asignados a su usuario que deben ser completados.</p>
 
                 <table style="width: 100%; text-align: left; margin-top: 15px; border-collapse: collapse;">
                     {form_list_html}
