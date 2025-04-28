@@ -64,7 +64,7 @@ def send_email_daily_forms(user_email: str, user_name: str, forms: List[Dict]) -
             <td align="center">
                 <h2 style="color: #00498C;">📋 Formularios Pendientes</h2>
                 <p>Estimado/a <strong>{user_name}</strong>,</p>
-                <p>Isometría le recuerda que tiene formularios asignados a su usuario que deben ser completados.</p>
+                <p>Safemetrics le recuerda que tiene formularios asignados a su usuario que deben ser completados.</p>
 
                 <table style="width: 100%; text-align: left; margin-top: 15px; border-collapse: collapse;">
                     {form_list_html}
@@ -73,7 +73,7 @@ def send_email_daily_forms(user_email: str, user_name: str, forms: List[Dict]) -
                 <p style="margin-top: 20px;">Le solicitamos que complete estos formularios a la brevedad.</p>
                 
                  <a href="https://forms.sfisas.com.co/" style="color: #007bff; text-decoration: underline;" target="_blank">
-  Ir al Formulario
+  
 </a>
                                         <hr style="margin: 30px 0;">
                         <p style="font-size: 13px; color: #888;">Enviado el <strong>{current_date}</strong></p>
@@ -117,7 +117,7 @@ def send_email_with_attachment(
 ) -> bool:
     try:
         msg = EmailMessage()
-        msg["Subject"] = "📎 Respuestas adjuntas - Isometría"
+        msg["Subject"] = "📎 Respuestas adjuntas - Safemetrics"
         msg["From"] = formataddr(("SFI SAS", MAIL_FROM_ADDRESS_ALT))
         msg["To"] = formataddr((to_name, to_email))
 
@@ -191,8 +191,8 @@ def send_welcome_email(email: str, name: str, password: str) -> bool:
         current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         msg = EmailMessage()
-        msg["Subject"] = "👋 ¡Bienvenido a Isometría!"
-        msg["From"] = formataddr(("Isometría", MAIL_FROM_ADDRESS_ALT))
+        msg["Subject"] = "👋 ¡Bienvenido a Safemetrics!"
+        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
         msg["To"] = formataddr((name, email))
 
         html_content = f"""
@@ -205,16 +205,23 @@ def send_welcome_email(email: str, name: str, password: str) -> bool:
             <table align="center" style="width: 100%; max-width: 520px; background-color: white; border-radius: 12px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); padding: 25px;">
                 <tr>
                     <td align="center">
-                        <h2 style="color: #00498C;">¡Bienvenido a Isometría, {name}!</h2>
+                        <h2 style="color: #00498C;">¡Bienvenido a Safemetrics, {name}!</h2>
                         
                         <p>Tu cuenta ha sido creada con éxito. A continuación, te compartimos tus credenciales de acceso:</p>            
                         <ul style="list-style: none; padding: 0; text-align: left; display: inline-block;">
                             <li><strong>Email:</strong> {email}</li>
                             <li><strong>Contraseña:</strong> {password}</li>
                         </ul>
+                      
+                      
 
 
                         <hr style="margin: 30px 0;">
+                      
+                             <a href="https://forms.sfisas.com.co/" style="color: #007bff; text-decoration: underline;" target="_blank">
+  Ir a Safemetrics
+</a>
+                      <br>
                         <p style="font-size: 13px; color: #888;">Enviado el <strong>{current_date}</strong></p>
                     </td>
                 </tr>
