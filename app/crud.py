@@ -1452,3 +1452,53 @@ def get_user_responses_data(user_id: int, db: Session):
         "email": user.email,
         "responses": results
     }
+    
+
+def get_all_user_responses_by_form_id(db: Session, form_id: int):
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        return None
+
+    questions = db.query(Question).join(Form.questions).filter(Form.id == form_id).all()
+
+    responses = db.query(Response).filter(Response.form_id == form_id)\
+        .options(
+            joinedload(Response.answers).joinedload(Answer.question),
+            joinedload(Response.user)
+        ).all()
+
+    data = []
+    for response in responses:
+        row = {
+            "Nombre": response.user.name,
+            "Documento": response.user.num_document,
+        }
+
+        for question in questions:
+            answer_text = ""
+            for answer in response.answers:
+                if answer.question_id == question.id:
+                    answer_text = answer.answer_text or answer.file_path or ""
+                    break
+            row[question.question_text] = answer_text
+        data.append(row)
+
+    return {
+        "form_id": form.id,
+        "form_title": form.title,
+        "questions": [q.question_text for q in questions],
+        "data": data
+    }
+
+
+def get_unanswered_forms_by_user(db: Session, user_id: int):
+    # Subconsulta: formularios que ya respondió el usuario
+    subquery = db.query(Response.form_id).filter(Response.user_id == user_id)
+    
+    # Formularios asignados al usuario pero no respondidos
+    forms = db.query(Form).join(FormModerators).filter(
+        FormModerators.user_id == user_id,
+        ~Form.id.in_(subquery)
+    ).all()
+    
+    return forms

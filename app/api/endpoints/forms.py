@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
 from app.models import Answer, FormAnswer, FormSchedule, Response, User, UserType
-from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_form, get_form_responses_data, get_forms, get_forms_by_user, get_moderated_forms_by_answers, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form
+from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_forms, get_forms_by_user, get_moderated_forms_by_answers, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form
 from app.schemas import FormAnswerCreate, FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, GetFormBase, QuestionAdd, FormBase
 from app.core.security import get_current_user
 from io import BytesIO
@@ -365,3 +365,52 @@ def get_form_schedules(form_id: int, user_id: int, db: Session = Depends(get_db)
             raise HTTPException(status_code=404, detail="No se encontraron programaciones para ese formulario y usuario.")
 
         return schedules
+    
+@router.get("/{form_id}/questions-answers/excel/all-users")
+def download_all_user_responses_excel(
+    form_id: int,
+    db: Session = Depends(get_db)
+):
+    data = get_all_user_responses_by_form_id(db, form_id)
+    
+    if not data or not data["data"]:
+        raise HTTPException(
+            status_code=404,
+            detail="No se encontraron respuestas para este formulario"
+        )
+
+    df = pd.DataFrame(data["data"])
+    output = BytesIO()
+    df.to_excel(output, index=False, sheet_name="Respuestas de Usuarios")
+    output.seek(0)
+
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename=Respuestas_formulario_{form_id}_usuarios.xlsx"
+        }
+    )
+
+
+@router.get("/users/unanswered_forms")
+def get_unanswered_forms(
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        if current_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User does not have permission to get forms"
+            )
+
+        forms = get_unanswered_forms_by_user(db, current_user.id)
+
+        if not forms:
+            raise HTTPException(status_code=404, detail="No hay formularios sin responder para este usuario")
+
+        return forms
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

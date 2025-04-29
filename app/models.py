@@ -57,10 +57,7 @@ class Form(Base):
     title = Column(String(255), nullable=False)
     description = Column(String(255), nullable=True)
     format_type = Column(Enum(FormatType), nullable=False, default=FormatType.abierto)
-    # max_responses = Column(Integer, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
-
-    # Relaciones
     user = relationship('User', back_populates='forms')
     form_moderators = relationship("FormModerators", back_populates="form", cascade="all, delete-orphan")
     questions = relationship("Question", secondary="form_questions", back_populates="forms")
@@ -149,19 +146,10 @@ class FormSchedule(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=False)
     user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
-
-    frequency_type = Column(String(50), nullable=False)  
-    # "daily", "weekly", "monthly", "periodic", "specific_date"
-    
-    repeat_days = Column(String(255), nullable=True)  
-    # Para "weekly" -> ejemplo: "monday,wednesday,friday"
-
-    interval_days = Column(Integer, nullable=True)  
-    # Para "periodic" -> cada X días (por ejemplo cada 3 días)
-
-    specific_date = Column(DateTime, nullable=True)  
-    # Para "specific_date" -> fecha exacta
-
+    frequency_type = Column(String(50), nullable=False)  # "daily", "weekly", "monthly", "periodic", "specific_date"
+    repeat_days = Column(String(255), nullable=True)  # Para "weekly" -> ejemplo: "monday,wednesday,friday"
+    interval_days = Column(Integer, nullable=True)  # Para "periodic" -> cada X días (por ejemplo cada 3 días)
+    specific_date = Column(DateTime, nullable=True)  # Para "specific_date" -> fecha exacta
     status = Column(Boolean, default=True, nullable=False)
 
 
