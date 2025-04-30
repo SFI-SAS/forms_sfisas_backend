@@ -39,7 +39,7 @@ class User(Base):
     num_document = Column(String(50), nullable=False)
     name = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
-    telephone = Column(String(20), unique=True, nullable=False)
+    telephone = Column(String(20), nullable=False)
     user_type = Column(Enum(UserType), default=UserType.user, nullable=False)
     nickname = Column(String(100), nullable=True)  # Nuevo campo agregado
     password = Column(Text, nullable=False)

@@ -66,7 +66,7 @@ def daily_schedule_task():
 
 # Configurar el scheduler
 scheduler = BackgroundScheduler()
-scheduler.add_job(daily_schedule_task, "cron", hour=11, minute=12)  # Ejecutar todos los días a las 7:00 AM
+scheduler.add_job(daily_schedule_task, "cron", hour=8, minute=0)  # Ejecutar todos los días a las 7:00 AM
 scheduler.start()
 
 
