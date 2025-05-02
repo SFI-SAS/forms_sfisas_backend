@@ -207,9 +207,6 @@ class AnswerSchema(BaseModel):
     answer_text: Optional[str]
     file_path: Optional[str]
 
-
-
-    
 class UserUpdateInfo(BaseModel):
     email: EmailStr
     name: str = Field(..., min_length=1)
@@ -243,3 +240,14 @@ class FormAnswerCreate(BaseModel):
 class FileSerialCreate(BaseModel):
     answer_id: int
     serial: str
+    
+    
+class ApproverCreate(BaseModel):
+    user_id: int
+    sequence_number: int = 1
+    is_mandatory: bool = True
+    deadline_days: Optional[int] = None
+
+class FormApprovalCreateRequest(BaseModel):
+    form_id: int
+    approvers: List[ApproverCreate]

@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
-from app.models import Answer, FormAnswer, FormSchedule, Response, User, UserType
+from app.models import Answer, ApprovalStatus, FormAnswer, FormApproval, FormSchedule, Response, User, UserType
 from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_forms, get_forms_by_user, get_moderated_forms_by_answers, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form
-from app.schemas import FormAnswerCreate, FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, GetFormBase, QuestionAdd, FormBase
+from app.schemas import FormAnswerCreate, FormApprovalCreateRequest, FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, GetFormBase, QuestionAdd, FormBase
 from app.core.security import get_current_user
 from io import BytesIO
 import pandas as pd
@@ -13,6 +13,8 @@ from fastapi.responses import StreamingResponse
 
 
 router = APIRouter()
+
+MAX_APPROVALS_PER_FORM = 15
 
 @router.post("/", response_model=FormResponse, status_code=status.HTTP_201_CREATED)
 def create_form_endpoint(
@@ -91,10 +93,10 @@ def get_responses_with_answers(
 ):
     """Obtiene todas las Responses junto con sus Answers basado en form_id y user_id."""
 
-    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
+    if not current_user:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to access responses"
+            detail="User does not have permission to access completed forms",
         )
 
     stmt = (
@@ -414,3 +416,75 @@ def get_unanswered_forms(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+    
+@router.get("/responses/by-user/")
+def get_responses_by_user_and_form(
+    form_id: int,
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Obtiene todas las Responses junto con sus Answers basado en form_id y user_id específicos.
+    Requiere permisos de administrador o autorización adecuada.
+    """
+    # Verifica permisos si es necesario, por ejemplo, que sea admin
+    if current_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User does not have permission to get forms"
+            )
+
+
+    stmt = (
+        select(Response)
+        .where(Response.form_id == form_id, Response.user_id == user_id)
+        .options(
+            joinedload(Response.answers).joinedload(Answer.question)
+        )
+    )
+
+    results = db.execute(stmt).unique().scalars().all()
+
+    if not results:
+        raise HTTPException(status_code=404, detail="No se encontraron respuestas")
+
+    return results
+
+
+
+
+@router.post("/form-approvals/create")
+def create_form_approvals(payload: FormApprovalCreateRequest, db: Session = Depends(get_db)):
+    # Verificar cuántos aprobadores ya existen para ese formulario
+    existing_count = db.query(func.count(FormApproval.id)).filter(FormApproval.form_id == payload.form_id).scalar()
+
+    if existing_count >= MAX_APPROVALS_PER_FORM:
+        raise HTTPException(status_code=400, detail="Este formulario ya tiene el máximo de aprobadores asignados (15).")
+
+    remaining_slots = MAX_APPROVALS_PER_FORM - existing_count
+
+    if len(payload.approvers) > remaining_slots:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Solo puedes agregar {remaining_slots} aprobador(es) más para este formulario."
+        )
+
+    # Crear los registros
+    approvals = []
+    for approver in payload.approvers:
+        approval = FormApproval(
+            form_id=payload.form_id,
+            user_id=approver.user_id,
+            sequence_number=approver.sequence_number,
+            is_mandatory=approver.is_mandatory,
+            deadline_days=approver.deadline_days,
+            status=ApprovalStatus.pendiente
+        )
+        db.add(approval)
+        approvals.append(approval)
+
+    db.commit()
+
+    return {"message": f"{len(approvals)} aprobador(es) asignado(s) correctamente", "data": [a.id for a in approvals]}

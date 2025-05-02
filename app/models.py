@@ -21,6 +21,10 @@ class QuestionType(enum.Enum):
     table = "table"
     date = "date"
 
+class ApprovalStatus(enum.Enum):
+    pendiente = "pendiente"
+    aprobado = "aprobado"
+    rechazado = "rechazado"
 
 class FormatType(enum.Enum):
     abierto = "abierto"
@@ -203,3 +207,26 @@ class AnswerFileSerial(Base):
     answer_id = Column(BigInteger, ForeignKey('answers.id'), nullable=False)
 
     answer = relationship('Answer', back_populates='file_serial')
+
+
+
+class FormApproval(Base):
+    __tablename__ = 'form_approvals'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    
+    form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=False)
+    user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)  # persona que debe aprobar
+
+    sequence_number = Column(Integer, nullable=False, default=1)  # orden en que debe aprobar
+    is_mandatory = Column(Boolean, default=True)  # si es obligatorio o no
+    deadline_days = Column(Integer, nullable=True)  # días de plazo para responder
+
+    status = Column(Enum(ApprovalStatus), default=ApprovalStatus.pendiente, nullable=False)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    message = Column(Text, nullable=True)  # mensaje opcional de por qué aprueba o rechaza
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    form = relationship("Form", backref="approvals")
+    user = relationship("User", backref="approvals_to_review")
