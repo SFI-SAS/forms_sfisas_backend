@@ -6,8 +6,8 @@ from sqlalchemy.exc import IntegrityError
 from app import models
 from app.api.controllers.mail import send_email_daily_forms, send_email_with_attachment, send_welcome_email
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, FormAnswer, FormModerators, FormSchedule, Project, QuestionTableRelation, QuestionType, User, Form, Question, Option, Response, Answer, FormQuestion
-from app.schemas import FormBaseUser, ProjectCreate, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
+from app.models import  AnswerFileSerial, FormAnswer, FormApproval, FormModerators, FormSchedule, Project, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
+from app.schemas import FormApprovalCreateSchema, FormBaseUser, ProjectCreate, ResponseApprovalCreate, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import List, Optional
 from datetime import datetime
@@ -1502,3 +1502,100 @@ def get_unanswered_forms_by_user(db: Session, user_id: int):
     ).all()
     
     return forms
+
+
+def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
+    # Verifica si el formulario existe
+    form = db.query(Form).filter(Form.id == data.form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado.")
+
+    # Elimina aprobadores existentes (opcional)
+    db.query(FormApproval).filter(FormApproval.form_id == data.form_id).delete()
+
+    # Crea los nuevos aprobadores
+    for approver in data.approvers:
+        db.add(FormApproval(
+            form_id=data.form_id,
+            user_id=approver.user_id,
+            sequence_number=approver.sequence_number,
+            is_mandatory=approver.is_mandatory,
+            deadline_days=approver.deadline_days
+        ))
+
+    db.commit()
+    
+def create_response_approval(db: Session, approval_data: ResponseApprovalCreate) -> ResponseApproval:
+    new_approval = ResponseApproval(**approval_data.model_dump())
+    db.add(new_approval)
+    db.commit()
+    db.refresh(new_approval)
+    return new_approval
+
+def get_responses_with_questions_and_approval_status(form_id: int, user_id: int, db: Session):
+    responses_data = []
+
+    # Obtener todas las respuestas del formulario
+    responses = db.query(Response).filter(Response.form_id == form_id).all()
+
+    for response in responses:
+        response_data = {
+            "response_id": response.id,
+            "user_id": response.user_id,
+            "submitted_at": response.submitted_at.isoformat() if response.submitted_at else None,
+            "answers": [],
+            "approval_status": "Pendiente",
+            "reviewed_at": None,
+            "message": None,
+            "approvers": []  # <--- lista de todos los aprobadores de esta respuesta
+        }
+
+        # Obtener respuestas individuales
+        answers = db.query(Answer, Question).join(Question, Question.id == Answer.question_id).filter(
+            Answer.response_id == response.id
+        ).all()
+
+        for answer, question in answers:
+            response_data["answers"].append({
+                "question_id": answer.question_id,
+                "question_text": question.question_text,
+                "question_type": question.question_type,
+                "answer_text": answer.answer_text,
+                "file_path": answer.file_path
+            })
+
+        # Estado del aprobador actual
+        user_approval = db.query(ResponseApproval).filter(
+            ResponseApproval.response_id == response.id,
+            ResponseApproval.user_id == user_id
+        ).first()
+
+        if user_approval:
+            response_data["approval_status"] = user_approval.status
+            response_data["reviewed_at"] = user_approval.reviewed_at
+            response_data["message"] = user_approval.message
+
+        # Obtener todos los aprobadores asignados al formulario
+        form_approvals = db.query(FormApproval).filter(
+            FormApproval.form_id == form_id
+        ).all()
+
+        for fa in form_approvals:
+            # Buscar si esta persona ya tiene un ResponseApproval para esta respuesta
+            ra = db.query(ResponseApproval).filter(
+                ResponseApproval.response_id == response.id,
+                ResponseApproval.user_id == fa.user_id
+            ).first()
+
+            response_data["approvers"].append({
+                "user_id": fa.user_id,
+                "sequence_number": fa.sequence_number,
+                "is_mandatory": fa.is_mandatory,
+                "status": ra.status if ra else "Pendiente",
+                "reviewed_at": ra.reviewed_at.isoformat() if ra and ra.reviewed_at else None,
+                "message": ra.message if ra else None
+            })
+
+        responses_data.append(response_data)
+
+    return responses_data

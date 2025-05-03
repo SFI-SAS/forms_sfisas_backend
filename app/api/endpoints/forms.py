@@ -3,9 +3,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
-from app.models import Answer, ApprovalStatus, FormAnswer, FormApproval, FormSchedule, Response, User, UserType
-from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_forms, get_forms_by_user, get_moderated_forms_by_answers, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form
-from app.schemas import FormAnswerCreate, FormApprovalCreateRequest, FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, GetFormBase, QuestionAdd, FormBase
+from app.models import Answer, ApprovalStatus, Form, FormAnswer, FormApproval, FormSchedule, Response, User, UserType
+from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, create_response_approval, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_forms, get_forms_by_user, get_moderated_forms_by_answers, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_responses_with_questions_and_approval_status, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_approvals
+from app.schemas import FormAnswerCreate, FormApprovalCreateRequest, FormApprovalCreateSchema, FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, FormWithResponsesSchema, GetFormBase, QuestionAdd, FormBase, ResponseApprovalCreate
 from app.core.security import get_current_user
 from io import BytesIO
 import pandas as pd
@@ -456,35 +456,51 @@ def get_responses_by_user_and_form(
 
 
 @router.post("/form-approvals/create")
-def create_form_approvals(payload: FormApprovalCreateRequest, db: Session = Depends(get_db)):
-    # Verificar cuántos aprobadores ya existen para ese formulario
-    existing_count = db.query(func.count(FormApproval.id)).filter(FormApproval.form_id == payload.form_id).scalar()
+def create_form_approvals(
+    data: FormApprovalCreateSchema,
+    db: Session = Depends(get_db)
+):
+    save_form_approvals(data, db)
+    return {"message": "Aprobadores registrados correctamente"}
 
-    if existing_count >= MAX_APPROVALS_PER_FORM:
-        raise HTTPException(status_code=400, detail="Este formulario ya tiene el máximo de aprobadores asignados (15).")
 
-    remaining_slots = MAX_APPROVALS_PER_FORM - existing_count
+@router.post("/create/response_approval_endpoint", status_code=status.HTTP_201_CREATED)
+def create_response_approval_endpoint(
+    data: ResponseApprovalCreate,
+    db: Session = Depends(get_db)
+):
+    try:
+        return create_response_approval(db, data)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    
+@router.get("/user/assigned-forms-with-responses")
+def get_forms_to_approve(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # Obtener aprobaciones pendientes para el usuario
+    pending_approvals = db.query(FormApproval).filter(
+        FormApproval.user_id == current_user.id,
+        FormApproval.is_mandatory == True  # Si son obligatorios
+    ).all()
 
-    if len(payload.approvers) > remaining_slots:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Solo puedes agregar {remaining_slots} aprobador(es) más para este formulario."
-        )
+    result = []
 
-    # Crear los registros
-    approvals = []
-    for approver in payload.approvers:
-        approval = FormApproval(
-            form_id=payload.form_id,
-            user_id=approver.user_id,
-            sequence_number=approver.sequence_number,
-            is_mandatory=approver.is_mandatory,
-            deadline_days=approver.deadline_days,
-            status=ApprovalStatus.pendiente
-        )
-        db.add(approval)
-        approvals.append(approval)
+    for approval in pending_approvals:
+        form = db.query(Form).filter(Form.id == approval.form_id).first()
+        if not form:
+            continue
 
-    db.commit()
+        # Llamar a la función para obtener las respuestas y sus detalles
+        responses_data = get_responses_with_questions_and_approval_status(form.id, current_user.id, db)
 
-    return {"message": f"{len(approvals)} aprobador(es) asignado(s) correctamente", "data": [a.id for a in approvals]}
+        form_data = {
+            "form_id": form.id,
+            "form_title": form.title,
+            "sequence_number": approval.sequence_number,
+            "is_mandatory": approval.is_mandatory,
+            "responses": responses_data
+        }
+
+        result.append(form_data)
+
+    return result

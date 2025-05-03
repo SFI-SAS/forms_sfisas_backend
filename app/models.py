@@ -117,6 +117,7 @@ class Response(Base):
     form = relationship('Form', back_populates='responses')
     user = relationship('User', back_populates='responses')
     answers = relationship('Answer', back_populates='response')
+    approvals = relationship("ResponseApproval", back_populates="response")
 
 # Modelo Answers
 class Answer(Base):
@@ -214,19 +215,27 @@ class FormApproval(Base):
     __tablename__ = 'form_approvals'
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    
     form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=False)
-    user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)  # persona que debe aprobar
+    user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
+    sequence_number = Column(Integer, nullable=False, default=1)
+    is_mandatory = Column(Boolean, default=True)
+    deadline_days = Column(Integer, nullable=True)
 
-    sequence_number = Column(Integer, nullable=False, default=1)  # orden en que debe aprobar
-    is_mandatory = Column(Boolean, default=True)  # si es obligatorio o no
-    deadline_days = Column(Integer, nullable=True)  # días de plazo para responder
+    form = relationship("Form", backref="approval_template")
+    user = relationship("User", backref="forms_to_approve")
 
+
+class ResponseApproval(Base):
+    __tablename__ = 'response_approvals'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    response_id = Column(BigInteger, ForeignKey('responses.id'), nullable=False)
+    user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
+    sequence_number = Column(Integer, nullable=False)
+    is_mandatory = Column(Boolean, default=True)
     status = Column(Enum(ApprovalStatus), default=ApprovalStatus.pendiente, nullable=False)
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
-    message = Column(Text, nullable=True)  # mensaje opcional de por qué aprueba o rechaza
+    message = Column(Text, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    form = relationship("Form", backref="approvals")
-    user = relationship("User", backref="approvals_to_review")
+    response = relationship("Response", back_populates="approvals")
+    user = relationship("User")

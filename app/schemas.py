@@ -3,6 +3,8 @@ from typing import Literal, Optional, List
 from datetime import datetime
 from enum import Enum
 
+from app.models import ApprovalStatus
+
 # Enum for UserType
 class UserType(str, Enum):
     admin = "admin"
@@ -251,3 +253,79 @@ class ApproverCreate(BaseModel):
 class FormApprovalCreateRequest(BaseModel):
     form_id: int
     approvers: List[ApproverCreate]
+    
+class QuestionSchema(BaseModel):
+    id: int
+    question_text: str
+    question_type: str
+    required: bool
+    root: bool
+
+
+
+class AnswerSchema(BaseModel):
+    id: int
+    question_id: int
+    answer_text: Optional[str]
+    file_path: Optional[str]
+    question: QuestionSchema  # ← Aquí se incluye la pregunta
+
+
+
+class UserSchema(BaseModel):
+    id: int
+    name: str
+    email: str
+
+
+
+class ResponseSchema(BaseModel):
+    id: int
+    user: UserSchema
+    answers: list[AnswerSchema]
+
+
+
+class FormApprovalSchema(BaseModel):
+    id: int
+    user: UserSchema
+    sequence_number: int
+    is_mandatory: bool
+    deadline_days: Optional[int]
+    status: str
+    reviewed_at: Optional[datetime]
+    message: Optional[str]
+
+
+
+class FormWithResponsesSchema(BaseModel):
+    id: int
+    title: str
+    description: Optional[str]
+    responses: list[ResponseSchema]
+    approvals: list[FormApprovalSchema]
+
+class FormatType(str, Enum):
+    abierto = "abierto"
+    cerrado = "cerrado"
+
+class ApproverSchema(BaseModel):
+    user_id: int
+    sequence_number: int
+    is_mandatory: bool = True
+    deadline_days: int | None = None
+
+class FormApprovalCreateSchema(BaseModel):
+    form_id: int
+    approvers: List[ApproverSchema]
+    
+class ResponseApprovalCreate(BaseModel):
+    response_id: int
+    user_id: int
+    sequence_number: int
+    is_mandatory: bool = True
+    status: Optional[ApprovalStatus] = ApprovalStatus.pendiente
+    message: Optional[str] = None
+
+    class Config:
+        from_attributes = True
