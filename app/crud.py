@@ -1,12 +1,13 @@
+from io import BytesIO
 import json
 import os
 from sqlalchemy import exists, func, not_, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from app import models
-from app.api.controllers.mail import send_email_daily_forms, send_email_with_attachment, send_welcome_email
+from app.api.controllers.mail import send_email_daily_forms, send_email_plain_approval_status, send_email_with_attachment, send_welcome_email
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, ApprovalStatus, FormAnswer, FormApproval, FormModerators, FormSchedule, Project, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
+from app.models import  AnswerFileSerial, ApprovalStatus, FormAnswer, FormApproval, FormApprovalNotification, FormModerators, FormSchedule, Project, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import FormApprovalCreateSchema, FormBaseUser, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import List, Optional
@@ -1555,29 +1556,59 @@ def create_response_approval(db: Session, approval_data: ResponseApprovalCreate)
 def get_forms_pending_approval_for_user(user_id: int, db: Session):
     results = []
 
-    # 1. Formularios donde el usuario es aprobador
     form_approvals = db.query(FormApproval).filter(FormApproval.user_id == user_id).all()
     print(f"👤 Usuario {user_id} debe aprobar {len(form_approvals)} formularios.")
 
     for form_approval in form_approvals:
         form = form_approval.form
- 
 
-        # 2. Respuestas al formulario
+        # 📌 Mostrar plantilla de aprobadores para este formulario
+        print(f"\n🔍 Aprobadores del formulario '{form.title}' (ID: {form.id}):")
+        approval_template = db.query(FormApproval).filter(FormApproval.form_id == form.id).order_by(FormApproval.sequence_number).all()
+
+        for approver in approval_template:
+            approver_user = approver.user
+            print(f"  ➤ {approver_user.name} ({approver_user.email}) | Secuencia: {approver.sequence_number} | Obligatorio: {approver.is_mandatory}")
+
         responses = db.query(Response).filter(Response.form_id == form.id).all()
         print(f"📄 Formulario '{form.title}' tiene {len(responses)} respuestas.")
 
         for response in responses:
-            # 3. Revisión de si el usuario debe aprobar esta respuesta
             response_approval = db.query(ResponseApproval).filter(
                 ResponseApproval.response_id == response.id,
                 ResponseApproval.user_id == user_id
             ).first()
 
             if not response_approval:
-                continue  # Este usuario no debe aprobar esta respuesta (por alguna razón)
+                continue  # Este usuario no debe aprobar esta respuesta
 
-            # 4. Obtener preguntas y respuestas de esta respuesta
+            sequence = response_approval.sequence_number
+
+            # Verificar si todos los aprobadores anteriores obligatorios ya aprobaron
+            prev_approvers = db.query(ResponseApproval).filter(
+                ResponseApproval.response_id == response.id,
+                ResponseApproval.sequence_number < sequence,
+                ResponseApproval.is_mandatory == True
+            ).all()
+
+            all_prev_approved = all(pa.status == ApprovalStatus.aprobado for pa in prev_approvers)
+
+            if not all_prev_approved:
+                continue  # Todavía no es el turno de este aprobador
+
+            # 📌 Mostrar estado de cada aprobador de esta respuesta
+            print(f"📝 Estado de aprobadores para la respuesta ID {response.id}:")
+            response_approvals = db.query(ResponseApproval).filter(
+                ResponseApproval.response_id == response.id
+            ).order_by(ResponseApproval.sequence_number).all()
+
+            for ra in response_approvals:
+                user_ra = ra.user
+                print(
+                    f"  • {user_ra.name} ({user_ra.email}) | Secuencia: {ra.sequence_number} | Obligatorio: {ra.is_mandatory} | "
+                    f"Estado: {ra.status.value} | Revisado en: {ra.reviewed_at if ra.reviewed_at else 'Pendiente'}"
+                )
+
             answers = db.query(Answer, Question).join(Question).filter(
                 Answer.response_id == response.id
             ).all()
@@ -1590,21 +1621,21 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 "file_path": a.file_path
             } for a, q in answers]
 
-            # 5. Otros aprobadores de esta respuesta
-            all_approvals = db.query(ResponseApproval).filter(
-                ResponseApproval.response_id == response.id
-            ).all()
-
-            approvers_data = [{
+            all_approvals = [{
                 "user_id": ra.user_id,
                 "sequence_number": ra.sequence_number,
                 "is_mandatory": ra.is_mandatory,
                 "status": ra.status.value,
                 "reviewed_at": ra.reviewed_at.isoformat() if ra.reviewed_at else None,
-                "message": ra.message
-            } for ra in all_approvals]
+                "message": ra.message,
+                "user": {
+                    "name": ra.user.name,
+                    "email": ra.user.email,
+                    "num_document": ra.user.num_document
+                }
+            } for ra in response_approvals]
 
-            # 6. Usuario que respondió
+
             user_response = db.query(User).filter(User.id == response.user_id).first()
 
             results.append({
@@ -1626,35 +1657,128 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                     "reviewed_at": response_approval.reviewed_at.isoformat() if response_approval.reviewed_at else None,
                     "message": response_approval.message
                 },
-                "all_approvers": approvers_data
+                "all_approvers": all_approvals
             })
 
-    print(f"✅ Se encontraron {len(results)} respuestas que debe aprobar el usuario {user_id}")
+    print(f"\n✅ Se encontraron {len(results)} respuestas que debe aprobar el usuario {user_id}")
     return results
 
 
+
 def update_response_approval_status(
-    response_id: int, 
-    update_data: UpdateResponseApprovalRequest, 
+    response_id: int,
+    update_data: UpdateResponseApprovalRequest,
+    user_id: int,
     db: Session
 ):
-    # Buscar el ResponseApproval correspondiente
-    response_approval = db.query(models.ResponseApproval).filter(
-        models.ResponseApproval.response_id == response_id
+    # 1. Buscar el ResponseApproval correspondiente
+    response_approval = db.query(ResponseApproval).filter(
+        ResponseApproval.response_id == response_id,
+        ResponseApproval.user_id == user_id
     ).first()
 
     if not response_approval:
         raise HTTPException(status_code=404, detail="ResponseApproval not found")
 
-    # Actualizar los campos
+    # 2. Actualizar los campos
     response_approval.status = update_data.status
-    response_approval.reviewed_at = update_data.reviewed_at
+    response_approval.reviewed_at = update_data.reviewed_at or datetime.utcnow()
     response_approval.message = update_data.message
 
-    # Confirmar los cambios en la base de datos
     db.commit()
-
-    # Refrescar el objeto para devolver los valores actualizados
     db.refresh(response_approval)
+
+    # 3. Obtener información relacionada
+    response = db.query(Response).filter(Response.id == response_id).first()
+    form = db.query(Form).filter(Form.id == response.form_id).first()
+
+    form_approval_template = db.query(FormApproval).filter(
+        FormApproval.form_id == form.id
+    ).order_by(FormApproval.sequence_number).all()
+
+    response_approvals = db.query(ResponseApproval).filter(
+        ResponseApproval.response_id == response_id
+    ).all()
+
+    # 4. Mostrar el proceso en consola
+    print("\n📄 --- Proceso de Aprobación ---")
+    print(f"Formulario: {form.title} (Formato: {form.format_type.value})")
+    print(f"Respondido por: {response.user.name} (ID: {response.user.id})")
+    print(f"Aprobación actualizada por: {response_approval.user.name}")
+    print(f"Secuencia: {response_approval.sequence_number}")
+    print(f"Estado: {response_approval.status.value}")
+    print(f"Fecha de revisión: {response_approval.reviewed_at.isoformat()}")
+    print(f"Mensaje: {response_approval.message or '-'}\n")
+
+    detener_proceso = False
+    print("🧾 Estado de aprobadores:")
+
+    for fa in form_approval_template:
+        ra = next((r for r in response_approvals if r.user_id == fa.user_id), None)
+        status = ra.status.value if ra else "pendiente"
+        print(f"  [{fa.sequence_number}] {fa.user.name} - {status}")
+
+        if ra and ra.status == ApprovalStatus.rechazado and fa.is_mandatory:
+            print(f"\n⛔ El aprobador '{fa.user.name}' rechazó y su aprobación es obligatoria. El proceso se detiene.")
+            detener_proceso = True
+            break
+
+    if not detener_proceso:
+        faltantes = [fa.user.name for fa in form_approval_template 
+                     if not any(ra.user_id == fa.user_id for ra in response_approvals)]
+        if faltantes:
+            print(f"\n🕓 Aún deben aprobar: {', '.join(faltantes)}")
+        else:
+            print("\n✅ Todos los aprobadores han completado su revisión.")
+
+    # 5. Notificaciones por correo
+    notifications = db.query(FormApprovalNotification).filter(
+        FormApprovalNotification.form_id == form.id
+    ).all()
+
+    for notification in notifications:
+        should_notify = False
+
+        if notification.notify_on == "cada_aprobacion":
+            should_notify = True
+        elif notification.notify_on == "aprobacion_final":
+            todos_aprobaron = all(
+                ra.status == ApprovalStatus.aprobado
+                for ra in response_approvals
+                if any(fa.user_id == ra.user_id for fa in form_approval_template)
+            )
+            should_notify = todos_aprobaron
+
+        if should_notify:
+            user_notify = notification.user
+            to_email = user_notify.email
+            to_name = user_notify.name
+
+            # ✉️ Cuerpo del correo
+            contenido = f"""📄 --- Proceso de Aprobación ---
+Formulario: {form.title} (Formato: {form.format_type.value})
+Respondido por: {response.user.name} (ID: {response.user.id})
+Aprobación por: {response_approval.user.name}
+Secuencia: {response_approval.sequence_number}
+Estado: {response_approval.status.value}
+Fecha de revisión: {response_approval.reviewed_at.isoformat()}
+Mensaje: {response_approval.message or '-'}
+
+🧾 Estado de aprobadores:
+"""
+
+            for fa in form_approval_template:
+                ra = next((r for r in response_approvals if r.user_id == fa.user_id), None)
+                status = ra.status.value if ra else "pendiente"
+                contenido += f"[{fa.sequence_number}] {fa.user.name} - {status}\n"
+
+            
+            send_email_plain_approval_status(
+                to_email=to_email,
+                name_form=form.title,
+                to_name=user_notify.name,
+                body_text=contenido,
+                subject=f"Proceso de aprobación - {form.title}"  # Aquí pasas el subject
+            )
 
     return response_approval

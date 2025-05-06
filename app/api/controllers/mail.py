@@ -243,3 +243,50 @@ def send_welcome_email(email: str, name: str, password: str) -> bool:
     except Exception as e:
         print(f"❌ Error al enviar el correo de bienvenida a {email}: {str(e)}")
         return False
+    
+    
+    
+
+def send_email_plain_approval_status(
+    to_email: str,
+    name_form: str,
+    to_name: str,
+    body_text: str,
+    subject: str  # Añadimos el parámetro 'subject'
+) -> bool:
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = subject  # Usamos el parámetro 'subject' aquí
+        msg["From"] = formataddr(("SFI SAS", MAIL_FROM_ADDRESS_ALT))
+        msg["To"] = formataddr((to_name, to_email))
+
+        current_date = datetime.now().strftime("%d/%m/%Y")
+
+        # Aquí ajustamos el contenido HTML para reflejar que el formato fue autorizado
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; font-size: 16px; padding: 20px;">
+            
+            <p>El formato <strong>{name_form}</strong> ha sido autorizado.</p>
+            <p><strong>Autorizado por:</strong> {to_name}</p>
+                        <pre style="background-color: #f4f4f4; padding: 15px; border-radius: 5px; font-family: monospace;">
+{body_text}
+            </pre>
+            <p style="font-size: 12px; color: #999;">Enviado el {current_date}</p>
+        </body>
+        </html>
+        """
+
+        msg.set_content(f"Estimado/a {to_name},\n\n{body_text}")
+        msg.add_alternative(html_content, subtype="html")
+
+        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
+            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
+            smtp.send_message(msg)
+
+        print(f"✅ Correo enviado a {to_email}")
+        return True
+
+    except Exception as e:
+        print(f"❌ Error al enviar correo a {to_email}: {str(e)}")
+        return False

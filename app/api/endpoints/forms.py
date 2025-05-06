@@ -521,6 +521,7 @@ def update_response_approval(
             # Llamar a la función de servicio para actualizar el estado
             updated_response_approval = update_response_approval_status(
                 response_id=response_id,
+                user_id= current_user.id,
                 update_data=update_data,
                 db=db
             )
