@@ -12,6 +12,7 @@ from app.schemas import FormApprovalCreateSchema, FormBaseUser, ProjectCreate, R
 from fastapi import HTTPException, UploadFile, status
 from typing import List, Optional
 from datetime import datetime
+from app.models import ApprovalStatus  # Asegúrate de importar esto
 
 import os
 import secrets
@@ -1775,3 +1776,46 @@ Mensaje: {response_approval.message or '-'}
             )
 
     return response_approval
+
+
+def get_response_approval_status(response_approvals: list) -> dict:
+    has_rejected = None
+    pending_mandatory = False
+    messages = []
+    pending_users = []
+
+    for approval in response_approvals:
+        if approval.message:
+            messages.append(approval.message)
+
+        if approval.status == ApprovalStatus.rechazado:
+            has_rejected = approval
+            break
+
+        if approval.is_mandatory and approval.status != ApprovalStatus.aprobado:
+            pending_mandatory = True
+            pending_users.append({
+                "user_id": approval.user_id,
+                "sequence_number": approval.sequence_number,
+                "status": approval.status
+            })
+
+    if has_rejected:
+        return {
+            "status": "rechazado",
+            "message": has_rejected.message or "Formulario rechazado"
+        }
+
+    if pending_mandatory:
+        print("Faltan por aprobar los siguientes usuarios obligatorios:")
+        for user in pending_users:
+            print(f"- User ID: {user['user_id']}, Secuencia: {user['sequence_number']}, Estado: {user['status'].value}")
+        return {
+            "status": "pendiente",
+            "message": "Faltan aprobaciones obligatorias"
+        }
+
+    return {
+        "status": "aprobado",
+        "message": " | ".join(filter(None, messages))
+    }
