@@ -1557,21 +1557,18 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
     results = []
 
     form_approvals = db.query(FormApproval).filter(FormApproval.user_id == user_id).all()
-    print(f"👤 Usuario {user_id} debe aprobar {len(form_approvals)} formularios.")
 
     for form_approval in form_approvals:
         form = form_approval.form
 
         # 📌 Mostrar plantilla de aprobadores para este formulario
-        print(f"\n🔍 Aprobadores del formulario '{form.title}' (ID: {form.id}):")
+
         approval_template = db.query(FormApproval).filter(FormApproval.form_id == form.id).order_by(FormApproval.sequence_number).all()
 
         for approver in approval_template:
             approver_user = approver.user
-            print(f"  ➤ {approver_user.name} ({approver_user.email}) | Secuencia: {approver.sequence_number} | Obligatorio: {approver.is_mandatory}")
 
         responses = db.query(Response).filter(Response.form_id == form.id).all()
-        print(f"📄 Formulario '{form.title}' tiene {len(responses)} respuestas.")
 
         for response in responses:
             response_approval = db.query(ResponseApproval).filter(
@@ -1597,17 +1594,14 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 continue  # Todavía no es el turno de este aprobador
 
             # 📌 Mostrar estado de cada aprobador de esta respuesta
-            print(f"📝 Estado de aprobadores para la respuesta ID {response.id}:")
+
             response_approvals = db.query(ResponseApproval).filter(
                 ResponseApproval.response_id == response.id
             ).order_by(ResponseApproval.sequence_number).all()
 
             for ra in response_approvals:
                 user_ra = ra.user
-                print(
-                    f"  • {user_ra.name} ({user_ra.email}) | Secuencia: {ra.sequence_number} | Obligatorio: {ra.is_mandatory} | "
-                    f"Estado: {ra.status.value} | Revisado en: {ra.reviewed_at if ra.reviewed_at else 'Pendiente'}"
-                )
+
 
             answers = db.query(Answer, Question).join(Question).filter(
                 Answer.response_id == response.id
@@ -1660,7 +1654,6 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 "all_approvers": all_approvals
             })
 
-    print(f"\n✅ Se encontraron {len(results)} respuestas que debe aprobar el usuario {user_id}")
     return results
 
 

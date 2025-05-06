@@ -257,7 +257,7 @@ def send_email_plain_approval_status(
     try:
         msg = EmailMessage()
         msg["Subject"] = subject  # Usamos el parámetro 'subject' aquí
-        msg["From"] = formataddr(("SFI SAS", MAIL_FROM_ADDRESS_ALT))
+        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
         msg["To"] = formataddr((to_name, to_email))
 
         current_date = datetime.now().strftime("%d/%m/%Y")
@@ -268,7 +268,7 @@ def send_email_plain_approval_status(
         <body style="font-family: Arial, sans-serif; font-size: 16px; padding: 20px;">
             
             <p>El formato <strong>{name_form}</strong> ha sido autorizado.</p>
-            <p><strong>Autorizado por:</strong> {to_name}</p>
+           
                         <pre style="background-color: #f4f4f4; padding: 15px; border-radius: 5px; font-family: monospace;">
 {body_text}
             </pre>
