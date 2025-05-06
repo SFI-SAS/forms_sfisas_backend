@@ -329,3 +329,20 @@ class ResponseApprovalCreate(BaseModel):
 
     class Config:
         from_attributes = True
+        
+    
+class NotificationCreate(BaseModel):
+    form_id: int
+    user_id: int
+    notify_on: Literal["cada_aprobacion", "aprobacion_final"]
+    
+class ApprovalStatusEnum(str, Enum):
+    pendiente = "pendiente"
+    aprobado = "aprobado"
+    rechazado = "rechazado"
+
+
+class UpdateResponseApprovalRequest(BaseModel):
+    status: ApprovalStatusEnum
+    reviewed_at: datetime = None
+    message: str = None

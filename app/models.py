@@ -239,3 +239,15 @@ class ResponseApproval(Base):
 
     response = relationship("Response", back_populates="approvals")
     user = relationship("User")
+
+
+class FormApprovalNotification(Base):
+    __tablename__ = 'form_approval_notifications'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=False)
+    user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
+    notify_on = Column(Enum("cada_aprobacion", "aprobacion_final", name="notify_type"), nullable=False)
+
+    form = relationship("Form", backref="notification_rules")
+    user = relationship("User")

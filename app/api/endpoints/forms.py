@@ -3,9 +3,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
-from app.models import Answer, ApprovalStatus, Form, FormAnswer, FormApproval, FormSchedule, Response, User, UserType
-from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, create_response_approval, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_forms, get_forms_by_user, get_moderated_forms_by_answers, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_responses_with_questions_and_approval_status, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_approvals
-from app.schemas import FormAnswerCreate, FormApprovalCreateRequest, FormApprovalCreateSchema, FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, FormWithResponsesSchema, GetFormBase, QuestionAdd, FormBase, ResponseApprovalCreate
+from app.models import Answer, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormSchedule, Response, User, UserType
+from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, create_response_approval, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_forms, get_forms_by_user, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_approvals, update_response_approval_status
+from app.schemas import FormAnswerCreate, FormApprovalCreateRequest, FormApprovalCreateSchema, FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, FormWithResponsesSchema, GetFormBase, NotificationCreate, QuestionAdd, FormBase, ResponseApprovalCreate, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
 import pandas as pd
@@ -475,32 +475,57 @@ def create_response_approval_endpoint(
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
     
+
 @router.get("/user/assigned-forms-with-responses")
-def get_forms_to_approve(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    # Obtener aprobaciones pendientes para el usuario
-    pending_approvals = db.query(FormApproval).filter(
-        FormApproval.user_id == current_user.id,
-        FormApproval.is_mandatory == True  # Si son obligatorios
-    ).all()
+def get_forms_to_approve( db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return get_forms_pending_approval_for_user(current_user.id, db)
 
-    result = []
 
-    for approval in pending_approvals:
-        form = db.query(Form).filter(Form.id == approval.form_id).first()
-        if not form:
-            continue
 
-        # Llamar a la función para obtener las respuestas y sus detalles
-        responses_data = get_responses_with_questions_and_approval_status(form.id, current_user.id, db)
+@router.post("/create_notification")
+def create_notification(notification: NotificationCreate, db: Session = Depends(get_db)):
+    # Verifica si ya existe una notificación similar (opcional)
+    existing = db.query(FormApprovalNotification).filter_by(
+        form_id=notification.form_id,
+        user_id=notification.user_id,
+        notify_on=notification.notify_on
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Esta notificación ya existe.")
 
-        form_data = {
-            "form_id": form.id,
-            "form_title": form.title,
-            "sequence_number": approval.sequence_number,
-            "is_mandatory": approval.is_mandatory,
-            "responses": responses_data
-        }
+    new_notification = FormApprovalNotification(
+        form_id=notification.form_id,
+        user_id=notification.user_id,
+        notify_on=notification.notify_on
+    )
+    db.add(new_notification)
+    db.commit()
+    db.refresh(new_notification)
+    return {"message": "Notificación creada correctamente", "id": new_notification.id}
 
-        result.append(form_data)
 
-    return result
+
+@router.put("/update-response-approval/{response_id}")
+def update_response_approval(
+    response_id: int,
+    update_data: UpdateResponseApprovalRequest,
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+):
+    try:
+        if current_user == None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User does not have permission to get options"
+            )
+        else: 
+            # Llamar a la función de servicio para actualizar el estado
+            updated_response_approval = update_response_approval_status(
+                response_id=response_id,
+                update_data=update_data,
+                db=db
+            )
+            return {"message": "ResponseApproval updated successfully", "response_approval": updated_response_approval}
+
+    except HTTPException as e:
+        # Capturar la excepción personalizada
+        raise e
