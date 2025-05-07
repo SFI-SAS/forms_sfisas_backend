@@ -1819,3 +1819,67 @@ def get_response_approval_status(response_approvals: list) -> dict:
         "status": "aprobado",
         "message": " | ".join(filter(None, messages))
     }
+
+
+def get_form_with_full_responses(form_id: int, db: Session):
+    form = db.query(Form).options(
+        joinedload(Form.questions),
+        joinedload(Form.responses).joinedload(Response.user),
+    ).filter(Form.id == form_id).first()
+
+    if not form:
+        return None
+
+    results = {
+        "form_id": form.id,
+        "title": form.title,
+        "description": form.description,
+        "questions": [
+            {
+                "id": q.id,
+                "text": q.question_text,
+                "type": q.question_type.name,
+            }
+            for q in form.questions
+        ],
+        "responses": [],
+    }
+
+    for response in form.responses:
+        response_data = {
+            "response_id": response.id,
+            "user": {
+                "id": response.user.id,
+                "name": response.user.name,
+                "email": response.user.email,
+                "num_document": response.user.num_document,
+            },
+            "submitted_at": response.submitted_at,
+            "answers": [],
+            "approval_status": None,  # Aquí se agregará
+        }
+
+        # Obtener respuestas
+        answers = (
+            db.query(Answer)
+            .options(joinedload(Answer.question))
+            .filter(Answer.response_id == response.id)
+            .all()
+        )
+
+        for ans in answers:
+            response_data["answers"].append({
+                "question_id": ans.question.id,
+                "question_text": ans.question.question_text,
+                "answer_text": ans.answer_text,
+                "file_path": ans.file_path,
+            })
+
+        # Obtener aprobaciones y calcular estado
+        approvals = db.query(ResponseApproval).filter_by(response_id=response.id).all()
+        approval_info = get_response_approval_status(approvals)
+        response_data["approval_status"] = approval_info
+
+        results["responses"].append(response_data)
+
+    return results

@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
 from app.models import Answer, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormSchedule, Response, ResponseApproval, User, UserType
-from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, create_response_approval, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_forms, get_forms_by_user, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_approvals, update_response_approval_status
+from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, create_response_approval, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_user, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_approvals, update_response_approval_status
 from app.schemas import FormAnswerCreate, FormApprovalCreateRequest, FormApprovalCreateSchema, FormBaseUser, FormCreate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, FormWithResponsesSchema, GetFormBase, NotificationCreate, QuestionAdd, FormBase, ResponseApprovalCreate, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
@@ -552,3 +552,19 @@ def update_response_approval(
     except HTTPException as e:
         # Capturar la excepción personalizada
         raise e
+    
+@router.get("/form-details/{form_id}")
+def get_form_details(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get options"
+            )
+    else: 
+        result = get_form_with_full_responses(form_id, db)
+
+        if not result:
+            raise HTTPException(status_code=404, detail="Formulario no encontrado")
+
+        return result
