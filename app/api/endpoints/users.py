@@ -137,11 +137,18 @@ def update_user_info(
 
 
 
-@router.post("/auto", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/create_user_auto_password", response_model=UserResponse, status_code=status.HTTP_201_CREATED )
 def create_user_auto_password(
     user: UserBaseCreate,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
+        # Verificar permisos de administrador
+    if current_user.user_type.name != models.UserType.admin.name:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to update user types"
+        )
     return create_user_with_random_password(db, user)
 
 @router.put("/users/update_user_type")

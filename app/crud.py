@@ -1531,20 +1531,25 @@ def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
     if not form:
         raise HTTPException(status_code=404, detail="Formulario no encontrado.")
 
-    # Elimina aprobadores existentes (opcional)
-    db.query(FormApproval).filter(FormApproval.form_id == data.form_id).delete()
+    # Obtiene los user_ids que ya están asignados
+    existing_user_ids = {
+        fa.user_id
+        for fa in db.query(FormApproval).filter(FormApproval.form_id == data.form_id).all()
+    }
 
-    # Crea los nuevos aprobadores
+    # Solo agrega nuevos aprobadores (no duplicados)
     for approver in data.approvers:
-        db.add(FormApproval(
-            form_id=data.form_id,
-            user_id=approver.user_id,
-            sequence_number=approver.sequence_number,
-            is_mandatory=approver.is_mandatory,
-            deadline_days=approver.deadline_days
-        ))
+        if approver.user_id not in existing_user_ids:
+            db.add(FormApproval(
+                form_id=data.form_id,
+                user_id=approver.user_id,
+                sequence_number=approver.sequence_number,
+                is_mandatory=approver.is_mandatory,
+                deadline_days=approver.deadline_days
+            ))
 
     db.commit()
+
     
 def create_response_approval(db: Session, approval_data: ResponseApprovalCreate) -> ResponseApproval:
     new_approval = ResponseApproval(**approval_data.model_dump())
@@ -1557,7 +1562,11 @@ def create_response_approval(db: Session, approval_data: ResponseApprovalCreate)
 def get_forms_pending_approval_for_user(user_id: int, db: Session):
     results = []
 
-    form_approvals = db.query(FormApproval).filter(FormApproval.user_id == user_id).all()
+    form_approvals = (
+        db.query(FormApproval)
+        .filter(FormApproval.user_id == user_id, FormApproval.is_active == True)
+        .all()
+    )
 
     for form_approval in form_approvals:
         form = form_approval.form
@@ -1883,3 +1892,14 @@ def get_form_with_full_responses(form_id: int, db: Session):
         results["responses"].append(response_data)
 
     return results
+
+def update_form_design_service(db: Session, form_id: int, design_data: dict):
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Form not found")
+
+    form.form_design = design_data
+    db.commit()
+    db.refresh(form)
+
+    return form

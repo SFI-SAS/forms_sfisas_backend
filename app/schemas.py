@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Literal, Optional, List
+from typing import Any, Literal, Optional, List, Dict
 from datetime import datetime
 from enum import Enum
 
@@ -346,3 +346,47 @@ class UpdateResponseApprovalRequest(BaseModel):
     status: ApprovalStatusEnum
     reviewed_at: datetime = None
     message: str = None
+    
+class FormDesignUpdate(BaseModel):
+    form_design: Dict[str, Any]
+    
+class UserInfo(BaseModel):
+    id: int
+    name: str
+    nickname: Optional[str]
+    num_document: str
+
+    class Config:
+        from_attributes = True
+
+class FormApprovalInfo(BaseModel):
+    id: int
+    user_id: int
+    sequence_number: int
+    is_mandatory: bool
+    deadline_days: Optional[int]
+    user: UserInfo
+
+    class Config:
+        from_attributes = True
+
+class FormWithApproversResponse(BaseModel):
+    id: int
+    title: str
+    description: Optional[str]
+    format_type: str
+    form_design: Optional[dict]
+    approvers: List[FormApprovalInfo]
+
+    class Config:
+        from_attributes = True
+        
+class FormApprovalUpdate(BaseModel):
+    id: int
+    user_id: Optional[int] = None
+    sequence_number: Optional[int] = None
+    is_mandatory: Optional[bool] = None
+    deadline_days: Optional[int] = None
+
+class BulkUpdateFormApprovals(BaseModel):
+    updates: List[FormApprovalUpdate]

@@ -1,6 +1,6 @@
 from datetime import datetime
 from sqlalchemy import (
-    Boolean, Column, BigInteger, DateTime, Integer, LargeBinary, String, Text, ForeignKey, TIMESTAMP, Enum, func, text
+    JSON, Boolean, Column, BigInteger, DateTime, Integer, LargeBinary, String, Text, ForeignKey, TIMESTAMP, Enum, func, text
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -62,11 +62,14 @@ class Form(Base):
     description = Column(String(255), nullable=True)
     format_type = Column(Enum(FormatType), nullable=False, default=FormatType.abierto)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    form_design = Column(JSON, nullable=True, default=dict)
     user = relationship('User', back_populates='forms')
     form_moderators = relationship("FormModerators", back_populates="form", cascade="all, delete-orphan")
     questions = relationship("Question", secondary="form_questions", back_populates="forms")
     responses = relationship('Response', back_populates='form')  # Esto debe coincidir con la tabla Response
     form_answers = relationship('FormAnswer', back_populates='form')  # Nueva relación
+    
+    
 
 # Modelo Questions
 class Question(Base):
@@ -220,7 +223,8 @@ class FormApproval(Base):
     sequence_number = Column(Integer, nullable=False, default=1)
     is_mandatory = Column(Boolean, default=True)
     deadline_days = Column(Integer, nullable=True)
-
+    is_active = Column(Boolean, default=True, nullable=False)
+    
     form = relationship("Form", backref="approval_template")
     user = relationship("User", backref="forms_to_approve")
 
