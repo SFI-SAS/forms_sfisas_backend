@@ -391,3 +391,25 @@ class FormApprovalUpdate(BaseModel):
 
 class BulkUpdateFormApprovals(BaseModel):
     updates: List[FormApprovalUpdate]
+    
+    
+class NotificationResponse(BaseModel):
+    id: int  # <-- Incluimos el ID del ResponseApproval
+    notify_on: str
+    user: UserBase
+
+    class Config:
+        from_attributes = True
+
+
+class NotificationsByFormResponse_schema(BaseModel):
+    form_id: int
+    notifications: List[NotificationResponse]
+
+    class Config:
+        from_attributes = True
+class UpdateNotifyOnSchema(BaseModel):
+    notify_on: str
+
+    class Config:
+        from_attributes = True

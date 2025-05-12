@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
 from app.models import Answer, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormSchedule, Response, ResponseApproval, User, UserType
-from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, create_response_approval, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_user, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_approvals, update_form_design_service, update_response_approval_status
-from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateRequest, FormApprovalCreateSchema, FormBaseUser, FormCreate, FormDesignUpdate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, QuestionAdd, FormBase, ResponseApprovalCreate, UpdateResponseApprovalRequest
+from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, create_response_approval, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_user, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_approvals, update_form_design_service, update_notification_status, update_response_approval_status
+from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCreate, FormDesignUpdate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, ResponseApprovalCreate, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
 import pandas as pd
@@ -753,3 +753,56 @@ def set_is_active_false(id: int, db: Session = Depends(get_db), current_user: Us
         db.refresh(form_approval)  # Refrescar el objeto para obtener los datos actualizados
         
         return {"message": "is_mandatory actualizado a False", "form_approval": form_approval}
+
+
+@router.get("/{form_id}/notifications", response_model=NotificationsByFormResponse_schema)
+def get_notifications_by_form(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # Llamamos a la función para obtener las notificaciones
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get options"
+            )
+    else: 
+        notifications = get_notifications_for_form(form_id, db)
+
+        # Preparamos la respuesta con las notificaciones
+        return NotificationsByFormResponse_schema(
+            form_id=form_id,
+            notifications=notifications
+        )
+        
+@router.put("/notifications/update-status/{notification_id}", response_model=UpdateNotifyOnSchema)
+def update_notify_status_endpoint(notification_id: int, request: UpdateNotifyOnSchema, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Endpoint para actualizar el valor de 'notify_on' de una notificación.
+    """
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get options"
+            )
+    else: 
+        return update_notification_status(notification_id, request.notify_on, db)
+    
+
+@router.delete("/notifications/{notification_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_notification(notification_id: int, db: Session = Depends(get_db),  current_user: User = Depends(get_current_user)):
+    # Buscar la notificación por ID
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get options"
+            )
+    else: 
+        notification = db.query(FormApprovalNotification).filter(FormApprovalNotification.id == notification_id).first()
+
+        if not notification:
+            # Si no existe, lanzar un error 404
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notificación no encontrada")
+        
+        # Eliminar la notificación
+        db.delete(notification)
+        db.commit()
+
+        return {"message": "Notificación eliminada correctamente"}

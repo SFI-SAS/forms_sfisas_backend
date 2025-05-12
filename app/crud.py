@@ -8,7 +8,7 @@ from app import models
 from app.api.controllers.mail import send_email_daily_forms, send_email_plain_approval_status, send_email_with_attachment, send_welcome_email
 from app.core.security import hash_password
 from app.models import  AnswerFileSerial, ApprovalStatus, FormAnswer, FormApproval, FormApprovalNotification, FormModerators, FormSchedule, Project, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
-from app.schemas import FormApprovalCreateSchema, FormBaseUser, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
+from app.schemas import FormApprovalCreateSchema, FormBaseUser, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import List, Optional
 from datetime import datetime
@@ -1922,3 +1922,62 @@ def update_form_design_service(db: Session, form_id: int, design_data: dict):
     db.refresh(form)
 
     return form
+
+
+def get_notifications_for_form(form_id: int, db: Session):
+    # Verifica si el formulario existe
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado.")
+
+    # Obtiene las notificaciones asociadas a este formulario
+    notifications = (
+        db.query(FormApprovalNotification)
+        .filter(FormApprovalNotification.form_id == form_id)
+        .options(joinedload(FormApprovalNotification.user))  # Cargar los usuarios relacionados
+        .all()
+    )
+
+    # Prepara las notificaciones y usuarios para la respuesta
+    return [
+    NotificationResponse(
+        id=notification.id,  # ← Aquí ahora incluimos el ID
+        notify_on=notification.notify_on,
+        user=UserBase(
+            id=notification.user.id,
+            name=notification.user.name,
+            email=notification.user.email,
+            num_document=notification.user.num_document,
+            telephone=notification.user.telephone
+        )
+    )
+    for notification in notifications
+]
+
+
+def update_notification_status(notification_id: int, notify_on: str, db: Session):
+    """
+    Actualiza el valor de 'notify_on' de una notificación específica.
+
+    Args:
+        notification_id (int): ID de la notificación.
+        notify_on (str): Nuevo valor para el campo 'notify_on'.
+        db (Session): Sesión de la base de datos.
+
+    Returns:
+        FormApprovalNotification: La notificación actualizada.
+    """
+    valid_options = ["cada_aprobacion", "aprobacion_final"]
+    if notify_on not in valid_options:
+        raise HTTPException(status_code=400, detail=f"Opción no válida. Las opciones válidas son: {valid_options}")
+
+    notification = db.query(FormApprovalNotification).filter(FormApprovalNotification.id == notification_id).first()
+
+    if not notification:
+        raise HTTPException(status_code=404, detail="Notificación no encontrada.")
+
+    notification.notify_on = notify_on
+    db.commit()
+    db.refresh(notification)
+
+    return notification
