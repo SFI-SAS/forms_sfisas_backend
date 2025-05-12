@@ -314,6 +314,7 @@ class ApproverSchema(BaseModel):
     sequence_number: int
     is_mandatory: bool = True
     deadline_days: int | None = None
+    is_active: Optional[bool] = None  # Campo opcional, no obligatorio
 
 class FormApprovalCreateSchema(BaseModel):
     form_id: int

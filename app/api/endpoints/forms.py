@@ -108,6 +108,7 @@ def get_responses_with_answers(
         )
     )
 
+
     responses = db.execute(stmt).unique().scalars().all()
 
     if not responses:
@@ -523,8 +524,8 @@ def create_form_approvals(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission"
         )
-    save_form_approvals(data, db)
-    return {"message": "Aprobadores registrados correctamente"}
+    new_ids = save_form_approvals(data, db)
+    return {"new_user_ids": new_ids}
 
 
 @router.post("/create/response_approval_endpoint", status_code=status.HTTP_201_CREATED)

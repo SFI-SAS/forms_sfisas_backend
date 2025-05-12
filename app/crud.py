@@ -464,8 +464,8 @@ def post_create_response(db: Session, form_id: int, user_id: int, mode: str = "o
     db.commit()
     db.refresh(response)
 
-    # Obtener aprobadores desde FormApproval
-    form_approvals = db.query(FormApproval).filter_by(form_id=form_id).all()
+        # Obtener aprobadores desde FormApproval
+    form_approvals = db.query(FormApproval).filter(FormApproval.form_id == form_id, FormApproval.is_active == True).all()
 
     # Crear entradas en ResponseApproval
     for approver in form_approvals:
@@ -1523,34 +1523,53 @@ def get_unanswered_forms_by_user(db: Session, user_id: int):
     ).all()
     
     return forms
-
-
 def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
     # Verifica si el formulario existe
     form = db.query(Form).filter(Form.id == data.form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Formulario no encontrado.")
 
-    # Obtiene los user_ids que ya están asignados
-    existing_user_ids = {
-        fa.user_id
-        for fa in db.query(FormApproval).filter(FormApproval.form_id == data.form_id).all()
-    }
+    # Obtiene las aprobaciones existentes para este formulario
+    existing_approvals = db.query(FormApproval).filter(FormApproval.form_id == data.form_id).all()
 
-    # Solo agrega nuevos aprobadores (no duplicados)
+    # Lista para guardar los nuevos IDs insertados
+    newly_created_user_ids = []
+
+    # Solo agrega nuevos aprobadores (no duplicados) o crea un nuevo registro si el sequence_number es diferente
     for approver in data.approvers:
-        if approver.user_id not in existing_user_ids:
+        # Filtra aprobaciones activas con el mismo user_id y form_id
+        existing_active_approval = next(
+            (fa for fa in existing_approvals if fa.user_id == approver.user_id and fa.is_active), None
+        )
+
+        if existing_active_approval:
+            # Si ya existe un aprobador activo con el mismo user_id y form_id y el sequence_number es diferente
+            if existing_active_approval.sequence_number != approver.sequence_number:
+                # Crea una nueva entrada
+                db.add(FormApproval(
+                    form_id=data.form_id,
+                    user_id=approver.user_id,
+                    sequence_number=approver.sequence_number,
+                    is_mandatory=approver.is_mandatory,
+                    deadline_days=approver.deadline_days,
+                    is_active=approver.is_active if approver.is_active is not None else True  # Si no se pasa, se asume True
+                ))
+                newly_created_user_ids.append(approver.user_id)
+        else:
+            # Si no existe un aprobador activo con el mismo user_id y form_id, se puede agregar el nuevo aprobador
             db.add(FormApproval(
                 form_id=data.form_id,
                 user_id=approver.user_id,
                 sequence_number=approver.sequence_number,
                 is_mandatory=approver.is_mandatory,
-                deadline_days=approver.deadline_days
+                deadline_days=approver.deadline_days,
+                is_active=approver.is_active if approver.is_active is not None else True  # Si no se pasa, se asume True
             ))
+            newly_created_user_ids.append(approver.user_id)
 
     db.commit()
+    return newly_created_user_ids
 
-    
 def create_response_approval(db: Session, approval_data: ResponseApprovalCreate) -> ResponseApproval:
     new_approval = ResponseApproval(**approval_data.model_dump())
     db.add(new_approval)
