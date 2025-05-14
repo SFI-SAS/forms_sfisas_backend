@@ -582,24 +582,22 @@ def update_response_approval(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
 ):
     try:
-        if current_user == None:
+        print("Datos recibidos:", update_data)
+        if current_user is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User does not have permission to get options"
             )
-        else: 
-            # Llamar a la función de servicio para actualizar el estado
-            updated_response_approval = update_response_approval_status(
-                response_id=response_id,
-                user_id= current_user.id,
-                update_data=update_data,
-                db=db
-            )
-            return {"message": "ResponseApproval updated successfully", "response_approval": updated_response_approval}
-
+        updated_response_approval = update_response_approval_status(
+            response_id=response_id,
+            user_id=current_user.id,
+            update_data=update_data,
+            db=db
+        )
+        return {"message": "ResponseApproval updated successfully", "response_approval": updated_response_approval}
     except HTTPException as e:
-        # Capturar la excepción personalizada
         raise e
+
     
 @router.get("/form-details/{form_id}")
 def get_form_details(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

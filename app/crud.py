@@ -1600,10 +1600,18 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
         responses = db.query(Response).filter(Response.form_id == form.id).all()
 
         for response in responses:
-            response_approval = db.query(ResponseApproval).filter(
+# Filtramos todas las aprobaciones del usuario para esta respuesta
+            response_approvals = db.query(ResponseApproval).filter(
                 ResponseApproval.response_id == response.id,
                 ResponseApproval.user_id == user_id
-            ).first()
+            ).order_by(ResponseApproval.sequence_number).all()
+
+            # Identificamos cuál está pendiente o cuál está en el turno actual
+            response_approval = next(
+                (ra for ra in response_approvals if ra.status != ApprovalStatus.aprobado),
+                response_approvals[-1] if response_approvals else None
+            )
+
 
             if not response_approval:
                 continue  # Este usuario no debe aprobar esta respuesta
@@ -1678,7 +1686,8 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 "your_approval_status": {
                     "status": response_approval.status.value,
                     "reviewed_at": response_approval.reviewed_at.isoformat() if response_approval.reviewed_at else None,
-                    "message": response_approval.message
+                    "message": response_approval.message,
+                    "sequence_number": response_approval.sequence_number
                 },
                 "all_approvers": all_approvals
             })
@@ -1696,9 +1705,9 @@ def update_response_approval_status(
     # 1. Buscar el ResponseApproval correspondiente
     response_approval = db.query(ResponseApproval).filter(
         ResponseApproval.response_id == response_id,
-        ResponseApproval.user_id == user_id
+        ResponseApproval.sequence_number == update_data.selectedSequence
     ).first()
-
+    
     if not response_approval:
         raise HTTPException(status_code=404, detail="ResponseApproval not found")
 

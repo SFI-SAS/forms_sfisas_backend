@@ -344,9 +344,11 @@ class ApprovalStatusEnum(str, Enum):
 
 
 class UpdateResponseApprovalRequest(BaseModel):
-    status: ApprovalStatusEnum
-    reviewed_at: datetime = None
-    message: str = None
+    status: str
+    reviewed_at: Optional[datetime] = None
+    message: Optional[str] = None
+    selectedSequence: int
+
     
 class FormDesignUpdate(BaseModel):
     form_design: Dict[str, Any]
