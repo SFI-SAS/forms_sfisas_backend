@@ -2037,3 +2037,76 @@ def delete_form(db: Session, form_id: int):
         )
     
     return {"message": "Formulario y registros relacionados eliminados correctamente."}
+
+
+
+def get_response_details_logic(response_id: int, db: Session):
+    # 🔎 Consultar el valor de submitted_at y el form_id
+    response = db.query(Response).filter(Response.id == response_id).first()
+
+    if not response:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Response no encontrado."
+        )
+
+    # 🕰️ Calcular la diferencia de días con la fecha actual
+    fecha_actual = datetime.now()
+    diferencia_dias = (fecha_actual - response.submitted_at).days
+
+    # 🔎 Consultar las aprobaciones relacionadas, ordenadas por secuencia
+    response_approvals = (
+        db.query(ResponseApproval)
+        .filter(ResponseApproval.response_id == response_id)
+        .order_by(ResponseApproval.sequence_number)
+        .all()
+    )
+
+    # 📦 Formatear el resultado para el frontend
+    result = {
+        "response_id": response_id,
+        "dias_transcurridos": diferencia_dias,
+        "aprobaciones": []
+    }
+
+    # 🔄 Iterar sobre cada aprobación para buscar su deadline en FormApproval
+    for approval in response_approvals:
+        # 🔎 Buscar en FormApproval el que coincida en form_id, usuario, secuencia y esté activo
+        form_approval = (
+            db.query(FormApproval)
+            .filter(
+                FormApproval.form_id == response.form_id,   # ✅ Form ID que viene de Response
+                FormApproval.user_id == approval.user_id,   # ✅ User ID que viene de ResponseApproval
+                FormApproval.sequence_number == approval.sequence_number,  # ✅ Secuencia
+                FormApproval.is_active == True              # ✅ Activo
+            )
+            .first()
+        )
+
+        # 🔎 Consultar información del usuario
+        user_info = (
+            db.query(User)
+            .filter(User.id == approval.user_id)
+            .first()
+        )
+
+        # 📦 Agregar al resultado si existe el usuario
+        result["aprobaciones"].append({
+            "id": approval.id,
+            "sequence_number": approval.sequence_number,
+            "status": approval.status,
+            "reviewed_at": approval.reviewed_at,
+            "is_mandatory": approval.is_mandatory,
+            "message": approval.message,
+            "deadline_days": form_approval.deadline_days if form_approval else None,
+            "user": {
+                "id": user_info.id,
+                "num_document": user_info.num_document,
+                "name": user_info.name,
+                "email": user_info.email,
+                "telephone": user_info.telephone,
+                "nickname": user_info.nickname
+            } if user_info else None
+        })
+
+    return result

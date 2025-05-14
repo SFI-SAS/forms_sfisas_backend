@@ -214,19 +214,19 @@ class AnswerFileSerial(Base):
 
 
 
-class FormApproval(Base):
-    __tablename__ = 'form_approvals'
+    class FormApproval(Base):
+        __tablename__ = 'form_approvals'
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
-    form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=False)
-    user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
-    sequence_number = Column(Integer, nullable=False, default=1)
-    is_mandatory = Column(Boolean, default=True)
-    deadline_days = Column(Integer, nullable=True)
-    is_active = Column(Boolean, default=True, nullable=False)
-    
-    form = relationship("Form", backref="approval_template")
-    user = relationship("User", backref="forms_to_approve")
+        id = Column(BigInteger, primary_key=True, autoincrement=True)
+        form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=False)
+        user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
+        sequence_number = Column(Integer, nullable=False, default=1)
+        is_mandatory = Column(Boolean, default=True)
+        deadline_days = Column(Integer, nullable=True)
+        is_active = Column(Boolean, default=True, nullable=False)
+        
+        form = relationship("Form", backref="approval_template")
+        user = relationship("User", backref="forms_to_approve")
 
 
 class ResponseApproval(Base):
