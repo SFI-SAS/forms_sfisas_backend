@@ -1723,9 +1723,15 @@ def update_response_approval_status(
     response = db.query(Response).filter(Response.id == response_id).first()
     form = db.query(Form).filter(Form.id == response.form_id).first()
 
-    form_approval_template = db.query(FormApproval).filter(
-        FormApproval.form_id == form.id
-    ).order_by(FormApproval.sequence_number).all()
+    form_approval_template = (
+        db.query(FormApproval)
+        .filter(
+            FormApproval.form_id == form.id,
+            FormApproval.is_active == True  # Solo los que están activos
+        )
+        .order_by(FormApproval.sequence_number)
+        .all()
+    )
 
     response_approvals = db.query(ResponseApproval).filter(
         ResponseApproval.response_id == response_id
@@ -1990,3 +1996,44 @@ def update_notification_status(notification_id: int, notify_on: str, db: Session
     db.refresh(notification)
 
     return notification
+
+
+def delete_form(db: Session, form_id: int):
+    """
+    Elimina un formulario y todos sus registros relacionados, excepto si tiene respuestas asociadas.
+    """
+    # 1️⃣ Consultar el formulario
+    form = db.query(Form).filter(Form.id == form_id).first()
+
+    if not form:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Formulario no encontrado."
+        )
+    
+    # 2️⃣ Verificar si tiene respuestas asociadas
+    has_responses = db.query(Response).filter(Response.form_id == form_id).count()
+    
+    if has_responses > 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No se puede eliminar el formulario porque tiene respuestas asociadas."
+        )
+
+    try:
+        # 3️⃣ Eliminar registros relacionados en cascada (FormApproval, etc.)
+        db.query(FormApproval).filter(FormApproval.form_id == form_id).delete()
+        # Aquí podrías agregar más tablas relacionadas si existen
+
+        # 4️⃣ Eliminar el formulario principal
+        db.delete(form)
+        db.commit()
+    
+    except Exception as e:
+        db.rollback()  # Revertir cambios si ocurre un error
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ocurrió un error al eliminar el formulario: {str(e)}"
+        )
+    
+    return {"message": "Formulario y registros relacionados eliminados correctamente."}
