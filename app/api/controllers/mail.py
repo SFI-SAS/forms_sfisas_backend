@@ -290,3 +290,91 @@ def send_email_plain_approval_status(
     except Exception as e:
         print(f"❌ Error al enviar correo a {to_email}: {str(e)}")
         return False
+
+
+def send_email_plain_approval_status_vencidos(
+    to_email: str,
+    name_form: str,
+    to_name: str,
+    body_text: list,
+    subject: str
+) -> bool:
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
+        msg["To"] = formataddr((to_name, to_email))
+
+        current_date = datetime.now().strftime("%d/%m/%Y")
+
+        # 🔄 Construir el cuerpo del correo con estilos en línea
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; margin: 0; padding: 20px;">
+            <div style="background-color: #ffffff; border-radius: 8px; padding: 20px; max-width: 800px; margin: auto; 
+                        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);">
+                
+                <h2 style="color: #00498C; margin-bottom: 20px; text-align: center;">🔔 Reporte de Aprobaciones Vencidas</h2>
+                
+                <p style="font-size: 16px; color: #333333; text-align: center;">
+                    Estas son las aprobaciones vencidas para el formato: 
+                    <strong style="color: #00498C;">{name_form}</strong>
+                </p>
+                
+                <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
+                    <thead>
+                        <tr>
+                            <th style="background-color: #00498C; color: white; text-align: left; padding: 10px; border: 1px solid #dddddd;">Secuencia</th>
+                            <th style="background-color: #00498C; color: white; text-align: left; padding: 10px; border: 1px solid #dddddd;">Nombre</th>
+                            <th style="background-color: #00498C; color: white; text-align: left; padding: 10px; border: 1px solid #dddddd;">Documento</th>
+                            <th style="background-color: #00498C; color: white; text-align: left; padding: 10px; border: 1px solid #dddddd;">Email</th>
+                            <th style="background-color: #00498C; color: white; text-align: left; padding: 10px; border: 1px solid #dddddd;">Teléfono</th>
+                            <th style="background-color: #00498C; color: white; text-align: left; padding: 10px; border: 1px solid #dddddd;">Mensaje</th>
+                            <th style="background-color: #00498C; color: white; text-align: left; padding: 10px; border: 1px solid #dddddd;">Días de Plazo</th>
+                            <th style="background-color: #00498C; color: white; text-align: left; padding: 10px; border: 1px solid #dddddd;">Fecha Revisión</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        """
+
+        # 🔄 Agregar cada aprobación en una fila de la tabla
+        for index, item in enumerate(body_text):
+            background = "#e9f5ff" if index % 2 == 0 else "#ffffff"
+            html_content += f"""
+                <tr style="background-color: {background};">
+                    <td style="padding: 10px; border: 1px solid #dddddd;">{item["sequence_number"]}</td>
+                    <td style="padding: 10px; border: 1px solid #dddddd;">{item["user"]["name"]}</td>
+                    <td style="padding: 10px; border: 1px solid #dddddd;">{item["user"]["num_document"]}</td>
+                    <td style="padding: 10px; border: 1px solid #dddddd;">{item["user"]["email"]}</td>
+                    <td style="padding: 10px; border: 1px solid #dddddd;">{item["user"]["telephone"]}</td>
+                    <td style="padding: 10px; border: 1px solid #dddddd;">{item["message"] if item["message"] else 'Sin mensaje'}</td>
+                    <td style="padding: 10px; border: 1px solid #dddddd;">{item["deadline_days"]}</td>
+                    <td style="padding: 10px; border: 1px solid #dddddd;">{item["reviewed_at"] if item["reviewed_at"] else 'Pendiente'}</td>
+                </tr>
+            """
+
+        html_content += f"""
+                    </tbody>
+                </table>
+                
+                <p style="color: #999999; font-size: 12px; text-align: center; margin-top: 20px;">
+                    Enviado el {current_date}
+                </p>
+            </div>
+        </body>
+        </html>
+        """
+
+        msg.set_content(f"Estimado/a {to_name},\n\nAprobaciones vencidas para el formato {name_form}.")
+        msg.add_alternative(html_content, subtype="html")
+
+        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
+            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
+            smtp.send_message(msg)
+
+        print(f"✅ Correo enviado a {to_email}")
+        return True
+
+    except Exception as e:
+        print(f"❌ Error al enviar correo a {to_email}: {str(e)}")
+        return False
