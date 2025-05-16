@@ -4,9 +4,9 @@ from sqlalchemy.orm import Session
 from typing import List
 from app import models
 from app.database import get_db
-from app.models import User, UserType
-from app.crud import create_email_config, create_user, create_user_with_random_password, fetch_all_users, get_all_email_configs, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
-from app.schemas import EmailConfigCreate, EmailConfigResponse, UserBaseCreate, UserCreate, UserResponse, UserUpdate, UserUpdateInfo
+from app.models import EmailConfig, User, UserType
+from app.crud import create_email_config, create_user, create_user_with_random_password, fetch_all_users, get_all_email_configs, get_response_details_logic, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
+from app.schemas import EmailConfigCreate, EmailConfigResponse, EmailConfigUpdate, EmailStatusUpdate, UserBaseCreate, UserCreate, UserResponse, UserUpdate, UserUpdateInfo
 from app.core.security import get_current_user, hash_password
 
 router = APIRouter()
@@ -212,3 +212,37 @@ def get_email_configs(db: Session = Depends(get_db)):
         return email_configs
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+    
+@router.put("/email-config/{id}")
+def update_email_config(id: int, email_update: EmailConfigUpdate, db: Session = Depends(get_db)):
+    # Buscar el registro en la base de datos
+    email_config = db.query(EmailConfig).filter(EmailConfig.id == id).first()
+
+    if not email_config:
+        raise HTTPException(status_code=404, detail="Configuración de correo no encontrada")
+
+    # Actualizar el valor del correo
+    email_config.email_address = email_update.email_address
+
+    # Guardar cambios
+    db.commit()
+    db.refresh(email_config)
+    
+    return {"message": "Correo actualizado correctamente", "data": email_config}
+
+
+@router.put("/email-config/{id}/status")
+def update_email_config_status(id: int, status_update: EmailStatusUpdate, db: Session = Depends(get_db)):
+    return get_response_details_logic(db)
+    # email_config = db.query(EmailConfig).filter(EmailConfig.id == id).first()
+
+    # if not email_config:
+    #     raise HTTPException(status_code=404, detail="Configuración de correo no encontrada")
+
+    # email_config.is_active = status_update.is_active
+
+    # db.commit()
+    # db.refresh(email_config)
+
+    # return {"message": "Estado actualizado correctamente", "data": email_config}

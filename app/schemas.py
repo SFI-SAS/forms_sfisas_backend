@@ -424,3 +424,9 @@ class EmailConfigResponse(BaseModel):
     id: int
     email_address: EmailStr
     is_active: bool
+    
+class EmailConfigUpdate(BaseModel):
+    email_address: str
+    
+class EmailStatusUpdate(BaseModel):
+    is_active: bool

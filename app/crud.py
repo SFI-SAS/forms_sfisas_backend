@@ -2142,15 +2142,20 @@ def get_response_details_logic(db: Session):
         resultados.append(result)
 
     if aprobaciones_globales:
-        enviar_correo_aprobaciones_vencidas_consolidado(aprobaciones_globales)
+        enviar_correo_aprobaciones_vencidas_consolidado(aprobaciones_globales, db)
 
     return resultados
 
 
-def enviar_correo_aprobaciones_vencidas_consolidado(aprobaciones_globales: dict):
+def enviar_correo_aprobaciones_vencidas_consolidado(aprobaciones_globales: dict, db: Session):
     """
     Envía un único correo con todas las aprobaciones vencidas del día, agrupadas por formulario.
     """
+    # Consultar correos activos de la base de datos
+    correos_activos = db.query(EmailConfig.email_address).filter(EmailConfig.is_active == True).all()
+    lista_correos = [correo[0] for correo in correos_activos]
+
+    # Contenido del HTML
     html_content = """
     <html>
     <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f4f4; margin: 0; padding: 30px;">
@@ -2208,14 +2213,13 @@ def enviar_correo_aprobaciones_vencidas_consolidado(aprobaciones_globales: dict)
     </html>
     """
 
+    # Asunto del correo
     asunto = "Alerta de Aprobaciones Vencidas"
-    email_reporte_1 = "cgomez@sfisas.com"
-    email_reporte_2 = "cgomez@saferut.com"
 
-    send_email_plain_approval_status_vencidos(email_reporte_1, "Consolidado", "Admin 1", html_content, asunto)
-    send_email_plain_approval_status_vencidos(email_reporte_2, "Consolidado", "Admin 2", html_content, asunto)
-
-
+    # Enviar el correo a cada uno de los correos activos
+    for email in lista_correos:
+        send_email_plain_approval_status_vencidos(email, "Consolidado", "Admin", html_content, asunto)
+        
 def create_email_config(db: Session, email_config: EmailConfigCreate):
     db_email = EmailConfig(
         email_address=email_config.email_address,
