@@ -255,3 +255,11 @@ class FormApprovalNotification(Base):
 
     form = relationship("Form", backref="notification_rules")
     user = relationship("User")
+
+
+class EmailConfig(Base):
+    __tablename__ = "email_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email_address = Column(String(255), nullable=False)  
+    is_active = Column(Boolean, default=True)

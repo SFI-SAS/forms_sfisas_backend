@@ -415,3 +415,12 @@ class UpdateNotifyOnSchema(BaseModel):
 
     class Config:
         from_attributes = True
+        
+class EmailConfigCreate(BaseModel):
+    email_address: EmailStr
+    is_active: bool = True
+    
+class EmailConfigResponse(BaseModel):
+    id: int
+    email_address: EmailStr
+    is_active: bool

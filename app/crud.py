@@ -1,3 +1,4 @@
+from collections import defaultdict
 from io import BytesIO
 import json
 import os
@@ -7,8 +8,8 @@ from sqlalchemy.exc import IntegrityError
 from app import models
 from app.api.controllers.mail import send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_welcome_email
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, ApprovalStatus, FormAnswer, FormApproval, FormApprovalNotification, FormModerators, FormSchedule, Project, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
-from app.schemas import FormApprovalCreateSchema, FormBaseUser, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
+from app.models import  AnswerFileSerial, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormModerators, FormSchedule, Project, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
+from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -195,6 +196,7 @@ def get_form(db: Session, form_id: int, user_id: int):
                 ]
             }
             for response in form.responses
+           
         ]
     }
 
@@ -2038,156 +2040,191 @@ def delete_form(db: Session, form_id: int):
     
     return {"message": "Formulario y registros relacionados eliminados correctamente."}
 
-def get_response_details_logic(response_id: int, db: Session):
-    # 🔎 Consultar el valor de submitted_at y el form_id
-    response = db.query(Response).filter(Response.id == response_id).first()
+def get_response_details_logic(db: Session):
+    responses = db.query(Response).all()
 
-    if not response:
+    if not responses:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Response no encontrado."
+            detail="No se encontraron respuestas pendientes."
         )
 
-    # 🕰️ Calcular la diferencia de días con la fecha actual
     fecha_actual = datetime.now()
-    dias_transcurridos = (fecha_actual - response.submitted_at).days
+    resultados = []
 
-    # 🔎 Consultar las aprobaciones relacionadas, ordenadas por secuencia
-    response_approvals = (
-        db.query(ResponseApproval)
-        .filter(ResponseApproval.response_id == response_id)
-        .order_by(ResponseApproval.sequence_number)
-        .all()
-    )
+    # Diccionario para acumular aprobaciones vencidas por formulario
+    aprobaciones_globales = defaultdict(list)
 
-    # 📦 Formatear el resultado para el frontend
-    result = {
-        "response_id": response_id,
-        "dias_transcurridos": dias_transcurridos,
-        "formato": {
-            "nombre": response.form.title if response.form else None,
-            "descripcion": response.form.description if response.form else None
-        },
-        "aprobaciones": []
-    }
+    for response in responses:
+        dias_transcurridos = (fecha_actual - response.submitted_at).days
 
-    # ✅ Variable para acumular el deadline
-    acumulado_deadline = 0
-    rechazo_encontrado = False
-    aprobaciones_vencidas = []
+        response_approvals = (
+            db.query(ResponseApproval)
+            .filter(ResponseApproval.response_id == response.id)
+            .order_by(ResponseApproval.sequence_number)
+            .all()
+        )
 
-    # 🔄 Iterar sobre cada aprobación en secuencia
-    for approval in response_approvals:
-        if approval.status == ApprovalStatus.rechazado:
-            rechazo_encontrado = True
-        
-        # 🔎 Buscar en FormApproval el que coincida en form_id, usuario, secuencia y esté activo
-        form_approval = (
-            db.query(FormApproval)
-            .filter(
-                FormApproval.form_id == response.form_id,
-                FormApproval.user_id == approval.user_id,
-                FormApproval.sequence_number == approval.sequence_number,
-                FormApproval.is_active == True
+        result = {
+            "response_id": response.id,
+            "dias_transcurridos": dias_transcurridos,
+            "formato": {
+                "nombre": response.form.title if response.form else None,
+                "descripcion": response.form.description if response.form else None
+            },
+            "aprobaciones": []
+        }
+
+        acumulado_deadline = 0
+        rechazo_encontrado = False
+
+        # Obtener info del usuario creador
+        user_creator_info = db.query(User).filter(User.id == response.user_id).first()
+
+        for approval in response_approvals:
+            if approval.status == ApprovalStatus.rechazado:
+                rechazo_encontrado = True
+
+            form_approval = (
+                db.query(FormApproval)
+                .filter(
+                    FormApproval.form_id == response.form_id,
+                    FormApproval.user_id == approval.user_id,
+                    FormApproval.sequence_number == approval.sequence_number,
+                    FormApproval.is_active == True
+                )
+                .first()
             )
-            .first()
-        )
 
-        if form_approval:
-            # 🔄 Sumar el deadline al acumulado (aunque esté aprobado, sigue sumando)
-            acumulado_deadline += form_approval.deadline_days
+            if form_approval:
+                acumulado_deadline += form_approval.deadline_days
 
-        # ✅ Si hay un rechazo, no mostrar los siguientes
-        if rechazo_encontrado or approval.status != ApprovalStatus.pendiente:
-            continue
+            if rechazo_encontrado or approval.status != ApprovalStatus.pendiente:
+                continue
 
-        # 🔎 Consultar información del usuario
-        user_info = (
-            db.query(User)
-            .filter(User.id == approval.user_id)
-            .first()
-        )
+            # Info del aprobador
+            user_approver_info = db.query(User).filter(User.id == approval.user_id).first()
 
-        # ✅ Comparar días transcurridos con el acumulado
-        plazo_vencido = dias_transcurridos > acumulado_deadline
-        
-        # ⚠️ **Nueva Lógica:** Verificar si está vencido hace exactamente un día
-        if plazo_vencido and (dias_transcurridos - acumulado_deadline) == 1:
-            # 📦 Agregar al resultado y a la lista para el correo
-            data = {
-                "id": approval.id,
-                "sequence_number": approval.sequence_number,
-                "status": approval.status,
-                "reviewed_at": approval.reviewed_at,
-                "is_mandatory": approval.is_mandatory,
-                "message": approval.message,
-                "deadline_days": form_approval.deadline_days if form_approval else None,
-                "deadline_acumulado": acumulado_deadline,
-                "plazo_vencido": plazo_vencido,
-                "user": {
-                    "id": user_info.id,
-                    "num_document": user_info.num_document,
-                    "name": user_info.name,
-                    "email": user_info.email,
-                    "telephone": user_info.telephone,
-                    "nickname": user_info.nickname
-                } if user_info else None
-            }
-            result["aprobaciones"].append(data)
-            aprobaciones_vencidas.append(data)
+            plazo_vencido = dias_transcurridos > acumulado_deadline
+            
+            # Solo añadir si venció ayer (exactamente un día)
+            if plazo_vencido and (dias_transcurridos - acumulado_deadline) == 1:
+                data = {
+                    "id": approval.id,
+                    "sequence_number": approval.sequence_number,
+                    "status": approval.status,
+                    "reviewed_at": approval.reviewed_at,
+                    "is_mandatory": approval.is_mandatory,
+                    "message": approval.message,
+                    "deadline_days": form_approval.deadline_days if form_approval else None,
+                    "deadline_acumulado": acumulado_deadline,
+                    "plazo_vencido": plazo_vencido,
+                    "creador": {
+                        "id": user_creator_info.id,
+                        "num_document": user_creator_info.num_document,
+                        "name": user_creator_info.name,
+                        "email": user_creator_info.email,
+                        "telephone": user_creator_info.telephone,
+                        "nickname": user_creator_info.nickname
+                    } if user_creator_info else None,
+                    "aprobador": {
+                        "id": user_approver_info.id,
+                        "num_document": user_approver_info.num_document,
+                        "name": user_approver_info.name,
+                        "email": user_approver_info.email,
+                        "telephone": user_approver_info.telephone,
+                        "nickname": user_approver_info.nickname
+                    } if user_approver_info else None
+                }
+                result["aprobaciones"].append(data)
+                aprobaciones_globales[response.form.title].append(data)
 
-    # 📬 Enviar el correo si hay aprobaciones vencidas
-    if aprobaciones_vencidas:
-        enviar_correo_aprobaciones_vencidas(response.form.title, aprobaciones_vencidas)
+        resultados.append(result)
 
-    return result
+    if aprobaciones_globales:
+        enviar_correo_aprobaciones_vencidas_consolidado(aprobaciones_globales)
 
-def enviar_correo_aprobaciones_vencidas(form_name: str, aprobaciones: List[dict]):
-    # 📦 Armar el cuerpo del correo en HTML
-    html_content = f"""
+    return resultados
+
+
+def enviar_correo_aprobaciones_vencidas_consolidado(aprobaciones_globales: dict):
+    """
+    Envía un único correo con todas las aprobaciones vencidas del día, agrupadas por formulario.
+    """
+    html_content = """
     <html>
-    <body style="font-family: Arial, sans-serif;">
-        <h2>🔔 Reporte de Aprobaciones Vencidas - {form_name}</h2>
-        <p>Las siguientes aprobaciones han vencido hace exactamente un día:</p>
-        <table style="border-collapse: collapse; width: 100%; margin-bottom: 20px;">
+    <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f4f4; margin: 0; padding: 30px;">
+        <div style="background-color: #ffffff; border-radius: 6px; padding: 25px; max-width: 850px; margin: auto; 
+                    box-shadow: 0 3px 15px rgba(0, 0, 0, 0.1);">
+            <h2 style="color: #2c3e50; margin-bottom: 25px; text-align: center; font-weight: 700;">Alerta de Aprobaciones Vencidas</h2>
+            <p style="font-size: 16px; color: #34495e; text-align: center; margin-bottom: 35px;">
+                Las siguientes aprobaciones han vencido.
+            </p>
+    """
+
+    for form_name, aprobaciones in aprobaciones_globales.items():
+        html_content += f"""
+        <h3 style="color: #2c3e50; margin-top: 40px; border-bottom: 2px solid #00498C; padding-bottom: 8px;">Formulario: {form_name}</h3>
+        <table style="width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 14px;">
             <thead>
-                <tr>
-                    <th style="border: 1px solid black; padding: 8px;">Usuario</th>
-                    <th style="border: 1px solid black; padding: 8px;">Correo</th>
-                    <th style="border: 1px solid black; padding: 8px;">Días de Plazo</th>
-                    <th style="border: 1px solid black; padding: 8px;">Fecha Límite</th>
+                <tr style="background-color: #00498C; color: white; text-align: left;">
+                    <th style="padding: 12px; border: 1px solid #ddd;">Persona que llenó el formulario</th>
+                    <th style="padding: 12px; border: 1px solid #ddd;">Persona que aprueba</th>
+                    <th style="padding: 12px; border: 1px solid #ddd;">Correo del aprobador</th>
+                    <th style="padding: 12px; border: 1px solid #ddd;">Días de plazo</th>
+                    <th style="padding: 12px; border: 1px solid #ddd;">Fecha límite</th>
                 </tr>
             </thead>
             <tbody>
-    """
+        """
 
-    for approval in aprobaciones:
-        user_info = approval["user"]
-        fecha_limite = (datetime.now() - timedelta(days=1)).strftime("%d/%m/%Y")
-        html_content += f"""
-        <tr>
-            <td style="border: 1px solid black; padding: 8px;">{user_info['name']}</td>
-            <td style="border: 1px solid black; padding: 8px;">{user_info['email']}</td>
-            <td style="border: 1px solid black; padding: 8px;">{approval['deadline_days']}</td>
-            <td style="border: 1px solid black; padding: 8px;">{fecha_limite}</td>
-        </tr>
+        for index, approval in enumerate(aprobaciones):
+            creador = approval.get("creador") or {}
+            aprobador = approval.get("aprobador") or {}
+            fecha_limite = (datetime.now() - timedelta(days=1)).strftime("%d/%m/%Y")
+            background = "#ecf0f1" if index % 2 == 0 else "#ffffff"
+
+            html_content += f"""
+            <tr style="background-color: {background};">
+                <td style="padding: 12px; border: 1px solid #ddd;">{creador.get('name', 'N/A')}</td>
+                <td style="padding: 12px; border: 1px solid #ddd;">{aprobador.get('name', 'N/A')}</td>
+                <td style="padding: 12px; border: 1px solid #ddd;"><a href="mailto:{aprobador.get('email', '')}" style="color: #00498C; text-decoration: none;">{aprobador.get('email', 'N/A')}</a></td>
+                <td style="padding: 12px; border: 1px solid #ddd; text-align: center;">{approval['deadline_days']}</td>
+                <td style="padding: 12px; border: 1px solid #ddd; text-align: center;">{fecha_limite}</td>
+            </tr>
+            """
+
+        html_content += """
+            </tbody>
+        </table>
         """
 
     html_content += """
-            </tbody>
-        </table>
-        <p>Por favor, revisa estas aprobaciones pendientes lo antes posible.</p>
+            <p style="color: #7f8c8d; font-size: 12px; text-align: center; margin-top: 30px;">
+                Este correo fue generado automáticamente.
+            </p>
+        </div>
     </body>
     </html>
     """
 
-    # ✉️ Asunto y cuerpo del mensaje
-    asunto = f"🔔 Reporte de Aprobaciones Vencidas - {form_name}"
-    
-    # Dirección de correo que recibirá el reporte
+    asunto = "Alerta de Aprobaciones Vencidas"
     email_reporte_1 = "cgomez@sfisas.com"
     email_reporte_2 = "cgomez@saferut.com"
 
-    # 📬 Enviar a los dos destinatarios, esta vez con la lista de aprobaciones completa
-    send_email_plain_approval_status_vencidos(email_reporte_1, form_name, "Admin 1", aprobaciones, asunto)
-    send_email_plain_approval_status_vencidos(email_reporte_2, form_name, "Admin 2", aprobaciones, asunto)
+    send_email_plain_approval_status_vencidos(email_reporte_1, "Consolidado", "Admin 1", html_content, asunto)
+    send_email_plain_approval_status_vencidos(email_reporte_2, "Consolidado", "Admin 2", html_content, asunto)
+
+
+def create_email_config(db: Session, email_config: EmailConfigCreate):
+    db_email = EmailConfig(
+        email_address=email_config.email_address,
+        is_active=email_config.is_active
+    )
+    db.add(db_email)
+    db.commit()
+    db.refresh(db_email)
+    return db_email
+
+def get_all_email_configs(db: Session):
+    return db.query(EmailConfig).all()

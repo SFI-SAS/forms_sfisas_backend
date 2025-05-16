@@ -818,7 +818,3 @@ def delete_form_endpoint(form_id: int, db: Session = Depends(get_db), current_us
         )
     return delete_form(db, form_id)
 
-
-@router.get("/response/details/{response_id}")
-def get_response_details(response_id: int, db: Session = Depends(get_db)):
-    return get_response_details_logic(response_id, db)

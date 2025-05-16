@@ -5,8 +5,8 @@ from typing import List
 from app import models
 from app.database import get_db
 from app.models import User, UserType
-from app.crud import create_user, create_user_with_random_password, fetch_all_users, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
-from app.schemas import UserBaseCreate, UserCreate, UserResponse, UserUpdate, UserUpdateInfo
+from app.crud import create_email_config, create_user, create_user_with_random_password, fetch_all_users, get_all_email_configs, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
+from app.schemas import EmailConfigCreate, EmailConfigResponse, UserBaseCreate, UserCreate, UserResponse, UserUpdate, UserUpdateInfo
 from app.core.security import get_current_user, hash_password
 
 router = APIRouter()
@@ -186,3 +186,29 @@ async def update_user_type(
     db.commit()
     
     return {"message": f"User type for {num_document} updated successfully", "user_type": user.user_type}
+
+
+
+@router.post("/email-config/", response_model=EmailConfigCreate)
+def create_email(email_config: EmailConfigCreate, db: Session = Depends(get_db),current_user: models.User = Depends(get_current_user)):
+    try:
+        if current_user.user_type.name != models.UserType.admin.name:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User does not have permission to update user types"
+            )
+        return create_email_config(db, email_config)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    
+
+@router.get("/email-config/", response_model=List[EmailConfigResponse])
+def get_email_configs(db: Session = Depends(get_db)):
+    try:
+        email_configs = get_all_email_configs(db)
+        if not email_configs:
+            raise HTTPException(status_code=404, detail="No se encontraron configuraciones de correo")
+        return email_configs
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
