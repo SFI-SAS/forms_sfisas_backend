@@ -215,7 +215,12 @@ def get_email_configs(db: Session = Depends(get_db)):
     
     
 @router.put("/email-config/{id}")
-def update_email_config(id: int, email_update: EmailConfigUpdate, db: Session = Depends(get_db)):
+def update_email_config(id: int, email_update: EmailConfigUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to create forms"
+        )
     # Buscar el registro en la base de datos
     email_config = db.query(EmailConfig).filter(EmailConfig.id == id).first()
 
@@ -240,14 +245,14 @@ def update_email_config_status(id: int, status_update: EmailStatusUpdate, db: Se
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create forms"
         )
-    email_config = db.query(EmailConfig).filter(EmailConfig.id == id).first()
+    status_config = db.query(EmailConfig).filter(EmailConfig.id == id).first()
 
-    if not email_config:
+    if not status_config:
         raise HTTPException(status_code=404, detail="Configuración de correo no encontrada")
 
-    email_config.is_active = status_update.is_active
+    status_config.is_active = status_update.is_active
 
     db.commit()
-    db.refresh(email_config)
+    db.refresh(status_config)
 
-    return {"message": "Estado actualizado correctamente", "data": email_config}
+    return {"message": "Estado actualizado correctamente", "data": status_config}

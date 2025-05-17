@@ -954,21 +954,11 @@ def get_schedules_by_frequency(db: Session) -> List[dict]:
     today_spanish = DIAS_SEMANA.get(today_english, "lunes")  # Default a lunes si hay error
     today_date = datetime.today().date()
 
-
-    print(f"🗓️  Hoy es: {today_spanish}")
-    print(f"📅 Fecha completa: {today_date}\n")
-
     for schedule in schedules:
         frequency_type = schedule.frequency_type
         repeat_days = json.loads(schedule.repeat_days) if schedule.repeat_days else []
         interval_days = schedule.interval_days
         specific_date = schedule.specific_date
-
-        print(f"\n🔎 Evaluando programación ID {schedule.id}:")
-        print(f"    - frequency_type: {frequency_type}")
-        print(f"    - repeat_days: {repeat_days}")
-        print(f"    - interval_days: {interval_days}")
-        print(f"    - specific_date: {specific_date}")
 
         # Lógica según el tipo de frecuencia
         if frequency_type == "daily":
@@ -988,7 +978,6 @@ def get_schedules_by_frequency(db: Session) -> List[dict]:
                 logs.append(f"Frecuencia diaria: No se pudo encontrar el usuario o el formulario para el ID de programación {schedule.id}.")
 
         elif frequency_type == "weekly":
-            print(f"    Hoy en inglés: {today_english}")
             print(f"    Revisando si '{today_english}' está en {repeat_days}")
             if today_english in repeat_days:
                 print("✅ El día coincide, se enviará correo.")
@@ -1027,7 +1016,7 @@ def get_schedules_by_frequency(db: Session) -> List[dict]:
 
         elif frequency_type == "periodic":
             if interval_days and today_date.day % interval_days == 0:
-                print("➡️  Cumple el intervalo, se enviará.")
+                print("➡️  Cumpsle el intervalo, se enviará.")
                 user = db.query(User).filter(User.id == schedule.user_id).first()
                 form = db.query(Form).filter(Form.id == schedule.form_id).first()
                 if user and form:
@@ -1211,7 +1200,7 @@ def get_related_answers_logic(db: Session, question_id: int):
 
     # Si no tiene related_question_id, usar tabla y campo especificados
     name_table = relation.name_table
-    field_name = relation.field_name  # Nuevo: nombre del campo a traer
+    field_name = relation.field_name 
 
     # Modelos válidos
     valid_tables = {
@@ -1219,7 +1208,6 @@ def get_related_answers_logic(db: Session, question_id: int):
         "users": User,
         "forms": Form,
         "options": Option,
-        # Agrega más modelos si es necesario
     }
 
     # Traducciones de nombre de tabla
@@ -1739,18 +1727,7 @@ def update_response_approval_status(
         ResponseApproval.response_id == response_id
     ).all()
 
-    # 4. Mostrar el proceso en consola
-    print("\n📄 --- Proceso de Aprobación ---")
-    print(f"Formulario: {form.title} (Formato: {form.format_type.value})")
-    print(f"Respondido por: {response.user.name} (ID: {response.user.id})")
-    print(f"Aprobación actualizada por: {response_approval.user.name}")
-    print(f"Secuencia: {response_approval.sequence_number}")
-    print(f"Estado: {response_approval.status.value}")
-    print(f"Fecha de revisión: {response_approval.reviewed_at.isoformat()}")
-    print(f"Mensaje: {response_approval.message or '-'}\n")
-
     detener_proceso = False
-    print("🧾 Estado de aprobadores:")
 
     for fa in form_approval_template:
         ra = next((r for r in response_approvals if r.user_id == fa.user_id), None)
