@@ -954,8 +954,8 @@ def get_schedules_by_frequency(db: Session) -> List[dict]:
     today_spanish = DIAS_SEMANA.get(today_english, "lunes")  # Default a lunes si hay error
     today_date = datetime.today().date()
 
-    print(f"\n🗓️  Hoy es (en inglés): {today_english}")
-    print(f"🗓️  Hoy es (en español): {today_spanish}")
+
+    print(f"🗓️  Hoy es: {today_spanish}")
     print(f"📅 Fecha completa: {today_date}\n")
 
     for schedule in schedules:

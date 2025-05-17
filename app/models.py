@@ -5,6 +5,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from app.database import Base
 import enum
+from sqlalchemy import event
 
 class UserType(enum.Enum):
     admin = "admin"
@@ -263,3 +264,14 @@ class EmailConfig(Base):
     id = Column(Integer, primary_key=True, index=True)
     email_address = Column(String(255), nullable=False)  
     is_active = Column(Boolean, default=True)
+    
+@event.listens_for(EmailConfig.__table__, "after_create")
+def insert_default_emails(target, connection, **kwargs):
+    """ Inserta dos registros de ejemplo al crear la tabla """
+    connection.execute(
+        target.insert(),
+        [
+            {"email_address": "example1@domain.com", "is_active": False},
+            {"email_address": "example2@domain.com", "is_active": False},
+        ],
+    )
