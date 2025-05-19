@@ -167,6 +167,7 @@ def get_form(db: Session, form_id: int, user_id: int):
         "user_id": form.user_id,
         "title": form.title,
         "format_type": form.format_type.name,
+        "form_design":form.form_design,
         "questions": [
             {
                 "id": question.id,
