@@ -2,6 +2,7 @@ from collections import defaultdict
 from io import BytesIO
 import json
 import os
+import pytz
 from sqlalchemy import exists, func, not_, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
@@ -1685,7 +1686,23 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
 
     return results
 
+def get_bogota_time() -> datetime:
+    """Retorna la hora actual con la zona horaria de Bogotá."""
+    return datetime.now(pytz.timezone("America/Bogota"))
 
+def localize_to_bogota(dt: datetime) -> datetime:
+    """
+    Asegura que el datetime proporcionado tenga la zona horaria de Bogotá.
+    Si 'dt' es naive (sin tzinfo), se asume que está en UTC y se convierte.
+    Si ya tiene tzinfo, se convierte a Bogotá.
+    """
+    bogota_tz = pytz.timezone("America/Bogota")
+    if dt is None:
+        dt = datetime.utcnow()
+    if dt.tzinfo is None:
+        # Asumir que el datetime naive está en UTC
+        dt = dt.replace(tzinfo=pytz.utc)
+    return dt.astimezone(bogota_tz)
 
 def update_response_approval_status(
     response_id: int,
@@ -1702,11 +1719,10 @@ def update_response_approval_status(
     if not response_approval:
         raise HTTPException(status_code=404, detail="ResponseApproval not found")
 
-    # 2. Actualizar los campos
     response_approval.status = update_data.status
-    response_approval.reviewed_at = update_data.reviewed_at or datetime.utcnow()
+    response_approval.reviewed_at = localize_to_bogota(update_data.reviewed_at or datetime.utcnow())
     response_approval.message = update_data.message
-
+    
     db.commit()
     db.refresh(response_approval)
 

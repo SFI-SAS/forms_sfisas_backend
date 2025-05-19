@@ -1,4 +1,3 @@
-from datetime import datetime
 from sqlalchemy import (
     JSON, Boolean, Column, BigInteger, DateTime, Integer, LargeBinary, String, Text, ForeignKey, TIMESTAMP, Enum, func, text
 )
@@ -6,6 +5,9 @@ from sqlalchemy.orm import relationship
 from app.database import Base
 import enum
 from sqlalchemy import event
+
+from pytz import timezone
+BOGOTA_TZ = timezone('America/Bogota')
 
 class UserType(enum.Enum):
     admin = "admin"
@@ -239,7 +241,9 @@ class ResponseApproval(Base):
     sequence_number = Column(Integer, nullable=False)
     is_mandatory = Column(Boolean, default=True)
     status = Column(Enum(ApprovalStatus), default=ApprovalStatus.pendiente, nullable=False)
+    
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    
     message = Column(Text, nullable=True)
 
     response = relationship("Response", back_populates="approvals")
@@ -275,3 +279,5 @@ def insert_default_emails(target, connection, **kwargs):
             {"email_address": "example2@domain.com", "is_active": False},
         ],
     )
+    
+    
