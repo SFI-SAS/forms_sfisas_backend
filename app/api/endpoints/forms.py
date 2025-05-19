@@ -623,18 +623,21 @@ def update_form_design(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
-            )
-    else: 
-        updated_form = update_form_design_service(db, form_id, payload.form_design)
-        return {
+            detail="User does not have permission to update form design"
+        )
+
+    updated_forms = []
+    for design in payload.form_design:
+        updated_form = update_form_design_service(db, form_id, design)
+        updated_forms.append({
             "message": "Form design updated successfully",
             "form_id": updated_form.id
-        }
-
+        })
+    
+    return updated_forms
 
 @router.get("/get_form_with_approvers/{form_id}/with-approvers", response_model=FormWithApproversResponse)
 def get_form_with_approvers(

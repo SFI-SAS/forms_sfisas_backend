@@ -351,7 +351,7 @@ class UpdateResponseApprovalRequest(BaseModel):
 
     
 class FormDesignUpdate(BaseModel):
-    form_design: Dict[str, Any]
+    form_design: List[Dict[str, Any]]
     
 class UserInfo(BaseModel):
     id: int
