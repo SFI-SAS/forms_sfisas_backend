@@ -322,3 +322,32 @@ def send_email_plain_approval_status_vencidos(
     except Exception as e:
         print(f"❌ Error al enviar correo a {to_email}: {str(e)}")
         return False
+
+
+def send_email_aprovall_next(
+    to_email: str,
+    name_form: str,
+    to_name: str,
+    body_html: str,
+    subject: str
+) -> bool:
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
+        msg["To"] = formataddr((to_name, to_email))
+
+        msg.set_content(f"Estimado/a {to_name},\n\nAprobaciones vencidas para el formato {name_form}.")
+        msg.add_alternative(body_html, subtype="html")
+
+        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
+            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
+            smtp.send_message(msg)
+
+        print(f"✅ Correo enviado a {to_email}")
+        return True
+
+    except Exception as e:
+        print(f"❌ Error al enviar correo a {to_email}: {str(e)}")
+        return False
+

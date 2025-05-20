@@ -7,7 +7,7 @@ from sqlalchemy import exists, func, not_, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from app import models
-from app.api.controllers.mail import send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_welcome_email
+from app.api.controllers.mail import send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_welcome_email
 from app.core.security import hash_password
 from app.models import  AnswerFileSerial, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormModerators, FormSchedule, Project, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
@@ -1686,6 +1686,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
 
     return results
 
+
 def get_bogota_time() -> datetime:
     """Retorna la hora actual con la zona horaria de Bogotá."""
     return datetime.now(pytz.timezone("America/Bogota"))
@@ -1703,6 +1704,246 @@ def localize_to_bogota(dt: datetime) -> datetime:
         # Asumir que el datetime naive está en UTC
         dt = dt.replace(tzinfo=pytz.utc)
     return dt.astimezone(bogota_tz)
+
+def get_next_mandatory_approver(response_id: int, db: Session):
+    # Obtener la respuesta
+    response = db.query(Response).filter(Response.id == response_id).first()
+    if not response:
+        raise HTTPException(status_code=404, detail="Respuesta no encontrada")
+
+    # Obtener el formulario y el usuario que respondió
+    form = response.form
+    usuario_respondio = response.user
+
+    # Obtener la plantilla de aprobadores activa
+    form_approval_template = (
+        db.query(FormApproval)
+        .filter(FormApproval.form_id == form.id, FormApproval.is_active == True)
+        .order_by(FormApproval.sequence_number)
+        .all()
+    )
+
+    # Obtener aprobaciones realizadas
+    response_approvals = (
+        db.query(ResponseApproval)
+        .filter(ResponseApproval.response_id == response_id)
+        .order_by(ResponseApproval.sequence_number)
+        .all()
+    )
+
+    # Buscar la última persona que aprobó
+    ultima_aprobacion = next(
+        (ra for ra in reversed(response_approvals) if ra.status == ApprovalStatus.aprobado),
+        None
+    )
+
+    siguientes_aprobadores = []
+    encontrado_obligatorio = False
+
+    for fa in form_approval_template:
+        if not ultima_aprobacion or fa.sequence_number > ultima_aprobacion.sequence_number:
+            siguientes_aprobadores.append({
+                "nombre": fa.user.name,
+                "email": fa.user.email,
+                "telefono": fa.user.telephone,
+                "secuencia": fa.sequence_number,
+                "es_obligatorio": fa.is_mandatory
+            })
+            if not encontrado_obligatorio and fa.is_mandatory:
+                encontrado_obligatorio = True
+                break
+
+    # Agregar todos los aprobadores del formato
+    todos_los_aprobadores = []
+    
+    for fa in response_approvals:
+        todos_los_aprobadores.append({
+            "nombre": fa.user.name,
+            "email": fa.user.email,
+            "telefono": fa.user.telephone,
+            "secuencia": fa.sequence_number,
+            "es_obligatorio": fa.is_mandatory,
+            "status": fa.status,
+            "reviewed_at": fa.reviewed_at,
+        })
+
+    return {
+        "formato": {
+            "id": form.id,
+            "titulo": form.title,
+            "descripcion": form.description,
+            "tipo_formato": form.format_type.name if form.format_type else None,
+            "creado_por": {
+                "id": form.user.id,
+                "nombre": form.user.name,
+                "email": form.user.email
+            },
+            "fecha_creacion": form.created_at,
+            "diseno": form.form_design
+        },
+        "usuario_respondio": {
+            "id": usuario_respondio.id,
+            "nombre": usuario_respondio.name,
+            "email": usuario_respondio.email,
+            "telefono": usuario_respondio.telephone,
+            "num_documento": usuario_respondio.num_document
+        },
+        "ultima_aprobacion": {
+            "nombre": ultima_aprobacion.user.name,
+            "email": ultima_aprobacion.user.email,
+            "secuencia": ultima_aprobacion.sequence_number,
+            "fecha_revision": ultima_aprobacion.reviewed_at,
+            "mensaje": ultima_aprobacion.message
+        } if ultima_aprobacion else None,
+        "siguientes_aprobadores": siguientes_aprobadores,
+        "obligatorio_encontrado": encontrado_obligatorio,
+        "todos_los_aprobadores": todos_los_aprobadores
+    }
+
+def build_email_html_approvers(aprobacion_info: dict) -> str:
+    nombre_formato = aprobacion_info["formato"]["titulo"]
+    usuario_respondio = aprobacion_info["usuario_respondio"]
+    ultima_aprobacion = aprobacion_info.get("ultima_aprobacion")
+    todos_aprobadores = aprobacion_info.get("todos_los_aprobadores", [])
+
+    ult_aprobador_html = ""
+    if ultima_aprobacion:
+        ult_aprobador_html = f"""
+        <tr>
+            <td colspan="2" style="padding: 15px; background-color: #f0f4f8; border-top: 1px solid #dce3ea;">
+                <p style="margin: 0 0 5px;"><strong>Último aprobador:</strong> {ultima_aprobacion['nombre']} ({ultima_aprobacion['email']})</p>
+                <p style="margin: 0 0 5px;"><strong>Fecha de revisión:</strong> {ultima_aprobacion['fecha_revision'].strftime('%Y-%m-%d %H:%M') if ultima_aprobacion['fecha_revision'] else 'No disponible'}</p>
+                <p style="margin: 0;"><strong>Mensaje:</strong> {ultima_aprobacion['mensaje'] or 'Sin comentarios'}</p>
+            </td>
+        </tr>
+        """
+
+    # Tabla original
+    aprobadores_html = ""
+    for aprobador in sorted(todos_aprobadores, key=lambda x: x["secuencia"]):
+        aprobadores_html += f"""
+        <tr>
+            <td style="padding: 10px; border: 1px solid #dce3ea;">{aprobador['secuencia']}</td>
+            <td style="padding: 10px; border: 1px solid #dce3ea;">{aprobador['nombre']}</td>
+            <td style="padding: 10px; border: 1px solid #dce3ea;">{aprobador['email']}</td>
+            <td style="padding: 10px; border: 1px solid #dce3ea;">{"Obligatorio" if aprobador['es_obligatorio'] else "Opcional"}</td>
+        </tr>
+        """
+
+    # Nueva tabla más detallada
+    tabla_detallada_html = ""
+    for aprobador in sorted(todos_aprobadores, key=lambda x: x["secuencia"]):
+        aprobado = "Sí" if aprobador["es_obligatorio"] else "No"
+        status = aprobador.get("status", "pendiente")
+        estado = status.value.capitalize() if hasattr(status, "value") else str(status).capitalize()
+        fecha_revision = aprobador["reviewed_at"]
+
+
+        tabla_detallada_html += f"""
+        <tr>
+            <td style="padding: 8px; border: 1px solid #dce3ea; text-align: center;">{aprobador['secuencia']}</td>
+            <td style="padding: 8px; border: 1px solid #dce3ea;">{aprobador['nombre']}</td>
+            <td style="padding: 8px; border: 1px solid #dce3ea;">{aprobador['email']}</td>
+            <td style="padding: 8px; border: 1px solid #dce3ea;">{aprobador.get('telefono', 'No disponible')}</td>
+            <td style="padding: 8px; border: 1px solid #dce3ea; text-align: center;">{aprobado}</td>
+            <td style="padding: 8px; border: 1px solid #dce3ea; text-align: center;">{estado}</td>
+
+        </tr>
+        """
+
+    html = f"""
+    <html>
+    <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f7f9fc; padding: 30px; color: #2c3e50;">
+        <table width="100%" style="max-width: 800px; margin: auto; background-color: #ffffff; border: 1px solid #dce3ea; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+            <tr>
+                <td style="background-color: #002f6c; color: #ffffff; padding: 25px; text-align: center; border-radius: 8px 8px 0 0;">
+                    <h2 style="margin: 0;">Proceso de Aprobación - Notificación</h2>
+                </td>
+            </tr>
+            <tr>
+                <td style="padding: 25px;">
+                    <p style="font-size: 16px; line-height: 1.6;">Estimado/a,</p>
+
+                    <p style="font-size: 16px; line-height: 1.6;">
+                        Usted ha sido designado como <strong>aprobador</strong> en el proceso de revisión del siguiente formato:
+                    </p>
+
+                    <p style="font-size: 18px; font-weight: bold; color: #002f6c; margin-top: 10px;">{nombre_formato}</p>
+
+                    <p style="font-size: 15px; margin-top: 20px;"><strong>Formulario completado por:</strong> {usuario_respondio['nombre']} ({usuario_respondio['email']})</p>
+                </td>
+            </tr>
+
+            {ult_aprobador_html}
+
+            <tr>
+                <td style="padding: 25px;">
+
+                    <p style="font-size: 16px;"><strong>Detalles del proceso de aprobación:</strong></p>
+                    <table width="100%" style="border-collapse: collapse; font-size: 14px; margin-top: 10px;">
+                        <thead>
+                            <tr style="background-color: #eef2f7;">
+                                <th style="padding: 10px; border: 1px solid #dce3ea;">Secuencia</th>
+                                <th style="padding: 10px; border: 1px solid #dce3ea;">Nombre</th>
+                                <th style="padding: 10px; border: 1px solid #dce3ea;">Correo</th>
+                                <th style="padding: 10px; border: 1px solid #dce3ea;">Teléfono</th>
+                                <th style="padding: 10px; border: 1px solid #dce3ea;">¿Obligatorio?</th>
+                                <th style="padding: 10px; border: 1px solid #dce3ea;">Estado</th>
+                                
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {tabla_detallada_html}
+                        </tbody>
+                    </table>
+
+                    <div style="text-align: center; margin: 30px 0;">
+                        <a href="https://forms.sfisas.com.co/" style="display: inline-block; padding: 14px 28px; background-color: #002f6c; color: white; text-decoration: none; border-radius: 5px; font-size: 15px;">
+                            Ingresar al Portal de Aprobaciones
+                        </a>
+                    </div>
+                </td>
+            </tr>
+        </table>
+    </body>
+    </html>
+    """
+    return html
+
+
+def send_mails_to_next_supporters(response_id: int, db: Session):
+    aprobacion_info = get_next_mandatory_approver(response_id=response_id, db=db)
+    siguientes = aprobacion_info.get("siguientes_aprobadores", [])
+
+    if not siguientes:
+        print("⏳ No hay aprobadores siguientes.")
+        return False
+
+    html_content = build_email_html_approvers(aprobacion_info)
+    asunto = f"Pendiente aprobación - {aprobacion_info['formato']['titulo']}"
+
+    enviado_todos = True
+
+    for aprobador in siguientes:
+        nombre = aprobador["nombre"]
+        email = aprobador["email"]
+        obligatorio = "Obligatorio" if aprobador["es_obligatorio"] else "Opcional"
+
+        exito = send_email_plain_approval_status_vencidos(
+            to_email=email,
+            name_form=aprobacion_info["formato"]["titulo"],
+            to_name=nombre,
+            body_html=html_content,
+            subject=asunto
+        )
+
+        if not exito:
+            enviado_todos = False
+            print(f"❌ Falló el envío a {email}")
+
+    return enviado_todos
+
+
 
 def update_response_approval_status(
     response_id: int,
@@ -1726,6 +1967,9 @@ def update_response_approval_status(
     db.commit()
     db.refresh(response_approval)
 
+
+    if update_data.status == "aprobado":
+        send_mails_to_next_supporters(response_id , db)
     # 3. Obtener información relacionada
     response = db.query(Response).filter(Response.id == response_id).first()
     form = db.query(Form).filter(Form.id == response.form_id).first()
