@@ -483,6 +483,8 @@ def post_create_response(db: Session, form_id: int, user_id: int, mode: str = "o
         db.add(response_approval)
 
     db.commit()
+    
+    send_mails_to_next_supporters(response.id , db)
 
     return {
         "message": "Nueva respuesta guardada exitosamente",
@@ -1778,8 +1780,7 @@ def get_next_mandatory_approver(response_id: int, db: Session):
                 "nombre": form.user.name,
                 "email": form.user.email
             },
-            "fecha_creacion": form.created_at,
-            "diseno": form.form_design
+
         },
         "usuario_respondio": {
             "id": usuario_respondio.id,
