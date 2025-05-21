@@ -7,7 +7,7 @@ from sqlalchemy import exists, func, not_, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from app import models
-from app.api.controllers.mail import send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_welcome_email
+from app.api.controllers.mail import send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 from app.core.security import hash_password
 from app.models import  AnswerFileSerial, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormModerators, FormSchedule, Project, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
@@ -1766,6 +1766,7 @@ def get_next_mandatory_approver(response_id: int, db: Session):
             "secuencia": fa.sequence_number,
             "es_obligatorio": fa.is_mandatory,
             "status": fa.status,
+            "mensaje": fa.message,
             "reviewed_at": fa.reviewed_at,
         })
 
@@ -1866,7 +1867,7 @@ def build_email_html_approvers(aprobacion_info: dict) -> str:
                     <p style="font-size: 16px; line-height: 1.6;">Estimado/a,</p>
 
                     <p style="font-size: 16px; line-height: 1.6;">
-                        Usted ha sido designado como <strong>aprobador</strong> en el proceso de revisión del siguiente formato:
+                        Usted ha sido designado como el próximo <strong>aprobador</strong> en el proceso de revisión del siguiente formato:
                     </p>
 
                     <p style="font-size: 18px; font-weight: bold; color: #002f6c; margin-top: 10px;">{nombre_formato}</p>
@@ -1944,6 +1945,49 @@ def send_mails_to_next_supporters(response_id: int, db: Session):
 
     return enviado_todos
 
+def send_rejection_email_to_all(response_id: int, db: Session):
+    aprobacion_info = get_next_mandatory_approver(response_id=response_id, db=db)
+    formato = aprobacion_info["formato"]
+    usuario = aprobacion_info["usuario_respondio"]
+    aprobadores = aprobacion_info["todos_los_aprobadores"]
+
+    # Encuentra quién lo rechazó
+    aprobador_rechazo = next((a for a in aprobadores if a["status"] == ApprovalStatus.rechazado), None)
+
+    if not aprobador_rechazo:
+        print("❌ No se encontró aprobador que haya rechazado.")
+        return False
+
+    # Lista de correos destino
+    correos_destino = []
+
+    # Agregar usuario que respondió
+    correos_destino.append({
+        "nombre": usuario["nombre"],
+        "email": usuario["email"]
+    })
+
+    # Agregar aprobadores que no son el que rechazó
+    for aprobador in aprobadores:
+        if aprobador["email"] != aprobador_rechazo["email"]:
+            correos_destino.append({
+                "nombre": aprobador["nombre"],
+                "email": aprobador["email"]
+            })
+
+    # Enviar correo a cada uno
+    for destinatario in correos_destino:
+        send_rejection_email(
+            to_email=destinatario["email"],
+            to_name=destinatario["nombre"],
+            formato=formato,
+            usuario_respondio=usuario,
+            aprobador_rechazo=aprobador_rechazo,
+            todos_los_aprobadores=aprobadores  # Nuevo parámetro
+        )
+
+
+    return True
 
 
 def update_response_approval_status(
@@ -1970,7 +2014,10 @@ def update_response_approval_status(
 
 
     if update_data.status == "aprobado":
-        send_mails_to_next_supporters(response_id , db)
+        send_mails_to_next_supporters(response_id, db)
+    elif update_data.status == "rechazado":
+        send_rejection_email_to_all(response_id, db)
+        
     # 3. Obtener información relacionada
     response = db.query(Response).filter(Response.id == response_id).first()
     form = db.query(Form).filter(Form.id == response.form_id).first()

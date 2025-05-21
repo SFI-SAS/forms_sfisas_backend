@@ -49,7 +49,7 @@ def send_email_daily_forms(user_email: str, user_name: str, forms: List[Dict]) -
         msg = EmailMessage()
         subject = f"📋 Formulario(s) Pendiente(s) para Hoy - {current_date}"
         msg["Subject"] = subject
-        msg["From"] = formataddr(("SFI SAS", MAIL_FROM_ADDRESS_ALT))
+        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
         msg["To"] = formataddr((user_name, user_email))
 
         html_content = f"""
@@ -118,7 +118,7 @@ def send_email_with_attachment(
     try:
         msg = EmailMessage()
         msg["Subject"] = "📎 Respuestas adjuntas - Safemetrics"
-        msg["From"] = formataddr(("SFI SAS", MAIL_FROM_ADDRESS_ALT))
+        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
         msg["To"] = formataddr((to_name, to_email))
 
         current_date = datetime.now().strftime("%d/%m/%Y")
@@ -351,3 +351,107 @@ def send_email_aprovall_next(
         print(f"❌ Error al enviar correo a {to_email}: {str(e)}")
         return False
 
+
+def send_rejection_email(to_email: str, to_name: str, formato: dict, usuario_respondio: dict, aprobador_rechazo: dict, todos_los_aprobadores: list):
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = f"Formulario rechazado: {formato['titulo']}"
+        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
+        msg["To"] = formataddr((to_name, to_email))
+
+        current_date = datetime.now().strftime("%d/%m/%Y")
+
+        # HTML de lista de aprobadores
+        aprobadores_html = ""
+        for aprobador in todos_los_aprobadores:
+            aprobadores_html += f"""
+                <tr>
+                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador['secuencia']}</td>
+                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador['nombre']}</td>
+                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador['email']}</td>
+                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador['status'].value.capitalize()}</td>
+                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador.get('mensaje', 'Sin mensaje')}</td>
+                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador.get('reviewed_at', 'No disponible')}</td>
+                </tr>
+            """
+
+        html_content = f"""
+        <html>
+        <body style="font-family: 'Segoe UI', sans-serif; background-color: #f9f9f9; margin: 0; padding: 30px;">
+            <table width="100%" cellspacing="0" cellpadding="0" style="max-width: 600px; margin: auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 30px;">
+                <tr>
+                    <td>
+                        <h2 style="color: #b02a37; margin-bottom: 10px;">Formulario Rechazado</h2>
+<p style="font-size: 16px; color: #333;">
+    Estimado/a <strong>{to_name}</strong>,<br><br>
+    Le informamos que las respuestas al formulario titulado <strong>“{formato['titulo']}”</strong> han sido <span style="color: #b02a37;"><strong>rechazadas</strong></span>.
+</p>
+
+
+                        <hr style="margin: 25px 0; border: none; border-top: 1px solid #e0e0e0;">
+
+                        <h3 style="color: #333; font-size: 17px;">📄 Detalles del Formulario</h3>
+                        <ul style="padding-left: 20px; color: #555; font-size: 15px;">
+                            <li><strong>Título:</strong> {formato['titulo']}</li>
+                            <li><strong>Descripción:</strong> {formato['descripcion']}</li>
+                            <li><strong>Tipo:</strong> {formato['tipo_formato'].capitalize()}</li>
+                            <li><strong>Creado por:</strong> {formato['creado_por']['nombre']} ({formato['creado_por']['email']})</li>
+                        </ul>
+
+                        <h3 style="color: #333; font-size: 17px;">👤 Usuario que respondió</h3>
+                        <ul style="padding-left: 20px; color: #555; font-size: 15px;">
+                            <li><strong>Nombre:</strong> {usuario_respondio['nombre']}</li>
+                            <li><strong>Email:</strong> {usuario_respondio['email']}</li>
+                            <li><strong>Teléfono:</strong> {usuario_respondio['telefono']}</li>
+                            <li><strong>Documento:</strong> {usuario_respondio['num_documento']}</li>
+                        </ul>
+
+                        <h3 style="color: #333; font-size: 17px;">🔒 Revisión</h3>
+                        <ul style="padding-left: 20px; color: #555; font-size: 15px;">
+                            <li><strong>Revisado por:</strong> {aprobador_rechazo['nombre']} ({aprobador_rechazo['email']})</li>
+                            <li><strong>Mensaje:</strong> {aprobador_rechazo.get('mensaje', 'Sin mensaje')}</li>
+                            <li><strong>Fecha de revisión:</strong> {aprobador_rechazo.get('reviewed_at', 'No disponible')}</li>
+                        </ul>
+
+                        <h3 style="color: #333; font-size: 17px;">📋 Todos los aprobadores</h3>
+                        <table width="100%" style="border-collapse: collapse; font-size: 14px;">
+                            <thead>
+                                <tr style="background-color: #f0f0f0;">
+                                    <th style="padding: 5px; border: 1px solid #ccc;">Secuencia</th>
+                                    <th style="padding: 5px; border: 1px solid #ccc;">Nombre</th>
+                                    <th style="padding: 5px; border: 1px solid #ccc;">Email</th>
+                                    <th style="padding: 5px; border: 1px solid #ccc;">Estado</th>
+                                    <th style="padding: 5px; border: 1px solid #ccc;">Mensaje</th>
+                                    <th style="padding: 5px; border: 1px solid #ccc;">Fecha</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {aprobadores_html}
+                            </tbody>
+                        </table>
+
+                        <p style="font-size: 14px; color: #999; margin-top: 30px;">
+                            Enviado el {current_date} 
+                        </p>
+                    </td>
+                </tr>
+            </table>
+        </body>
+        </html>
+        """
+
+        msg.set_content(
+            f"El formulario \"{formato['titulo']}\" ha sido rechazado por {aprobador_rechazo['nombre']}."
+        )
+        msg.add_alternative(html_content, subtype="html")
+
+        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
+            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
+            smtp.send_message(msg)
+
+        print(f"✅ Correo de rechazo enviado a {to_email}")
+        return True
+
+    except Exception as e:
+        print(f"❌ Error al enviar correo de rechazo a {to_email}: {str(e)}")
+        return False

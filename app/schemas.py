@@ -378,7 +378,8 @@ class FormWithApproversResponse(BaseModel):
     title: str
     description: Optional[str]
     format_type: str
-    form_design: Optional[dict]
+    form_design: Optional[Dict[str, Any]] = None
+
     approvers: List[FormApprovalInfo]
 
     class Config:
