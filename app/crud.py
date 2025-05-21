@@ -12,7 +12,7 @@ from app.core.security import hash_password
 from app.models import  AnswerFileSerial, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormModerators, FormSchedule, Project, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 from app.models import ApprovalStatus  # Asegúrate de importar esto
 
@@ -2168,12 +2168,13 @@ def get_form_with_full_responses(form_id: int, db: Session):
 
     return results
 
-def update_form_design_service(db: Session, form_id: int, design_data: dict):
+
+def update_form_design_service(db: Session, form_id: int, design_data: List[Dict[str, Any]]):
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Form not found")
 
-    form.form_design = design_data
+    form.form_design = design_data  # guarda la lista completa
     db.commit()
     db.refresh(form)
 

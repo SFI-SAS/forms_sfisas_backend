@@ -631,12 +631,12 @@ def update_form_design(
         )
 
     updated_forms = []
-    for design in payload.form_design:
-        updated_form = update_form_design_service(db, form_id, design)
-        updated_forms.append({
-            "message": "Form design updated successfully",
-            "form_id": updated_form.id
-        })
+    updated_form = update_form_design_service(db, form_id, payload.form_design)
+    return [{
+        "message": "Form design updated successfully",
+        "form_id": updated_form.id
+    }]
+
     
     return updated_forms
 
