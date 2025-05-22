@@ -2492,9 +2492,7 @@ def enviar_correo_aprobaciones_vencidas_consolidado(aprobaciones_globales: dict,
         """
 
     html_content += """
-            <p style="color: #7f8c8d; font-size: 12px; text-align: center; margin-top: 30px;">
-                Este correo fue generado automáticamente.
-            </p>
+
         </div>
     </body>
     </html>
