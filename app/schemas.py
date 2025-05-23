@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Any, Literal, Optional, List, Dict
+from typing import Any, Literal, Optional, List, Dict, Union
 from datetime import datetime
 from enum import Enum
 
@@ -171,17 +171,17 @@ class ProjectResponse(ProjectCreate):
     
 class PostCreate(BaseModel):
     response_id: int
-    question_id: int
+    question_id: Union[int, str]  
     answer_text: str | None = None
     file_path: str | None = None
     
 class FormScheduleCreate(BaseModel):
     form_id: int
     user_id: int
-    frequency_type: str  # daily, weekly, monthly, periodic, specific_date
-    repeat_days: Optional[list[str]] = None  # para weekly
-    interval_days: Optional[int] = None      # para periodic
-    specific_date: Optional[datetime] = None # para specific_date
+    frequency_type: str  
+    repeat_days: Optional[list[str]] = None 
+    interval_days: Optional[int] = None      
+    specific_date: Optional[datetime] = None 
     status: bool = True
     
 class FormScheduleOut(BaseModel):

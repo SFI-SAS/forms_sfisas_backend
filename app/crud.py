@@ -496,29 +496,86 @@ def post_create_response(db: Session, form_id: int, user_id: int, mode: str = "o
 
 
 def create_answer_in_db(answer, db: Session):
+    # Caso de múltiples respuestas (question_id como str)
+    if isinstance(answer.question_id, str):
+        try:
+            parsed_answer = json.loads(answer.answer_text)
+            if not isinstance(parsed_answer, dict):
+                raise ValueError("answer_text debe ser un JSON de tipo dict para respuestas múltiples")
+            
+            created_answers = []
+            for question_id_str, text in parsed_answer.items():
+                question_id = int(question_id_str)  # o UUID(question_id_str) si usas UUIDs
+                new_answer = Answer(
+                    response_id=answer.response_id,
+                    question_id=question_id,
+                    answer_text=text,
+                    file_path=answer.file_path
+                )
+                db.add(new_answer)
+                db.flush()
+                created_answers.append(new_answer)
+
+            db.commit()
+            for ans in created_answers:
+                db.refresh(ans)
+
+            return {
+                "message": "Respuestas múltiples guardadas exitosamente",
+                "answers": [{"id": a.id, "question_id": a.question_id} for a in created_answers]
+            }
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error procesando respuestas múltiples: {str(e)}")
+
+    # Caso de una sola respuesta (question_id como int)
+    elif isinstance(answer.question_id, int):
+        return save_single_answer(answer, db)
+
+    # Tipo de question_id no reconocido
+    else:
+        raise HTTPException(status_code=400, detail="Tipo de question_id no válido. Debe ser int o str.")
+    
+    
+def save_single_answer(answer, db: Session):
     existing_answer = db.query(Answer).filter(
         Answer.response_id == answer.response_id,
         Answer.question_id == answer.question_id
     ).first()
 
-
     new_answer = Answer(
-            response_id=answer.response_id,
-            question_id=answer.question_id,
-            answer_text=answer.answer_text,
-            file_path=answer.file_path
-        )
-    print(new_answer.response_id)
+        response_id=answer.response_id,
+        question_id=answer.question_id,
+        answer_text=answer.answer_text,
+        file_path=answer.file_path
+    )
     db.add(new_answer)
-    existing_answer = new_answer
-    message = "Respuesta guardada exitosamente"
-
     db.commit()
-    db.refresh(existing_answer)
-
-    return {"message": message, "answer_id": existing_answer.id}
+    db.refresh(new_answer)
+    return {"message": "Respuesta guardada exitosamente", "answer_id": new_answer.id}
 
 def check_form_data(db: Session, form_id: int):
+    """
+    Obtiene los datos completos de un formulario y sus respuestas.
+
+    Esta función busca un formulario por su ID y construye una estructura detallada
+    que incluye los siguientes elementos:
+    - Información básica del formulario.
+    - Datos del creador del formulario.
+    - Datos del proyecto asociado (si existe).
+    - Lista de respuestas, cada una con su usuario y respuestas a preguntas.
+    - Información de cada pregunta respondida.
+
+    Args:
+        db (Session): Sesión de base de datos SQLAlchemy.
+        form_id (int): ID del formulario que se desea consultar.
+
+    Returns:
+        dict: Estructura con toda la información del formulario y sus respuestas.
+
+    Raises:
+        HTTPException: 
+            - 404 si el formulario con el ID especificado no existe.
+    """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Form not found")
@@ -580,6 +637,26 @@ def create_form_schedule(
     specific_date: datetime | None,
     status: bool
 ):
+    """
+    Crea o actualiza un registro de programación de formulario en la base de datos.
+
+    Si ya existe una programación con la combinación `form_id` y `user_id`, actualiza el registro. 
+    En caso contrario, se crea uno nuevo. La programación permite establecer diferentes tipos 
+    de frecuencia (diaria, semanal, específica, etc.).
+
+    Args:
+        db (Session): Sesión de la base de datos.
+        form_id (int): ID del formulario a programar.
+        user_id (int): ID del usuario al que está asignada la programación.
+        frequency_type (str): Tipo de frecuencia ('daily', 'weekly', 'specific', etc.).
+        repeat_days (list[str] | None): Días de la semana en los que se repite (si aplica).
+        interval_days (int | None): Intervalo en días entre ejecuciones (si aplica).
+        specific_date (datetime | None): Fecha específica para la programación (si aplica).
+        status (bool): Estado de la programación (activa/inactiva).
+
+    Returns:
+        FormSchedule: Instancia del objeto programado.
+    """
     # Verificar si ya existe un registro con esa combinación
     existing_schedule = db.query(FormSchedule).filter_by(form_id=form_id, user_id=user_id).first()
 
@@ -2110,6 +2187,20 @@ Mensaje: {response_approval.message or '-'}
 
 
 def get_response_approval_status(response_approvals: list) -> dict:
+    """
+    Determina el estado de aprobación de una respuesta de formulario basada en la lista de aprobaciones.
+
+    Args:
+        response_approvals (list): Lista de objetos de tipo `ResponseApproval`.
+
+    Returns:
+        dict: Diccionario con el estado (`status`) y mensaje (`message`) correspondiente.
+
+    Lógica de evaluación:
+    - Si hay alguna aprobación con estado `rechazado`, se devuelve ese estado y mensaje.
+    - Si alguna aprobación obligatoria está pendiente, el estado será `pendiente`.
+    - Si todas las aprobaciones necesarias están completadas, el estado será `aprobado`.
+    """
     has_rejected = None
     pending_mandatory = False
     messages = []

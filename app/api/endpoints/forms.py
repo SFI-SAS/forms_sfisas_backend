@@ -22,7 +22,24 @@ def create_form_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Solo los usuarios tipo creator pueden crear formularios
+    """
+    Crear un nuevo formulario.
+
+    Este endpoint permite a los usuarios con el rol de `creator` o `admin` crear
+    un nuevo formulario. Los usuarios que no tengan estos permisos recibirán
+    un error HTTP 403 (Prohibido).
+
+    Args:
+        form (FormBaseUser): Los datos del formulario que se va a crear.
+        db (Session): Sesión de base de datos proporcionada por la dependencia.
+        current_user (User): Usuario autenticado extraído del token JWT.
+
+    Returns:
+        FormResponse: Objeto con la información del formulario creado.
+
+    Raises:
+        HTTPException: Si el usuario no tiene permisos adecuados para crear formularios.
+    """
     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -38,7 +55,24 @@ def add_questions_to_form_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Solo los usuarios tipo creator pueden agregar preguntas a formularios
+    """
+    Agrega preguntas a un formulario existente.
+
+    Este endpoint permite agregar una o más preguntas a un formulario específico.
+    Solo los usuarios con rol `creator` o `admin` tienen permiso para realizar esta acción.
+
+    Args:
+        form_id (int): ID del formulario al cual se desean agregar las preguntas.
+        questions (QuestionAdd): Objeto que contiene una lista de IDs de preguntas a agregar.
+        db (Session): Sesión activa de la base de datos, inyectada por dependencia.
+        current_user (User): Usuario autenticado actual, obtenido desde el token JWT.
+
+    Returns:
+        FormResponse: Objeto que representa el formulario actualizado con las nuevas preguntas.
+
+    Raises:
+        HTTPException: Error 403 si el usuario no tiene permisos suficientes para modificar el formulario.
+    """
     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -52,6 +86,23 @@ def get_form_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):   
+    """
+    Obtener un formulario específico por su ID.
+
+    Este endpoint recupera la información de un formulario asociado al usuario autenticado.
+    Si el formulario no existe o no pertenece al usuario, se devuelve un error 404.
+
+    Args:
+        form_id (int): ID del formulario que se desea consultar.
+        db (Session): Sesión activa de la base de datos, inyectada como dependencia.
+        current_user (User): Usuario autenticado, obtenido desde el token JWT.
+
+    Returns:
+        dict: Objeto con los datos del formulario solicitado.
+
+    Raises:
+        HTTPException: Error 404 si el formulario no se encuentra o no pertenece al usuario.
+    """
     form = get_form(db, form_id, current_user.id)
     if not form:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Form not found")
@@ -59,6 +110,27 @@ def get_form_endpoint(
 
 @router.get("/{form_id}/has-responses")
 def check_form_responses(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Verifica si un formulario tiene respuestas asociadas y retorna sus datos completos.
+
+    Este endpoint permite obtener información detallada sobre un formulario específico,
+    incluyendo si tiene respuestas, las respuestas en sí, los usuarios que respondieron
+    y las preguntas con sus respectivas respuestas. Solo los usuarios autenticados
+    pueden acceder a esta información.
+
+    Args:
+        form_id (int): ID del formulario a consultar.
+        db (Session): Sesión de la base de datos SQLAlchemy, proporcionada automáticamente.
+        current_user (User): Usuario autenticado, inyectado desde el token de sesión.
+
+    Returns:
+        dict: Objeto con los datos del formulario, su creador, proyecto, preguntas y respuestas.
+
+    Raises:
+        HTTPException: 
+            - 403 si el usuario no está autenticado.
+            - 404 si el formulario no existe.
+    """
     if current_user == None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -70,6 +142,28 @@ def check_form_responses(form_id: int, db: Session = Depends(get_db), current_us
     
 @router.get("/emails/all-emails")
 def get_all_emails(db: Session = Depends(get_db)):
+    """
+    Obtiene todos los correos electrónicos de los usuarios registrados.
+
+    Este endpoint recupera todos los correos electrónicos de los usuarios en la base de datos
+    y los devuelve como una lista. No requiere autenticación, pero dependiendo del caso de uso
+    se recomienda proteger este endpoint para evitar exposición de datos sensibles.
+
+    Args:
+        db (Session): Sesión de la base de datos, inyectada automáticamente por FastAPI.
+
+    Returns:
+        dict: Un diccionario con la clave `"emails"` que contiene una lista de correos electrónicos.
+
+    Ejemplo de respuesta:
+    {
+        "emails": [
+            "usuario1@example.com",
+            "usuario2@example.com",
+            ...
+        ]
+    }
+    """
     emails = db.query(User.email).all()
     return {"emails": [email[0] for email in emails]}
 
@@ -78,6 +172,22 @@ def get_all_emails(db: Session = Depends(get_db)):
 
 @router.post("/form_schedules/")
 def register_form_schedule(schedule_data: FormScheduleCreate, db: Session = Depends(get_db)):
+    """
+    Registra o actualiza la programación de un formulario.
+
+    Este endpoint permite crear o actualizar la programación automática de envío o visualización 
+    de un formulario para un usuario específico. Si ya existe una programación con la misma 
+    combinación de `form_id` y `user_id`, se actualizará con los nuevos valores. De lo contrario, 
+    se creará un nuevo registro.
+
+    Args:
+        schedule_data (FormScheduleCreate): Datos para registrar o actualizar la programación del formulario.
+        db (Session): Sesión de base de datos proporcionada por FastAPI.
+
+    Returns:
+        FormSchedule: Objeto de programación recién creado o actualizado.
+
+    """
     return create_form_schedule(
         db=db,
         form_id=schedule_data.form_id,
@@ -95,6 +205,22 @@ def get_responses_with_answers(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """
+    Obtiene todas las respuestas completadas por el usuario autenticado para un formulario específico,
+    incluyendo sus respuestas, aprobaciones y estado de revisión.
+
+    Args:
+        form_id (int): ID del formulario del cual se desean obtener las respuestas.
+        db (Session): Sesión activa de la base de datos.
+        current_user (User): Usuario autenticado.
+
+    Returns:
+        List[dict]: Lista de respuestas con sus respectivos detalles de aprobación y respuestas a preguntas.
+
+    Raises:
+        HTTPException: 403 si no hay un usuario autenticado.
+        HTTPException: 404 si no se encuentran respuestas.
+    """
     if not current_user:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
