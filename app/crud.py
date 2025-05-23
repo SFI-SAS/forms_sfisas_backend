@@ -496,7 +496,7 @@ def post_create_response(db: Session, form_id: int, user_id: int, mode: str = "o
 
 
 def create_answer_in_db(answer, db: Session):
-    # Caso de múltiples respuestas (question_id como str)
+
     if isinstance(answer.question_id, str):
         try:
             parsed_answer = json.loads(answer.answer_text)
@@ -505,7 +505,7 @@ def create_answer_in_db(answer, db: Session):
             
             created_answers = []
             for question_id_str, text in parsed_answer.items():
-                question_id = int(question_id_str)  # o UUID(question_id_str) si usas UUIDs
+                question_id = int(question_id_str) 
                 new_answer = Answer(
                     response_id=answer.response_id,
                     question_id=question_id,
@@ -710,7 +710,12 @@ def get_response_id(db: Session, form_id: int, user_id: int):
 
 
 def get_all_forms(db: Session):
-    # Realiza la consulta a la base de datos y devuelve los registros como diccionarios
+    """
+    Realiza una consulta para obtener todos los formularios.
+
+    :param db: Sesión activa de la base de datos
+    :return: Lista de formularios como diccionarios
+    """
     forms = db.query(Form).all()
     return [
         {
@@ -724,7 +729,13 @@ def get_all_forms(db: Session):
     ]
     
 def get_forms_by_user(db: Session, user_id: int):
-    # Consulta todos los formularios relacionados con el user_id a través de la tabla form_moderators
+    """
+    Obtiene los formularios asociados al usuario a través de la relación con la tabla `form_moderators`.
+
+    :param db: Sesión de base de datos activa.
+    :param user_id: ID del usuario autenticado.
+    :return: Lista de objetos Form.
+    """
     forms = db.query(Form).join(FormModerators).filter(FormModerators.user_id == user_id).all()
     return forms
 
@@ -754,7 +765,13 @@ def get_unrelated_questions(db: Session, form_id: int):
 
 
 def fetch_completed_forms_by_user(db: Session, user_id: int):
-    # Obtener los formularios que ya han sido completados por el usuario
+    """
+    Recupera los formularios que el usuario ha completado.
+
+    :param db: Sesión de la base de datos.
+    :param user_id: ID del usuario.
+    :return: Lista de formularios completados.
+    """
     completed_forms = (
         db.query(Form)
         .join(Response)  # Unión entre formularios y respuestas
@@ -766,8 +783,22 @@ def fetch_completed_forms_by_user(db: Session, user_id: int):
 
 
 def fetch_form_questions(form_id: int, db: Session):
-    """Obtiene las preguntas asociadas y no asociadas a un formulario con is_repeated."""
-    # Obtener todas las preguntas
+    """
+    Obtiene las preguntas asociadas y no asociadas a un formulario específico, 
+    incluyendo información sobre si las preguntas asociadas son repetidas (`is_repeated`).
+
+    Args:
+        form_id (int): ID del formulario a consultar.
+        db (Session): Sesión de base de datos.
+
+    Returns:
+        dict: Diccionario con:
+            - 'associated_questions': Lista de preguntas asociadas con campo `is_repeated`.
+            - 'unassociated_questions': Lista de preguntas no asociadas.
+
+    Raises:
+        HTTPException: Si no se encuentra el formulario.
+    """
     all_questions = db.query(Question).all()
 
     # Obtener el formulario
@@ -805,9 +836,22 @@ def fetch_form_questions(form_id: int, db: Session):
 
 
 def link_question_to_form(form_id: int, question_id: int, db: Session):
-    """Asocia una pregunta a un formulario en la tabla FormQuestion."""
-    
-    # Verificar si el formulario existe
+    """
+    Crea una relación entre un formulario y una pregunta en la tabla FormQuestion.
+
+    Args:
+        form_id (int): ID del formulario.
+        question_id (int): ID de la pregunta.
+        db (Session): Sesión de base de datos.
+
+    Returns:
+        dict: Mensaje indicando éxito y el ID de la relación creada.
+
+    Raises:
+        HTTPException:
+            - 404: Si el formulario o la pregunta no existen.
+            - 400: Si ya existe la relación entre el formulario y la pregunta.
+    """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Formulario no encontrado")
@@ -836,9 +880,21 @@ def link_question_to_form(form_id: int, question_id: int, db: Session):
 
 
 def fetch_form_users(form_id: int, db: Session):
-    """Obtiene los usuarios asociados y no asociados a un formulario."""
-    
-    # Verificar si el formulario existe
+    """
+    Recupera los usuarios asociados y no asociados a un formulario como moderadores.
+
+    Args:
+        form_id (int): ID del formulario.
+        db (Session): Sesión de base de datos.
+
+    Returns:
+        dict: Diccionario con:
+            - 'associated_users': Usuarios asociados como moderadores.
+            - 'unassociated_users': Resto de usuarios del sistema.
+
+    Raises:
+        HTTPException: Si el formulario no existe.
+    """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Formulario no encontrado")
@@ -860,14 +916,27 @@ def fetch_form_users(form_id: int, db: Session):
     
 
 def link_moderator_to_form(form_id: int, user_id: int, db: Session):
-    """Asocia un usuario como moderador de un formulario en la tabla FormModerators."""
-    
-    # Verificar si el formulario existe
+    """
+    Crea una relación entre un usuario y un formulario como moderador.
+
+    Args:
+        form_id (int): ID del formulario.
+        user_id (int): ID del usuario.
+        db (Session): Sesión activa de base de datos.
+
+    Returns:
+        dict: Mensaje de éxito y ID de la nueva relación.
+
+    Raises:
+        HTTPException:
+            - 404: Si el formulario o usuario no existen.
+            - 400: Si el usuario ya es moderador del formulario.
+            
+    """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Formulario no encontrado")
 
-    # Verificar si el usuario existe
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
@@ -891,9 +960,21 @@ def link_moderator_to_form(form_id: int, user_id: int, db: Session):
 
 
 def remove_question_from_form(form_id: int, question_id: int, db: Session):
-    """Elimina una pregunta de un formulario en la tabla FormQuestion."""
-    
-    # Buscar la relación en FormQuestion
+    """
+    Elimina la relación entre una pregunta y un formulario desde la tabla FormQuestion.
+
+    Args:
+        form_id (int): ID del formulario.
+        question_id (int): ID de la pregunta.
+        db (Session): Sesión activa de base de datos.
+
+    Returns:
+        dict: Mensaje de confirmación.
+
+    Raises:
+        HTTPException:
+            - 404: Si la relación no existe.
+    """
     form_question = db.query(FormQuestion).filter(
         FormQuestion.form_id == form_id,
         FormQuestion.question_id == question_id
@@ -1362,6 +1443,17 @@ def get_questions_and_answers_by_form_id(db: Session, form_id: int):
 
 
 def get_questions_and_answers_by_form_id_and_user(db: Session, form_id: int, user_id: int):
+    """
+    Obtiene preguntas y respuestas de un formulario respondido por un usuario específico.
+
+    Args:
+        db (Session): Sesión activa de la base de datos.
+        form_id (int): ID del formulario.
+        user_id (int): ID del usuario cuyas respuestas se desean consultar.
+
+    Returns:
+        dict: Contiene metadatos del formulario y una lista de respuestas estructurada.
+    """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         return None

@@ -287,6 +287,14 @@ def get_responses_with_answers(
 
 @router.get("/all/list", response_model=List[dict])
 def get_forms_endpoint(db: Session = Depends(get_db)):
+    """
+    Retorna una lista de todos los formularios registrados en la base de datos.
+
+    - **Retorna**: Lista de diccionarios con la información de cada formulario.
+    - **Código 200**: Éxito, formularios encontrados.
+    - **Código 404**: No se encontraron formularios.
+    - **Código 500**: Error interno del servidor.
+    """
     try:
         forms = get_all_forms(db)
         if not forms:
@@ -297,6 +305,15 @@ def get_forms_endpoint(db: Session = Depends(get_db)):
 
 @router.get("/users/form_by_user")
 def get_user_forms( db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Retorna los formularios asignados al usuario autenticado.
+
+    - **Requiere autenticación.**
+    - **Código 200**: Lista de formularios.
+    - **Código 403**: Usuario sin permisos (no autenticado).
+    - **Código 404**: No se encontraron formularios asignados.
+    - **Código 500**: Error interno del servidor.
+    """
     try:
         if current_user == None:
             raise HTTPException(
@@ -315,6 +332,14 @@ def get_user_forms( db: Session = Depends(get_db), current_user: User = Depends(
 def get_completed_forms_for_user(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
 ):
+    """
+    Retorna los formularios que han sido completados por el usuario autenticado.
+
+    - **Autenticación requerida**
+    - **Código 200**: Lista de formularios completados
+    - **Código 403**: Usuario no autenticado o sin permisos
+    - **Código 404**: No se encontraron formularios completados
+    """
     if not current_user:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -330,7 +355,22 @@ def get_completed_forms_for_user(
 
 @router.get("/{form_id}/questions_associated_and_unassociated")
 def get_form_questions(form_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
-    
+    """
+    Endpoint para obtener las preguntas asociadas y no asociadas a un formulario dado su ID.
+
+    Solo los usuarios con tipo 'creator' o 'admin' pueden acceder a esta funcionalidad.
+
+    Args:
+        form_id (int): ID del formulario.
+        db (Session): Sesión de base de datos proporcionada por FastAPI.
+        current_user (User): Usuario autenticado obtenido a través del sistema de dependencias.
+
+    Returns:
+        dict: Diccionario con dos listas: 'associated_questions' y 'unassociated_questions'.
+
+    Raises:
+        HTTPException: Si el usuario no tiene permisos o si el formulario no existe.
+    """
     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -343,6 +383,24 @@ def get_form_questions(form_id: int, db: Session = Depends(get_db),current_user:
 
 @router.post("/{form_id}/questions/{question_id}")
 def add_question_to_form(form_id: int, question_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
+    """
+    Asocia una pregunta existente a un formulario específico.
+    Solo los usuarios con rol 'creator' o 'admin' pueden realizar esta acción.
+    Args:
+        form_id (int): ID del formulario.
+        question_id (int): ID de la pregunta a asociar.
+        db (Session): Sesión de base de datos proporcionada por FastAPI.
+        current_user (User): Usuario autenticado.
+
+    Returns:
+        dict: Mensaje de éxito y ID de la relación creada.
+
+    Raises:
+        HTTPException:
+            - 403: Si el usuario no tiene permisos.
+            - 404: Si el formulario o la pregunta no existen.
+            - 400: Si la relación ya existe.
+    """
     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -352,6 +410,24 @@ def add_question_to_form(form_id: int, question_id: int, db: Session = Depends(g
 
 @router.get("/{form_id}/users_associated_and_unassociated")
 def get_form_users(form_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user) ):
+    """
+    Obtiene los usuarios asociados y no asociados como moderadores a un formulario.
+
+    Solo los usuarios con rol 'creator' o 'admin' pueden acceder.
+
+    Args:
+        form_id (int): ID del formulario.
+        db (Session): Sesión de base de datos proporcionada por FastAPI.
+        current_user (User): Usuario autenticado.
+
+    Returns:
+        dict: Diccionario con dos listas: 'associated_users' y 'unassociated_users'.
+
+    Raises:
+        HTTPException:
+            - 403: Si el usuario no tiene permisos.
+            - 404: Si el formulario no existe.
+    """
     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -361,6 +437,23 @@ def get_form_users(form_id: int, db: Session = Depends(get_db),current_user: Use
 
 @router.post("/{form_id}/form_moderators/{user_id}")
 def add_user_to_form_schedule(form_id: int, user_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
+    """
+    Asocia un usuario como moderador de un formulario.
+    Solo los usuarios con rol 'creator' o 'admin' pueden acceder.
+    Args:
+        form_id (int): ID del formulario.
+        user_id (int): ID del usuario a asociar como moderador.
+        db (Session): Sesión de base de datos proporcionada por FastAPI.
+        current_user (USer): Usuario autenticado.
+
+    Returns:
+        dict: Mensaje de éxito con el ID de la relación creada.
+    Raises:
+        HTTPException:
+            - 403: Si el usuario no tiene permisos.
+            - 404: Si el formulario o el usuario no existen.
+            - 400: Si ya existe la relación.
+    """ 
     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -371,6 +464,20 @@ def add_user_to_form_schedule(form_id: int, user_id: int, db: Session = Depends(
 
 @router.delete("/{form_id}/questions/{question_id}/delete")
 def delete_question_from_form(form_id: int, question_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Elimina la relación entre una pregunta y un formulario.
+
+    Solo accesible para usuarios con rol 'creator' o 'admin'.
+
+    Args:
+        form_id (int): ID del formulario.
+        question_id (int): ID de la pregunta a desvincular.
+        db (Session): Sesión de base de datos proporcionada por FastAPI.
+        current_user (User): Usuario autenticado.
+
+    Returns:
+        dict: Mensaje de éxito.
+    """ 
     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -380,6 +487,18 @@ def delete_question_from_form(form_id: int, question_id: int, db: Session = Depe
 
 @router.delete("/{form_id}/moderators/{user_id}/delete")
 def delete_moderator_from_form(form_id: int, user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Elimina la relación entre una pregunta y un formulario.
+    Solo accesible para usuarios con rol 'creator' o 'admin'.
+    Args:
+        form_id (int): ID del formulario.
+        question_id (int): ID de la pregunta a desvincular.
+        db (Session): Sesión de base de datos proporcionada por FastAPI.
+        current_user (User): Usuario autenticado.
+
+    Returns:
+        dict: Mensaje de éxito.
+    """
     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -387,10 +506,22 @@ def delete_moderator_from_form(form_id: int, user_id: int, db: Session = Depends
         )
     return remove_moderator_from_form(form_id, user_id, db)
 
-
-
 @router.post("/form-answers/")
 def create_form_answer(payload: FormAnswerCreate, db: Session = Depends(get_db)):
+    """
+    Crea una nueva relación entre un formulario y una pregunta en la tabla FormAnswer.
+    Esta relación se usa para definir si una pregunta está repetida en un formulario.
+    Args:
+        payload (FormAnswerCreate): Datos requeridos para crear la relación, incluyendo:
+            - form_id (int): ID del formulario.
+            - question_id (int): ID de la pregunta.
+            - is_repeated (bool): Indicador si la pregunta se repite.
+
+        db (Session): Sesión de base de datos proporcionada por FastAPI.
+
+    Returns:
+        dict: Mensaje de confirmación y datos de la relación creada.
+    """
     form_answer = FormAnswer(
         form_id=payload.form_id,
         question_id=payload.question_id,
@@ -425,6 +556,20 @@ def get_forms_by_answers(
 
 @router.get("/{form_id}/questions-answers/excel")
 def download_questions_answers_excel(form_id: int, db: Session = Depends(get_db)):
+    """
+    Genera un archivo Excel con las preguntas y respuestas de un formulario específico.
+
+    Este endpoint consulta todas las preguntas y sus respectivas respuestas
+    asociadas a un formulario dado y devuelve un archivo Excel para su descarga.
+
+    Args:
+        form_id (int): ID del formulario del cual se desean exportar los datos.
+        db (Session): Sesión de base de datos proporcionada por FastAPI.
+
+    Returns:
+        StreamingResponse: Archivo Excel (.xlsx) con los datos de preguntas y respuestas.
+        Si el formulario no existe, retorna un error 404.
+    """
     data = get_questions_and_answers_by_form_id(db, form_id)
     if not data:
         raise HTTPException(status_code=404, detail="Formulario no encontrado")
@@ -442,6 +587,20 @@ def download_questions_answers_excel(form_id: int, db: Session = Depends(get_db)
                                                                                                          
 @router.get("/{form_id}/questions-answers/excel/user")
 def download_user_responses_excel(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Exporta las respuestas de un usuario a un formulario en un archivo Excel.
+
+    Este endpoint recupera todas las respuestas dadas por el usuario autenticado
+    a un formulario específico y genera un archivo Excel con la información.
+
+    Args:
+        form_id (int): ID del formulario.
+        db (Session): Sesión de base de datos.
+        current_user (User): Usuario autenticado (inyectado con Depends).
+
+    Returns:
+        StreamingResponse: Archivo Excel descargable con las respuestas del usuario.
+    """
     data = get_questions_and_answers_by_form_id_and_user(db, form_id, current_user.id)
     if not data or not data["data"]:
         raise HTTPException(status_code=404, detail="No se encontraron respuestas para este usuario en el formulario")
