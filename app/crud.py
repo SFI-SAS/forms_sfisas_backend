@@ -1350,12 +1350,8 @@ def get_related_answers_logic(db: Session, question_id: int):
         answers = db.query(Answer).filter_by(question_id=relation.related_question_id).all()
         return {
             "source": "pregunta_relacionada",
-            "related_question_id": relation.related_question_id,
-            "respuestas": [
-                {
-    
-                    "respuesta": ans.answer_text
-                }
+            "data": [
+                {"name": ans.answer_text}
                 for ans in answers
             ]
         }
@@ -1390,16 +1386,17 @@ def get_related_answers_logic(db: Session, question_id: int):
 
     results = db.query(Model).all()
 
-    # Serialización con id y campo específico
+    # Serialización forzando siempre el campo como "name"
     def serialize(instance):
         return {
-            field_name: getattr(instance, field_name, None)
+            "name": getattr(instance, field_name, None)
         }
 
     return {
         "source": table_translations.get(name_table, name_table),
         "data": [serialize(r) for r in results]
     }
+
 
 
 def get_questions_and_answers_by_form_id(db: Session, form_id: int):
