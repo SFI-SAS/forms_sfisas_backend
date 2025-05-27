@@ -395,11 +395,6 @@ def add_question_to_form(form_id: int, question_id: int, db: Session = Depends(g
     Returns:
         dict: Mensaje de éxito y ID de la relación creada.
 
-    Raises:
-        HTTPException:
-            - 403: Si el usuario no tiene permisos.
-            - 404: Si el formulario o la pregunta no existen.
-            - 400: Si la relación ya existe.
     """
     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(

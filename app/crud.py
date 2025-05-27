@@ -1834,6 +1834,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 "form_id": form.id,
                 "form_title": form.title,
                 "form_description": form.description,
+                "form_design":form.form_design,
                 "submitted_by": {
                     "user_id": user_response.id,
                     "name": user_response.name,
@@ -2466,12 +2467,10 @@ def update_notification_status(notification_id: int, notify_on: str, db: Session
 
     return notification
 
-
 def delete_form(db: Session, form_id: int):
     """
     Elimina un formulario y todos sus registros relacionados, excepto si tiene respuestas asociadas.
     """
-    # 1️⃣ Consultar el formulario
     form = db.query(Form).filter(Form.id == form_id).first()
 
     if not form:
@@ -2479,10 +2478,9 @@ def delete_form(db: Session, form_id: int):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Formulario no encontrado."
         )
-    
-    # 2️⃣ Verificar si tiene respuestas asociadas
+
+    # Verifica si tiene respuestas
     has_responses = db.query(Response).filter(Response.form_id == form_id).count()
-    
     if has_responses > 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -2490,21 +2488,25 @@ def delete_form(db: Session, form_id: int):
         )
 
     try:
-        # 3️⃣ Eliminar registros relacionados en cascada (FormApproval, etc.)
+        # Eliminar manualmente registros relacionados
+        db.query(FormAnswer).filter(FormAnswer.form_id == form_id).delete()
         db.query(FormApproval).filter(FormApproval.form_id == form_id).delete()
-        # Aquí podrías agregar más tablas relacionadas si existen
+        db.query(FormApprovalNotification).filter(FormApprovalNotification.form_id == form_id).delete()
+        db.query(FormSchedule).filter(FormSchedule.form_id == form_id).delete()
+        db.query(FormModerators).filter(FormModerators.form_id == form_id).delete()
+        db.query(FormQuestion).filter(FormQuestion.form_id == form_id).delete()
 
-        # 4️⃣ Eliminar el formulario principal
+        # Finalmente elimina el formulario
         db.delete(form)
         db.commit()
     
     except Exception as e:
-        db.rollback()  # Revertir cambios si ocurre un error
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ocurrió un error al eliminar el formulario: {str(e)}"
         )
-    
+
     return {"message": "Formulario y registros relacionados eliminados correctamente."}
 
 def get_response_details_logic(db: Session):
