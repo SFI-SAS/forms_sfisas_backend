@@ -823,7 +823,7 @@ def fetch_form_questions(form_id: int, db: Session):
         return {
             "id": q.id,
             "question_text": q.question_text,
-            "question_type": q.question_type.value,
+            "question_type": q.question_type,
             "required": q.required,
             "root": q.root,
             "is_repeated": question_id_to_is_repeated.get(q.id) if is_associated else None

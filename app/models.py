@@ -16,13 +16,14 @@ class UserType(enum.Enum):
 
 # Definir ENUM para form_status
 
-class QuestionType(enum.Enum):
+class QuestionType(str, enum.Enum):
     text = "text"
     multiple_choice = "multiple_choice"
-    one_choice = "one_choice" 
+    one_choice = "one_choice"
     file = "file"
     table = "table"
     date = "date"
+    number = "number"
 
 class ApprovalStatus(enum.Enum):
     pendiente = "pendiente"
