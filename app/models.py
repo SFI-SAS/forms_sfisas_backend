@@ -270,6 +270,24 @@ class EmailConfig(Base):
     email_address = Column(String(255), nullable=False)  
     is_active = Column(Boolean, default=True)
     
+    
+class QuestionFilterCondition(Base):
+    __tablename__ = "question_filter_conditions"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=False)
+    filtered_question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=False)
+    source_question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=False)
+    condition_question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=False)
+    expected_value = Column(String(255), nullable=False)
+    operator = Column(String(10), nullable=False, default="==")
+
+    form = relationship("Form")
+    filtered_question = relationship("Question", foreign_keys=[filtered_question_id])
+    source_question = relationship("Question", foreign_keys=[source_question_id])
+    condition_question = relationship("Question", foreign_keys=[condition_question_id])
+
+    
 @event.listens_for(EmailConfig.__table__, "after_create")
 def insert_default_emails(target, connection, **kwargs):
     """ Inserta dos registros de ejemplo al crear la tabla """

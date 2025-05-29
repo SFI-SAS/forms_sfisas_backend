@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 from typing import List
 from app.crud import create_answer_in_db, generate_unique_serial, post_create_response
 from app.database import get_db
-from app.schemas import FileSerialCreate, PostCreate, UpdateAnswerText
-from app.models import Answer, AnswerFileSerial, User, UserType
+from app.schemas import FileSerialCreate, FilteredAnswersResponse, PostCreate, QuestionFilterConditionCreate, UpdateAnswerText
+from app.models import Answer, AnswerFileSerial, QuestionFilterCondition, QuestionTableRelation, Response, User, UserType
 from app.core.security import get_current_user
 
 
@@ -157,3 +157,88 @@ def generate_serial(db: Session = Depends(get_db)):
     serial = generate_unique_serial(db)
     return {"serial": serial}
 
+@router.post("/create_question_filter_condition/", summary="Crear condición de filtrado de preguntas")
+def create_question_filter_condition(
+    condition_data: QuestionFilterConditionCreate,
+    db: Session = Depends(get_db)
+):
+    # Verificar si ya existe una condición igual
+    existing = db.query(QuestionFilterCondition).filter_by(
+        form_id=condition_data.form_id,
+        filtered_question_id=condition_data.filtered_question_id,
+        source_question_id=condition_data.source_question_id,
+        condition_question_id=condition_data.condition_question_id,
+        expected_value=condition_data.expected_value,
+        operator=condition_data.operator
+    ).first()
+
+    if existing:
+        raise HTTPException(status_code=400, detail="Condición ya existe")
+
+    # Crear la condición
+    new_condition = QuestionFilterCondition(
+        form_id=condition_data.form_id,
+        filtered_question_id=condition_data.filtered_question_id,
+        source_question_id=condition_data.source_question_id,
+        condition_question_id=condition_data.condition_question_id,
+        expected_value=condition_data.expected_value,
+        operator=condition_data.operator,
+    )
+
+    db.add(new_condition)
+    db.commit()
+    db.refresh(new_condition)
+
+    return {
+        "message": "Condición registrada exitosamente",
+        "id": new_condition.id
+    }
+
+
+@router.get("/filtered_answers/{filtered_question_id}", response_model=List[FilteredAnswersResponse], summary="Obtener respuestas filtradas por condición")
+def get_filtered_answers_endpoint(
+    filtered_question_id: int,
+    db: Session = Depends(get_db)
+):
+    condition = db.query(QuestionFilterCondition).filter_by(filtered_question_id=filtered_question_id).first()
+    
+    if not condition:
+        raise HTTPException(status_code=404, detail="Condición de filtro no encontrada.")
+
+    # Obtener todas las respuestas del formulario relacionado
+    responses = db.query(Response).filter_by(form_id=condition.form_id).all()
+
+    valid_answers = []
+
+    for response in responses:
+        answers_dict = {a.question_id: a.answer_text for a in response.answers}
+        source_val = answers_dict.get(condition.source_question_id)
+        condition_val = answers_dict.get(condition.condition_question_id)
+
+        if condition.operator == '==':
+            if condition_val == condition.expected_value:
+                valid_answers.append(source_val)
+
+        elif condition.operator == '!=':
+            if condition_val != condition.expected_value:
+                valid_answers.append(source_val)
+
+        elif condition.operator == '>':
+            if condition_val > condition.expected_value:
+                valid_answers.append(source_val)
+
+        elif condition.operator == '<':
+            if condition_val < condition.expected_value:
+                valid_answers.append(source_val)
+
+        elif condition.operator == '>=':
+            if condition_val >= condition.expected_value:
+                valid_answers.append(source_val)
+
+        elif condition.operator == '<=':
+            if condition_val <= condition.expected_value:
+                valid_answers.append(source_val)
+
+    # Retorna respuestas únicas, eliminando nulos
+    filtered = list(filter(None, set(valid_answers)))
+    return [{"answer": val} for val in filtered]

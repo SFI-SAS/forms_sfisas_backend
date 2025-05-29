@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from app import models
 from app.api.controllers.mail import send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormModerators, FormSchedule, Project, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
+from app.models import  AnswerFileSerial, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
@@ -1339,28 +1339,71 @@ def create_question_table_relation_logic(
 
 
 
-def get_related_answers_logic(db: Session, question_id: int):
-    # Verificar si existe una relación para la pregunta
+def get_related_or_filtered_answers(db: Session, question_id: int):
+    # Verificar si existe una condición de filtro
+    condition = db.query(QuestionFilterCondition).filter_by(filtered_question_id=question_id).first()
+
+    if condition:
+        # Obtener todas las respuestas del formulario relacionado
+        responses = db.query(Response).filter_by(form_id=condition.form_id).all()
+        valid_answers = []
+
+        for response in responses:
+            answers_dict = {a.question_id: a.answer_text for a in response.answers}
+            source_val = answers_dict.get(condition.source_question_id)
+            condition_val = answers_dict.get(condition.condition_question_id)
+
+            if source_val is None or condition_val is None:
+                continue
+
+            # Intentar convertir valores a número si es posible
+            try:
+                condition_val = float(condition_val)
+                expected_val = float(condition.expected_value)
+            except ValueError:
+                condition_val = str(condition_val)
+                expected_val = str(condition.expected_value)
+
+            if condition.operator == '==':
+                if condition_val == expected_val:
+                    valid_answers.append(source_val)
+            elif condition.operator == '!=':
+                if condition_val != expected_val:
+                    valid_answers.append(source_val)
+            elif condition.operator == '>':
+                if condition_val > expected_val:
+                    valid_answers.append(source_val)
+            elif condition.operator == '<':
+                if condition_val < expected_val:
+                    valid_answers.append(source_val)
+            elif condition.operator == '>=':
+                if condition_val >= expected_val:
+                    valid_answers.append(source_val)
+            elif condition.operator == '<=':
+                if condition_val <= expected_val:
+                    valid_answers.append(source_val)
+
+        filtered = list(filter(None, set(valid_answers)))
+        return {
+            "source": "condicion_filtrada",
+            "data": [{"name": val} for val in filtered]
+        }
+
+    # Si no hay condición, usar relación de tabla
     relation = db.query(QuestionTableRelation).filter_by(question_id=question_id).first()
     if not relation:
-        raise HTTPException(status_code=404, detail="No relation found for this question")
+        raise HTTPException(status_code=404, detail="No se encontró relación para esta pregunta")
 
-    # Si tiene related_question_id, buscar answers relacionadas
     if relation.related_question_id:
         answers = db.query(Answer).filter_by(question_id=relation.related_question_id).all()
         return {
             "source": "pregunta_relacionada",
-            "data": [
-                {"name": ans.answer_text}
-                for ans in answers
-            ]
+            "data": [{"name": ans.answer_text} for ans in answers]
         }
 
-    # Si no tiene related_question_id, usar tabla y campo especificados
     name_table = relation.name_table
-    field_name = relation.field_name 
+    field_name = relation.field_name
 
-    # Modelos válidos
     valid_tables = {
         "answers": Answer,
         "users": User,
@@ -1368,7 +1411,6 @@ def get_related_answers_logic(db: Session, question_id: int):
         "options": Option,
     }
 
-    # Traducciones de nombre de tabla
     table_translations = {
         "users": "usuarios",
         "forms": "formularios",
@@ -1378,25 +1420,20 @@ def get_related_answers_logic(db: Session, question_id: int):
 
     Model = valid_tables.get(name_table)
     if not Model:
-        raise HTTPException(status_code=400, detail=f"Table '{name_table}' is not supported")
+        raise HTTPException(status_code=400, detail=f"Tabla '{name_table}' no soportada")
 
-    # Validar que el campo exista en el modelo
     if not hasattr(Model, field_name):
-        raise HTTPException(status_code=400, detail=f"Field '{field_name}' does not exist in model '{name_table}'")
+        raise HTTPException(status_code=400, detail=f"Campo '{field_name}' no existe en el modelo '{name_table}'")
 
     results = db.query(Model).all()
 
-    # Serialización forzando siempre el campo como "name"
     def serialize(instance):
-        return {
-            "name": getattr(instance, field_name, None)
-        }
+        return {"name": getattr(instance, field_name, None)}
 
     return {
         "source": table_translations.get(name_table, name_table),
-        "data": [serialize(r) for r in results]
+        "data": [serialize(r) for r in results if getattr(r, field_name, None)]
     }
-
 
 
 def get_questions_and_answers_by_form_id(db: Session, form_id: int):

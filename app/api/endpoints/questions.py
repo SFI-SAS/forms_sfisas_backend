@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
 from app.models import User, UserType
-from app.crud import create_question, create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_filtered_questions, get_related_answers_logic, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
+from app.crud import create_question, create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_filtered_questions, get_related_or_filtered_answers, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
 from app.schemas import AnswerSchema, QuestionCreate, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate
 from app.core.security import get_current_user
 
@@ -161,4 +161,4 @@ def get_related_answers(question_id: int, db: Session = Depends(get_db), current
             detail="User does not have permission to get all questions"
             )
     else: 
-        return get_related_answers_logic(db, question_id)
+        return get_related_or_filtered_answers(db, question_id)
