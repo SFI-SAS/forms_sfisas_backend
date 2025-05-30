@@ -401,6 +401,8 @@ def add_question_to_form(form_id: int, question_id: int, db: Session = Depends(g
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create forms"
         )
+        
+    print("Aqui",form_id, question_id)
     return link_question_to_form(form_id, question_id, db)
 
 @router.get("/{form_id}/users_associated_and_unassociated")

@@ -254,43 +254,48 @@ def update_question(db: Session, question_id: int, question: QuestionUpdate) -> 
 
 def add_questions_to_form(db: Session, form_id: int, question_ids: List[int]):
     try:
+        print(f"🧩 Iniciando proceso para agregar preguntas al formulario ID {form_id}")
+        print(f"🔍 Preguntas recibidas: {question_ids}")
+
         db_form = db.query(Form).filter(Form.id == form_id).first()
         if not db_form:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Form not found")
 
-        # Obtener los IDs de las preguntas actualmente asociadas
         current_question_ids = {fq.question_id for fq in db_form.questions}
+        print(f"📌 Preguntas ya asociadas al formulario: {current_question_ids}")
 
-        # Calcular las preguntas nuevas que se deben asociar
         new_question_ids = set(question_ids) - current_question_ids
+        print(f"➕ Nuevas preguntas a asociar: {new_question_ids}")
 
-        # Si no hay preguntas nuevas para añadir, salir
         if not new_question_ids:
+            print("⚠️ No hay nuevas preguntas para agregar.")
             return db_form
 
-        # Filtrar preguntas nuevas que existen en la base de datos
         new_questions = db.query(Question).filter(Question.id.in_(new_question_ids)).all()
 
-        # Verificar que todas las preguntas nuevas existen
         if len(new_questions) != len(new_question_ids):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="One or more questions not found"
             )
 
-        # Crear instancias de FormQuestion para añadir en masa
-        form_questions = [FormQuestion(form_id=form_id, question_id=question.id) for question in new_questions]
+        form_questions = []
+        for question in new_questions:
+            fq = FormQuestion(form_id=form_id, question_id=question.id)
+            form_questions.append(fq)
+            print(f"✅ Asociando pregunta ID {question.id} al formulario ID {form_id}")
 
-        # Añadir todas las nuevas relaciones en una sola operación
         db.bulk_save_objects(form_questions)
-
         db.commit()
+
+        print(f"🎉 {len(form_questions)} preguntas asociadas correctamente al formulario.")
         db.refresh(db_form)
         return db_form
+
     except IntegrityError:
         db.rollback()
+        print("❌ Error de integridad al asignar preguntas al formulario.")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Error assigning questions to the form")
-    
 
 # Option CRUD Operations
 def create_options(db: Session, options: List[OptionCreate]):
@@ -2520,7 +2525,7 @@ def update_notification_status(notification_id: int, notify_on: str, db: Session
 
 def delete_form(db: Session, form_id: int):
     """
-    Elimina un formulario y todos sus registros relacionados, excepto si tiene respuestas asociadas.
+    Elimina un formulario y todos sus registros relacionados, incluyendo respuestas si existen.
     """
     form = db.query(Form).filter(Form.id == form_id).first()
 
@@ -2530,15 +2535,10 @@ def delete_form(db: Session, form_id: int):
             detail="Formulario no encontrado."
         )
 
-    # Verifica si tiene respuestas
-    has_responses = db.query(Response).filter(Response.form_id == form_id).count()
-    if has_responses > 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No se puede eliminar el formulario porque tiene respuestas asociadas."
-        )
-
     try:
+        # Eliminar respuestas relacionadas al formulario
+        db.query(Response).filter(Response.form_id == form_id).delete()
+
         # Eliminar manualmente registros relacionados
         db.query(FormAnswer).filter(FormAnswer.form_id == form_id).delete()
         db.query(FormApproval).filter(FormApproval.form_id == form_id).delete()
@@ -2550,7 +2550,7 @@ def delete_form(db: Session, form_id: int):
         # Finalmente elimina el formulario
         db.delete(form)
         db.commit()
-    
+
     except Exception as e:
         db.rollback()
         raise HTTPException(
@@ -2558,7 +2558,8 @@ def delete_form(db: Session, form_id: int):
             detail=f"Ocurrió un error al eliminar el formulario: {str(e)}"
         )
 
-    return {"message": "Formulario y registros relacionados eliminados correctamente."}
+    return {"message": "Formulario, respuestas y registros relacionados eliminados correctamente."}
+
 
 def get_response_details_logic(db: Session):
     responses = db.query(Response).all()
