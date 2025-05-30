@@ -440,8 +440,11 @@ class QuestionFilterConditionCreate(BaseModel):
     source_question_id: int = Field(..., description="ID de la pregunta de donde vienen las respuestas (ej. 'proyectos')")
     condition_question_id: int = Field(..., description="ID de la pregunta condicional (ej. 'estatus')")
     expected_value: str = Field(..., description="Valor esperado para la condición (ej. 'Activo')")
-    operator: Literal['==', '!=', 'in', 'not in'] = Field(default='==', description="Operador lógico para la comparación")
-    
+
+    operator: Literal['==', '!=', '>', '<', '>=', '<=', 'in', 'not in'] = Field(
+        default='==', description="Operador lógico para la comparación"
+    )
+
     
 class FilteredAnswersResponse(BaseModel):
     answer: str

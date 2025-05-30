@@ -9,7 +9,7 @@ from typing import List
 from app.crud import create_answer_in_db, generate_unique_serial, post_create_response
 from app.database import get_db
 from app.schemas import FileSerialCreate, FilteredAnswersResponse, PostCreate, QuestionFilterConditionCreate, UpdateAnswerText
-from app.models import Answer, AnswerFileSerial, QuestionFilterCondition, QuestionTableRelation, Response, User, UserType
+from app.models import Answer, AnswerFileSerial, Form, FormQuestion, Question, QuestionFilterCondition, QuestionTableRelation, Response, User, UserType
 from app.core.security import get_current_user
 
 
@@ -242,3 +242,73 @@ def get_filtered_answers_endpoint(
     # Retorna respuestas únicas, eliminando nulos
     filtered = list(filter(None, set(valid_answers)))
     return [{"answer": val} for val in filtered]
+
+@router.get("/forms/by_question/{question_id}")
+def get_forms_questions_answers_by_question(question_id: int, db: Session = Depends(get_db)):
+    try:
+        # Buscar los IDs únicos de formularios que contienen la pregunta
+        form_ids = (
+            db.query(FormQuestion.form_id)
+            .filter(FormQuestion.question_id == question_id)
+            .distinct()
+            .all()
+        )
+        unique_form_ids = [f[0] for f in form_ids]
+
+        # Buscar formularios con esas IDs
+        forms = db.query(Form).filter(Form.id.in_(unique_form_ids)).all()
+
+        result = []
+        for form in forms:
+            # Obtener preguntas del formulario
+            questions = (
+                db.query(Question)
+                .join(FormQuestion, FormQuestion.question_id == Question.id)
+                .filter(FormQuestion.form_id == form.id)
+                .all()
+            )
+
+            question_data = []
+            for q in questions:
+                # Obtener respuestas de esa pregunta
+                answers = (
+                    db.query(Answer)
+                    .filter(Answer.question_id == q.id)
+                    .all()
+                )
+
+                seen_texts = set()
+                answer_data = []
+
+                for ans in answers:
+                    if ans.answer_text not in seen_texts:
+                        seen_texts.add(ans.answer_text)
+                        answer_data.append({
+                            "id": ans.id,
+                            "response_id": ans.response_id,
+                            "answer_text": ans.answer_text,
+                            "file_path": ans.file_path
+                        })
+
+                question_data.append({
+                    "id": q.id,
+                    "question_text": q.question_text,
+                    "question_type": q.question_type.name,
+                    "required": q.required,
+                    "root": q.root,
+                    "answers": answer_data
+                })
+
+            result.append({
+                "form_id": form.id,
+                "title": form.title,
+                "questions": question_data
+            })
+
+        return {
+            "message": "Formularios, preguntas y respuestas encontradas",
+            "data": result
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
