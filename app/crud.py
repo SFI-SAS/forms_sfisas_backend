@@ -418,22 +418,36 @@ def get_responses_by_project(db: Session, project_id: int):
 
 
 
-def delete_question_from_db(question_id: int, db: Session):
-    """ Elimina una pregunta si no tiene relaciones con otras tablas. """
-    question = db.query(Question).filter(Question.id == question_id).first()
+def delete_question_from_db(db: Session, question_id: int):
+    # 1. Eliminar respuestas (answers)
+    db.query(Answer).filter(Answer.question_id == question_id).delete()
 
-    if not question:
-        raise HTTPException(status_code=404, detail="Pregunta no encontrada")
+    # 2. Eliminar respuestas de formulario (form_answers)
+    db.query(FormAnswer).filter(FormAnswer.question_id == question_id).delete()
 
-    # Verificar si tiene relaciones con otras tablas
-    if question.forms or question.options or question.answers:
-        raise HTTPException(status_code=400, detail="No se puede eliminar porque está relacionada con otros datos")
+    # 3. Eliminar opciones (options)
+    db.query(Option).filter(Option.question_id == question_id).delete()
 
-    # Eliminar la pregunta
-    db.delete(question)
+    # 4. Eliminar relación en tabla intermedia form_questions
+    db.query(FormQuestion).filter(FormQuestion.question_id == question_id).delete()
+
+    # 5. Eliminar relaciones en question_table_relations
+    db.query(QuestionTableRelation).filter(
+        (QuestionTableRelation.question_id == question_id) |
+        (QuestionTableRelation.related_question_id == question_id)
+    ).delete()
+
+    # 6. Eliminar filtros relacionados en question_filter_conditions
+    db.query(QuestionFilterCondition).filter(
+        (QuestionFilterCondition.filtered_question_id == question_id) |
+        (QuestionFilterCondition.source_question_id == question_id) |
+        (QuestionFilterCondition.condition_question_id == question_id)
+    ).delete()
+
+    # 7. Finalmente, eliminar la pregunta
+    db.query(Question).filter(Question.id == question_id).delete()
+
     db.commit()
-    return {"message": "Pregunta eliminada correctamente"}
-
 def post_create_response(db: Session, form_id: int, user_id: int, mode: str = "online"):
     """Crea una nueva respuesta en la base de datos y sus aprobaciones correspondientes."""
 

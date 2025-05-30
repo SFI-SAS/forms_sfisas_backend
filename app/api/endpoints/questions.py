@@ -87,7 +87,7 @@ def delete_question(question_id: int, db: Session = Depends(get_db), current_use
             detail="User does not have permission to get options"
         )
     else: 
-        return delete_question_from_db(question_id, db)
+        return delete_question_from_db(db, question_id)
 
 
 @router.get("/{question_id}/answers", response_model=List[AnswerSchema])
