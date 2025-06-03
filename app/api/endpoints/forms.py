@@ -248,11 +248,13 @@ def get_responses_with_answers(
 
         result.append({
             "response_id": r.id,
+            
             "submitted_at": r.submitted_at,
             "approval_status": approval_result["status"],
             "message": approval_result["message"],
             "answers": [
                 {
+                    "repeated_id": r.repeated_id,
                     "question_id": a.question.id,
                     "question_text": a.question.question_text,
                     "question_type": a.question.question_type,

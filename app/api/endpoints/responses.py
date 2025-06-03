@@ -5,7 +5,7 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Upload
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from app.crud import create_answer_in_db, generate_unique_serial, post_create_response
 from app.database import get_db
 from app.schemas import FileSerialCreate, FilteredAnswersResponse, PostCreate, QuestionFilterConditionCreate, UpdateAnswerText
@@ -20,6 +20,7 @@ router = APIRouter()
 def save_response(
     form_id: int,
     mode: str = Query("online", enum=["online", "offline"]),
+    repeated_id: Optional[int] = Query(None),  
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -28,8 +29,8 @@ def save_response(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to respond"
         )
+    return post_create_response(db, form_id, current_user.id, mode, repeated_id)
 
-    return post_create_response(db, form_id, current_user.id, mode)
 
 @router.post("/save-answers/")  
 def create_answer(answer: PostCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
