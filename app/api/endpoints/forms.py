@@ -709,21 +709,36 @@ def get_form_schedules(form_id: int, user_id: int, db: Session = Depends(get_db)
             raise HTTPException(status_code=404, detail="No se encontraron programaciones para ese formulario y usuario.")
 
         return schedules
-    
+
 @router.get("/{form_id}/questions-answers/excel/all-users")
 def download_all_user_responses_excel(
     form_id: int,
     db: Session = Depends(get_db)
 ):
     data = get_all_user_responses_by_form_id(db, form_id)
-    
+
     if not data or not data["data"]:
         raise HTTPException(
             status_code=404,
             detail="No se encontraron respuestas para este formulario"
         )
 
+    # Imprimir el diccionario completo de datos
+    print("\n====== DATOS COMPLETOS ======")
+    print(data)
+
+    # Imprimir solo las filas de respuestas
+    print("\n====== RESPUESTAS ======")
+    for i, row in enumerate(data["data"], 1):
+        print(f"Respuesta #{i}: {row}")
+
+    # Convertir a DataFrame
     df = pd.DataFrame(data["data"])
+
+    # Imprimir las columnas detectadas en el DataFrame
+    print("\n====== COLUMNAS DEL EXCEL ======")
+    print(df.columns)
+
     output = BytesIO()
     df.to_excel(output, index=False, sheet_name="Respuestas de Usuarios")
     output.seek(0)

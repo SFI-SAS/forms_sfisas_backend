@@ -1705,11 +1705,15 @@ def get_all_user_responses_by_form_id(db: Session, form_id: int):
         ).all()
 
     data = []
+    all_keys = set()
+
     for response in responses:
         row = {
             "Nombre": response.user.name,
             "Documento": response.user.num_document,
         }
+
+        all_keys.update(row.keys())  # Agrega claves del usuario
 
         for question in questions:
             answer_text = ""
@@ -1717,15 +1721,25 @@ def get_all_user_responses_by_form_id(db: Session, form_id: int):
                 if answer.question_id == question.id:
                     answer_text = answer.answer_text or answer.file_path or ""
                     break
-            row[question.question_text] = answer_text
+            key = question.question_text
+            row[key] = answer_text
+            all_keys.add(key)  # Agrega claves de preguntas
+
         data.append(row)
+
+    # Asegura que todas las filas tengan las mismas columnas
+    all_keys = list(all_keys)
+    for row in data:
+        for key in all_keys:
+            row.setdefault(key, "")  # Llena con vacío si falta algún campo
 
     return {
         "form_id": form.id,
         "form_title": form.title,
-        "questions": [q.question_text for q in questions],
+        "questions": all_keys,  # Todas las columnas reales detectadas
         "data": data
     }
+
 
 
 def get_unanswered_forms_by_user(db: Session, user_id: int):
@@ -2522,7 +2536,6 @@ def update_notification_status(notification_id: int, notify_on: str, db: Session
     db.refresh(notification)
 
     return notification
-
 def delete_form(db: Session, form_id: int):
     """
     Elimina un formulario y todos sus registros relacionados, incluyendo respuestas si existen.
@@ -2536,8 +2549,16 @@ def delete_form(db: Session, form_id: int):
         )
 
     try:
-        # Eliminar respuestas relacionadas al formulario
-        db.query(Response).filter(Response.form_id == form_id).delete()
+        # Obtener todos los response_ids relacionados con el formulario
+        response_ids = db.query(Response.id).filter(Response.form_id == form_id).all()
+        response_ids = [r.id for r in response_ids]
+
+        if response_ids:
+            # Primero eliminar los registros de answers que dependen de responses
+            db.query(Answer).filter(Answer.response_id.in_(response_ids)).delete(synchronize_session=False)
+
+        # Luego eliminar las respuestas (responses)
+        db.query(Response).filter(Response.id.in_(response_ids)).delete(synchronize_session=False)
 
         # Eliminar manualmente registros relacionados
         db.query(FormAnswer).filter(FormAnswer.form_id == form_id).delete()
