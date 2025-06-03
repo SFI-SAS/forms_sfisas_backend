@@ -20,7 +20,7 @@ router = APIRouter()
 def save_response(
     form_id: int,
     mode: str = Query("online", enum=["online", "offline"]),
-    repeated_id: Optional[int] = Query(None),  
+    repeated_id: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
