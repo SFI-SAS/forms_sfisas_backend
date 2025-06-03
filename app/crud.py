@@ -453,7 +453,7 @@ def delete_question_from_db(db: Session, question_id: int):
     db.query(Question).filter(Question.id == question_id).delete()
 
     db.commit()
-def post_create_response(db: Session, form_id: int, user_id: int, mode: str = "online", repeated_id: Optional[int] = None):
+def post_create_response(db: Session, form_id: int, user_id: int, mode: str = "online", repeated_id: Optional[str] = None):
 
     """Crea una nueva respuesta en la base de datos y sus aprobaciones correspondientes."""
 
