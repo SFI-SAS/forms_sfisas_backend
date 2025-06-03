@@ -1693,7 +1693,6 @@ def get_user_responses_data(user_id: int, db: Session):
         "responses": results
     }
     
-
 def get_all_user_responses_by_form_id(db: Session, form_id: int):
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
@@ -1708,41 +1707,55 @@ def get_all_user_responses_by_form_id(db: Session, form_id: int):
         ).all()
 
     data = []
-    all_keys = set()
+    counter = 1  # Contador para el consecutivo
 
     for response in responses:
-        row = {
-            "Nombre": response.user.name,
-            "Documento": response.user.num_document,
-        }
+        # Agrupar respuestas por orden de aparición de repetidas
+        grouped_answers = {}
+        for answer in response.answers:
+            q_text = answer.question.question_text
+            grouped_answers.setdefault(q_text, []).append(answer.answer_text or answer.file_path or "")
 
-        all_keys.update(row.keys())  # Agrega claves del usuario
+        # Determinar el número máximo de repeticiones
+        max_len = max(len(vals) for vals in grouped_answers.values()) if grouped_answers else 1
 
-        for question in questions:
-            answer_text = ""
-            for answer in response.answers:
-                if answer.question_id == question.id:
-                    answer_text = answer.answer_text or answer.file_path or ""
-                    break
-            key = question.question_text
-            row[key] = answer_text
-            all_keys.add(key)  # Agrega claves de preguntas
+        # Crear una fila por cada repetición (registro)
+        for i in range(max_len):
+            row = {
+                "Registro #": counter,
+                "Nombre": response.user.name,
+                "Documento": response.user.num_document,
+                
+            }
+            counter += 1
 
-        data.append(row)
+            for q_text, answers_list in grouped_answers.items():
+                row[q_text] = answers_list[i] if i < len(answers_list) else ""
 
-    # Asegura que todas las filas tengan las mismas columnas
-    all_keys = list(all_keys)
+            # Agregar la fecha como último campo
+            row["Fecha de Envío"] = response.submitted_at.strftime("%Y-%m-%d %H:%M:%S") if response.submitted_at else ""
+            data.append(row)
+
+    # Obtener todas las claves únicas para las columnas, con control del orden
+    fixed_keys = ["Registro #", "Nombre", "Documento"]
+    question_keys = sorted({key for row in data for key in row if key not in fixed_keys + ["Fecha de Envío"]})
+    all_keys = fixed_keys + question_keys + ["Fecha de Envío"]
+
+    # Asegurar que todas las filas tengan las mismas columnas y en el orden deseado
     for row in data:
         for key in all_keys:
-            row.setdefault(key, "")  # Llena con vacío si falta algún campo
+            row.setdefault(key, "")
+        # Reordenar explícitamente las claves
+        row = {key: row[key] for key in all_keys}
 
+    # Retornar el diccionario con total_responses como primer campo
     return {
+        "total_responses": len(data),  # Primero
         "form_id": form.id,
         "form_title": form.title,
-        "questions": all_keys,  # Todas las columnas reales detectadas
+        "questions": all_keys,
         "data": data
     }
-
 
 
 def get_unanswered_forms_by_user(db: Session, user_id: int):
