@@ -615,24 +615,7 @@ def download_user_responses_excel(form_id: int, db: Session = Depends(get_db), c
         headers={"Content-Disposition": f"attachment; filename=Respuestas_usuario_{current_user.id}_formulario_{form_id}.xlsx"}
     )
         
-        
-@router.get("/{form_id}/questions-answers/excel/user")
-def download_user_responses_excel(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    data = get_questions_and_answers_by_form_id_and_user(db, form_id, current_user.id)
-    if not data or not data["data"]:
-        raise HTTPException(status_code=404, detail="No se encontraron respuestas para este usuario en el formulario")
-
-    df = pd.DataFrame(data["data"])
-    output = BytesIO()
-    df.to_excel(output, index=False, sheet_name="Respuestas del Usuario")
-    output.seek(0)
-
-    return StreamingResponse(
-        output,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename=Respuestas_usuario_{current_user.id}_formulario_{form_id}.xlsx"}
-    )
-                                                                                                                                                                                                                                                                             
+                                                                                                                                                                                                                                                             
                       
 @router.get("/{form_id}/responses_data_forms")
 def get_form_responses(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

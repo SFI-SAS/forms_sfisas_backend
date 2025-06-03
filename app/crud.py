@@ -1499,17 +1499,6 @@ def get_questions_and_answers_by_form_id(db: Session, form_id: int):
 
 
 def get_questions_and_answers_by_form_id_and_user(db: Session, form_id: int, user_id: int):
-    """
-    Obtiene preguntas y respuestas de un formulario respondido por un usuario específico.
-
-    Args:
-        db (Session): Sesión activa de la base de datos.
-        form_id (int): ID del formulario.
-        user_id (int): ID del usuario cuyas respuestas se desean consultar.
-
-    Returns:
-        dict: Contiene metadatos del formulario y una lista de respuestas estructurada.
-    """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         return None
@@ -1523,27 +1512,56 @@ def get_questions_and_answers_by_form_id_and_user(db: Session, form_id: int, use
         ).all()
 
     data = []
-    for response in responses:
-        row = {
-            "Nombre": response.user.name,
-            "Documento": response.user.num_document,
-        }
+    counter = 1
 
-        for question in questions:
-            answer_text = ""
-            for answer in response.answers:
-                if answer.question_id == question.id:
-                    answer_text = answer.answer_text or answer.file_path or ""
-                    break
-            row[question.question_text] = answer_text
-        data.append(row)
+    for response in responses:
+        # Agrupar respuestas por pregunta
+        grouped_answers = {}
+        for answer in response.answers:
+            q_text = answer.question.question_text
+            grouped_answers.setdefault(q_text, []).append(answer.answer_text or answer.file_path or "")
+
+        # Determinar máximo número de repeticiones para esa respuesta
+        max_len = max(len(vals) for vals in grouped_answers.values()) if grouped_answers else 1
+
+        # Por cada repetición, crear fila
+        for i in range(max_len):
+            row = {
+                "Registro #": counter,
+                "Nombre": response.user.name,
+                "Documento": response.user.num_document,
+                "ID Respuesta": response.id,
+            }
+            counter += 1
+
+            # Rellenar respuestas para cada pregunta
+            for q_text in [q.question_text for q in questions]:
+                answers_list = grouped_answers.get(q_text, [])
+                row[q_text] = answers_list[i] if i < len(answers_list) else ""
+
+            # Fecha de envío como último campo
+            row["Fecha de Envío"] = response.submitted_at.strftime("%Y-%m-%d %H:%M:%S") if response.submitted_at else ""
+
+            data.append(row)
+
+    # Preparar columnas con orden fijo
+    fixed_keys = ["Registro #", "Nombre", "Documento", "ID Respuesta"]
+    question_keys = [q.question_text for q in questions]
+    all_keys = fixed_keys + question_keys + ["Fecha de Envío"]
+
+    # Asegurar que todas las filas tengan todas las columnas (vacías si no hay dato)
+    for row in data:
+        for key in all_keys:
+            row.setdefault(key, "")
 
     return {
+        "total_responses": len(data),
         "form_id": form.id,
         "form_title": form.title,
-        "questions": [q.question_text for q in questions],
+        "questions": all_keys,
         "data": data
     }
+
 def generate_random_password(length=10):
     chars = string.ascii_letters + string.digits + "!@#$%^&*"
     return ''.join(secrets.choice(chars) for _ in range(length))
