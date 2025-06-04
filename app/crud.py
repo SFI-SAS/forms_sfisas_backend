@@ -261,7 +261,8 @@ def add_questions_to_form(db: Session, form_id: int, question_ids: List[int]):
         if not db_form:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Form not found")
 
-        current_question_ids = {fq.question_id for fq in db_form.questions}
+        current_question_ids = {fq.id for fq in db_form.questions}
+
         print(f"📌 Preguntas ya asociadas al formulario: {current_question_ids}")
 
         new_question_ids = set(question_ids) - current_question_ids
@@ -1921,6 +1922,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 "sequence_number": ra.sequence_number,
                 "is_mandatory": ra.is_mandatory,
                 "status": ra.status.value,
+                "reconsideration_requested": ra.reconsideration_requested,
                 "reviewed_at": ra.reviewed_at.isoformat() if ra.reviewed_at else None,
                 "message": ra.message,
                 "user": {
@@ -2588,16 +2590,14 @@ def delete_form(db: Session, form_id: int):
         response_ids = [r.id for r in response_ids]
 
         if response_ids:
-            # Eliminar registros en response_approvals que dependen de responses
             db.query(ResponseApproval).filter(ResponseApproval.response_id.in_(response_ids)).delete(synchronize_session=False)
 
-            # Eliminar registros en answers que dependen de responses
             db.query(Answer).filter(Answer.response_id.in_(response_ids)).delete(synchronize_session=False)
 
-            # Luego eliminar las respuestas (responses)
             db.query(Response).filter(Response.id.in_(response_ids)).delete(synchronize_session=False)
 
-        # Eliminar manualmente registros relacionados con el formulario
+        db.query(QuestionFilterCondition).filter(QuestionFilterCondition.form_id == form_id).delete(synchronize_session=False)
+
         db.query(FormAnswer).filter(FormAnswer.form_id == form_id).delete(synchronize_session=False)
         db.query(FormApproval).filter(FormApproval.form_id == form_id).delete(synchronize_session=False)
         db.query(FormApprovalNotification).filter(FormApprovalNotification.form_id == form_id).delete(synchronize_session=False)
@@ -2605,7 +2605,6 @@ def delete_form(db: Session, form_id: int):
         db.query(FormModerators).filter(FormModerators.form_id == form_id).delete(synchronize_session=False)
         db.query(FormQuestion).filter(FormQuestion.form_id == form_id).delete(synchronize_session=False)
 
-        # Finalmente elimina el formulario
         db.delete(form)
         db.commit()
 
@@ -2615,6 +2614,7 @@ def delete_form(db: Session, form_id: int):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ocurrió un error al eliminar el formulario: {str(e)}"
         )
+
 
     return {"message": "Formulario, respuestas y registros relacionados eliminados correctamente."}
 

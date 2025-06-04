@@ -244,9 +244,8 @@ class ResponseApproval(Base):
     status = Column(Enum(ApprovalStatus), default=ApprovalStatus.pendiente, nullable=False)
     
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
-    
     message = Column(Text, nullable=True)
-
+    reconsideration_requested = Column(Boolean, nullable=True, default=False)
     response = relationship("Response", back_populates="approvals")
     user = relationship("User")
 
