@@ -2588,19 +2588,22 @@ def delete_form(db: Session, form_id: int):
         response_ids = [r.id for r in response_ids]
 
         if response_ids:
-            # Primero eliminar los registros de answers que dependen de responses
+            # Eliminar registros en response_approvals que dependen de responses
+            db.query(ResponseApproval).filter(ResponseApproval.response_id.in_(response_ids)).delete(synchronize_session=False)
+
+            # Eliminar registros en answers que dependen de responses
             db.query(Answer).filter(Answer.response_id.in_(response_ids)).delete(synchronize_session=False)
 
-        # Luego eliminar las respuestas (responses)
-        db.query(Response).filter(Response.id.in_(response_ids)).delete(synchronize_session=False)
+            # Luego eliminar las respuestas (responses)
+            db.query(Response).filter(Response.id.in_(response_ids)).delete(synchronize_session=False)
 
-        # Eliminar manualmente registros relacionados
-        db.query(FormAnswer).filter(FormAnswer.form_id == form_id).delete()
-        db.query(FormApproval).filter(FormApproval.form_id == form_id).delete()
-        db.query(FormApprovalNotification).filter(FormApprovalNotification.form_id == form_id).delete()
-        db.query(FormSchedule).filter(FormSchedule.form_id == form_id).delete()
-        db.query(FormModerators).filter(FormModerators.form_id == form_id).delete()
-        db.query(FormQuestion).filter(FormQuestion.form_id == form_id).delete()
+        # Eliminar manualmente registros relacionados con el formulario
+        db.query(FormAnswer).filter(FormAnswer.form_id == form_id).delete(synchronize_session=False)
+        db.query(FormApproval).filter(FormApproval.form_id == form_id).delete(synchronize_session=False)
+        db.query(FormApprovalNotification).filter(FormApprovalNotification.form_id == form_id).delete(synchronize_session=False)
+        db.query(FormSchedule).filter(FormSchedule.form_id == form_id).delete(synchronize_session=False)
+        db.query(FormModerators).filter(FormModerators.form_id == form_id).delete(synchronize_session=False)
+        db.query(FormQuestion).filter(FormQuestion.form_id == form_id).delete(synchronize_session=False)
 
         # Finalmente elimina el formulario
         db.delete(form)
@@ -2614,7 +2617,6 @@ def delete_form(db: Session, form_id: int):
         )
 
     return {"message": "Formulario, respuestas y registros relacionados eliminados correctamente."}
-
 
 def get_response_details_logic(db: Session):
     responses = db.query(Response).all()
