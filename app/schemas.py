@@ -448,3 +448,9 @@ class QuestionFilterConditionCreate(BaseModel):
     
 class FilteredAnswersResponse(BaseModel):
     answer: str
+    
+class ResponseItem(BaseModel):
+    question_id: int
+    response: Union[str, dict]  # puede ser string o dict
+    file_path: Optional[str] = None
+    repeated_id: Optional[str] = None

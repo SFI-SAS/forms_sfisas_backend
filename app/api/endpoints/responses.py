@@ -1,4 +1,6 @@
 
+import json
+import logging
 import os
 import uuid
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile, status
@@ -8,19 +10,30 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.crud import create_answer_in_db, generate_unique_serial, post_create_response
 from app.database import get_db
-from app.schemas import FileSerialCreate, FilteredAnswersResponse, PostCreate, QuestionFilterConditionCreate, UpdateAnswerText
+from app.schemas import FileSerialCreate, FilteredAnswersResponse, PostCreate, QuestionFilterConditionCreate, ResponseItem, UpdateAnswerText
 from app.models import Answer, AnswerFileSerial, Form, FormQuestion, Question, QuestionFilterCondition, QuestionTableRelation, Response, User, UserType
 from app.core.security import get_current_user
 
 
 router = APIRouter()
 
-        
+from fastapi import Body
+
+
+def extract_repeated_id(responses: List[ResponseItem]) -> Optional[str]:
+    """
+    Extrae el primer repeated_id no nulo de la lista de responses.
+    """
+    for r in responses:
+        if r.repeated_id is not None and r.repeated_id.strip() != "":
+            return r.repeated_id
+    return None
+
 @router.post("/save-response/{form_id}")
 def save_response(
     form_id: int,
+    responses: List[ResponseItem] = Body(...),
     mode: str = Query("online", enum=["online", "offline"]),
-    repeated_id: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -29,8 +42,16 @@ def save_response(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to respond"
         )
-    return post_create_response(db, form_id, current_user.id, mode, repeated_id)
+    
+    # Imprimir para debug el repeated_id recibido en cada respuesta
+    for r in responses:
+        logging.info(f"Repeated_id recibido: '{r.repeated_id}' (length: {len(r.repeated_id) if r.repeated_id else 0})")
 
+    repeated_id = extract_repeated_id(responses)
+    
+    logging.info(f"Repeated_id extraído para guardar: '{repeated_id}' (length: {len(repeated_id) if repeated_id else 0})")
+
+    return post_create_response(db, form_id, current_user.id, mode, repeated_id)
 
 @router.post("/save-answers/")  
 def create_answer(answer: PostCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

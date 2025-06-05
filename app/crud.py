@@ -191,7 +191,6 @@ def get_form(db: Session, form_id: int, user_id: int):
                 "answers": [
                     {
                         "id": answer.id,
-                        "repeated_id": form.repeated_id,
                         "question_id": answer.question_id,
                         "answer_text": answer.answer_text,
                     }
