@@ -268,6 +268,7 @@ def get_responses_with_answers(
                     "approval_id": ap.id,
                     "sequence_number": ap.sequence_number,
                     "is_mandatory": ap.is_mandatory,
+                    "reconsideration_requested": ap.reconsideration_requested,
                     "status": ap.status.value,
                     "reviewed_at": ap.reviewed_at,
                     "message": ap.message,

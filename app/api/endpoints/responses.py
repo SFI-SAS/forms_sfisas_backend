@@ -8,10 +8,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 from typing import List, Optional
+from app.api.controllers.mail import send_reconsideration_email
 from app.crud import create_answer_in_db, generate_unique_serial, post_create_response
 from app.database import get_db
 from app.schemas import FileSerialCreate, FilteredAnswersResponse, PostCreate, QuestionFilterConditionCreate, ResponseItem, UpdateAnswerText
-from app.models import Answer, AnswerFileSerial, Form, FormQuestion, Question, QuestionFilterCondition, QuestionTableRelation, Response, User, UserType
+from app.models import Answer, AnswerFileSerial, ApprovalStatus, Form, FormApproval, FormQuestion, Question, QuestionFilterCondition, QuestionTableRelation, Response, ResponseApproval, User, UserType
 from app.core.security import get_current_user
 
 
@@ -334,3 +335,126 @@ def get_forms_questions_answers_by_question(question_id: int, db: Session = Depe
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/set_reconsideration/{response_id}")
+def set_reconsideration_true(response_id: int, mensaje_reconsideracion: str, db: Session = Depends(get_db)):
+    try:
+        # Buscar la respuesta por ID
+        response = db.query(Response).filter(Response.id == response_id).first()
+        if not response:
+            raise HTTPException(status_code=404, detail="Respuesta no encontrada")
+        
+        # Obtener información del usuario que solicita reconsideración
+        usuario_solicita = db.query(User).filter(User.id == response.user_id).first()
+        if not usuario_solicita:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        
+        # Obtener información del formulario
+        formato = db.query(Form).filter(Form.id == response.form_id).first()
+        if not formato:
+            raise HTTPException(status_code=404, detail="Formulario no encontrado")
+        
+        # Obtener el creador del formulario
+        creador_formato = db.query(User).filter(User.id == formato.user_id).first()
+        
+        # Obtener todas las aprobaciones de esta respuesta
+        approvals = db.query(ResponseApproval).filter(ResponseApproval.response_id == response_id).all()
+        if not approvals:
+            raise HTTPException(status_code=404, detail="No se encontraron aprobaciones para esta respuesta")
+        
+        # Buscar el aprobador que rechazó
+        aprobador_que_rechazo = None
+        for approval in approvals:
+            if approval.status == ApprovalStatus.rechazado:  # Asumiendo que tienes un enum ApprovalStatus
+                aprobador_rechazo_user = db.query(User).filter(User.id == approval.user_id).first()
+                if aprobador_rechazo_user:
+                    aprobador_que_rechazo = {
+                        'nombre': aprobador_rechazo_user.name,
+                        'email': aprobador_rechazo_user.email,
+                        'mensaje': approval.message,
+                        'reviewed_at': approval.reviewed_at.strftime("%d/%m/%Y %H:%M") if approval.reviewed_at else 'No disponible'
+                    }
+                break
+        
+        # Obtener todos los aprobadores del formulario
+        form_approvals = db.query(FormApproval).filter(
+            FormApproval.form_id == response.form_id,
+            FormApproval.is_active == True
+        ).order_by(FormApproval.sequence_number).all()
+        
+        # Preparar información de todos los aprobadores
+        todos_los_aprobadores = []
+        aprobadores_emails = []
+        
+        for form_approval in form_approvals:
+            aprobador_user = db.query(User).filter(User.id == form_approval.user_id).first()
+            if aprobador_user:
+                # Buscar el estado actual de este aprobador para esta respuesta
+                current_approval = db.query(ResponseApproval).filter(
+                    ResponseApproval.response_id == response_id,
+                    ResponseApproval.user_id == form_approval.user_id
+                ).first()
+                
+                todos_los_aprobadores.append({
+                    'secuencia': form_approval.sequence_number,
+                    'nombre': aprobador_user.name,
+                    'email': aprobador_user.email,
+                    'status': current_approval.status if current_approval else 'pending',
+                    'mensaje': current_approval.message if current_approval else 'Sin mensaje',
+                    'reviewed_at': current_approval.reviewed_at.strftime("%d/%m/%Y %H:%M") if current_approval and current_approval.reviewed_at else 'No disponible'
+                })
+                
+                aprobadores_emails.append({
+                    'email': aprobador_user.email,
+                    'nombre': aprobador_user.name
+                })
+        
+        # Preparar información del formato
+        formato_info = {
+            'titulo': formato.title,
+            'descripcion': formato.description,
+            'creado_por': {
+                'nombre': creador_formato.name if creador_formato else 'No disponible',
+                'email': creador_formato.email if creador_formato else 'No disponible'
+            }
+        }
+        
+        # Preparar información del usuario que solicita
+        usuario_info = {
+            'nombre': usuario_solicita.name,
+            'email': usuario_solicita.email,
+            'telefono': usuario_solicita.telephone,
+            'num_documento': usuario_solicita.num_document
+        }
+        
+        # Actualizar el campo reconsideration_requested
+        for approval in approvals:
+            approval.reconsideration_requested = True
+        
+        db.commit()
+        
+        # Enviar correos a todos los aprobadores
+        correos_enviados = 0
+        for aprobador in aprobadores_emails:
+            if send_reconsideration_email(
+                to_email=aprobador['email'],
+                to_name=aprobador['nombre'],
+                formato=formato_info,
+                usuario_solicita=usuario_info,
+                mensaje_reconsideracion=mensaje_reconsideracion,
+                aprobador_que_rechazo=aprobador_que_rechazo,
+                todos_los_aprobadores=todos_los_aprobadores
+            ):
+                correos_enviados += 1
+        
+        return {
+            "message": "Reconsideración solicitada exitosamente",
+            "correos_enviados": correos_enviados,
+            "total_aprobadores": len(aprobadores_emails),
+            "aprobaciones_actualizadas": len(approvals)
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al procesar la reconsideración: {str(e)}")

@@ -455,3 +455,120 @@ def send_rejection_email(to_email: str, to_name: str, formato: dict, usuario_res
     except Exception as e:
         print(f"❌ Error al enviar correo de rechazo a {to_email}: {str(e)}")
         return False
+
+
+
+def send_reconsideration_email(to_email: str, to_name: str, formato: dict, usuario_solicita: dict, mensaje_reconsideracion: str, aprobador_que_rechazo: dict, todos_los_aprobadores: list):
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = f"Solicitud de reconsideración: {formato['titulo']}"
+        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
+        msg["To"] = formataddr((to_name, to_email))
+
+        current_date = datetime.now().strftime("%d/%m/%Y")
+
+        # HTML de lista de aprobadores
+        aprobadores_html = ""
+        for aprobador in todos_los_aprobadores:
+            aprobadores_html += f"""
+                <tr>
+                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador['secuencia']}</td>
+                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador['nombre']}</td>
+                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador['email']}</td>
+                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador['status'].value.capitalize()}</td>
+                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador.get('mensaje', 'Sin mensaje')}</td>
+                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador.get('reviewed_at', 'No disponible')}</td>
+                </tr>
+            """
+
+        html_content = f"""
+        <html>
+        <body style="font-family: 'Segoe UI', sans-serif; background-color: #f9f9f9; margin: 0; padding: 30px;">
+            <table width="100%" cellspacing="0" cellpadding="0" style="max-width: 600px; margin: auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 30px;">
+                <tr>
+                    <td>
+                        <h2 style="color: #f39c12; margin-bottom: 10px;">🔄 Solicitud de Reconsideración</h2>
+                        <p style="font-size: 16px; color: #333;">
+                            Estimado/a <strong>{to_name}</strong>,<br><br>
+                            Le informamos que <strong>{usuario_solicita['nombre']}</strong> ha solicitado una reconsideración 
+                            para el formulario <strong>"{formato['titulo']}"</strong> que fue previamente rechazado.
+                        </p>
+
+                        <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; padding: 15px; margin: 20px 0;">
+                            <h4 style="color: #856404; margin: 0 0 10px 0;">💬 Mensaje de reconsideración:</h4>
+                            <p style="color: #856404; margin: 0; font-style: italic;">"{mensaje_reconsideracion}"</p>
+                        </div>
+
+                        <hr style="margin: 25px 0; border: none; border-top: 1px solid #e0e0e0;">
+
+                        <h3 style="color: #333; font-size: 17px;">📄 Detalles del Formulario</h3>
+                        <ul style="padding-left: 20px; color: #555; font-size: 15px;">
+                            <li><strong>Título:</strong> {formato['titulo']}</li>
+                            <li><strong>Descripción:</strong> {formato['descripcion']}</li>
+                            <li><strong>Creado por:</strong> {formato['creado_por']['nombre']} ({formato['creado_por']['email']})</li>
+                        </ul>
+
+                        <h3 style="color: #333; font-size: 17px;">👤 Usuario que solicita reconsideración</h3>
+                        <ul style="padding-left: 20px; color: #555; font-size: 15px;">
+                            <li><strong>Nombre:</strong> {usuario_solicita['nombre']}</li>
+                            <li><strong>Email:</strong> {usuario_solicita['email']}</li>
+                            <li><strong>Teléfono:</strong> {usuario_solicita['telefono']}</li>
+                            <li><strong>Documento:</strong> {usuario_solicita['num_documento']}</li>
+                        </ul>
+
+                        <h3 style="color: #333; font-size: 17px;">❌ Aprobador que rechazó originalmente</h3>
+                        <ul style="padding-left: 20px; color: #555; font-size: 15px;">
+                            <li><strong>Nombre:</strong> {aprobador_que_rechazo['nombre']} ({aprobador_que_rechazo['email']})</li>
+                            <li><strong>Motivo del rechazo:</strong> {aprobador_que_rechazo.get('mensaje', 'Sin mensaje')}</li>
+                            <li><strong>Fecha de rechazo:</strong> {aprobador_que_rechazo.get('reviewed_at', 'No disponible')}</li>
+                        </ul>
+
+                        <h3 style="color: #333; font-size: 17px;">📋 Todos los aprobadores</h3>
+                        <table width="100%" style="border-collapse: collapse; font-size: 14px;">
+                            <thead>
+                                <tr style="background-color: #f0f0f0;">
+                                    <th style="padding: 5px; border: 1px solid #ccc;">Secuencia</th>
+                                    <th style="padding: 5px; border: 1px solid #ccc;">Nombre</th>
+                                    <th style="padding: 5px; border: 1px solid #ccc;">Email</th>
+                                    <th style="padding: 5px; border: 1px solid #ccc;">Estado</th>
+                                    <th style="padding: 5px; border: 1px solid #ccc;">Mensaje</th>
+                                    <th style="padding: 5px; border: 1px solid #ccc;">Fecha</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {aprobadores_html}
+                            </tbody>
+                        </table>
+
+                        <div style="background-color: #e8f5e8; border: 1px solid #c3e6c3; border-radius: 5px; padding: 15px; margin: 20px 0;">
+                            <p style="color: #2d5a2d; margin: 0; font-size: 14px;">
+                                <strong>Acción requerida:</strong> Se solicita revisar nuevamente las respuestas del formulario 
+                                considerando la justificación proporcionada por el usuario.
+                            </p>
+                        </div>
+
+                        <p style="font-size: 14px; color: #999; margin-top: 30px;">
+                            Enviado el {current_date} 
+                        </p>
+                    </td>
+                </tr>
+            </table>
+        </body>
+        </html>
+        """
+
+        msg.set_content(
+            f"Solicitud de reconsideración para el formulario \"{formato['titulo']}\" por {usuario_solicita['nombre']}. Mensaje: {mensaje_reconsideracion}"
+        )
+        msg.add_alternative(html_content, subtype="html")
+
+        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
+            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
+            smtp.send_message(msg)
+
+        print(f"✅ Correo de reconsideración enviado a {to_email}")
+        return True
+
+    except Exception as e:
+        print(f"❌ Error al enviar correo de reconsideración a {to_email}: {str(e)}")
+        return False
