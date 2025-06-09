@@ -619,7 +619,21 @@ def download_user_responses_excel(form_id: int, db: Session = Depends(get_db), c
                       
 @router.get("/{form_id}/responses_data_forms")
 def get_form_responses(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    
+    """
+    Obtiene todas las respuestas asociadas a un formulario específico.
+
+    - **form_id**: ID del formulario a consultar.
+    - **current_user**: Usuario autenticado que realiza la solicitud.
+    - **db**: Sesión de base de datos.
+
+    Retorna los datos del formulario incluyendo:
+    - Información del formulario.
+    - Respuestas enviadas por los usuarios.
+    - Información del usuario que respondió.
+    - Preguntas y respuestas (texto y archivos si aplica).
+
+    Requiere que el usuario tenga tipo `creator` o `admin`.
+    """
     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -632,6 +646,21 @@ def get_form_responses(form_id: int, db: Session = Depends(get_db), current_user
 
 @router.get("/{user_id}/responses_data_users")
 def get_user_responses(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Obtiene todas las respuestas asociadas a un usuario específico.
+
+    - **user_id**: ID del usuario a consultar.
+    - **current_user**: Usuario autenticado que realiza la solicitud.
+    - **db**: Sesión de base de datos.
+
+    Requiere permisos de tipo `creator` o `admin`.
+
+    Retorna un diccionario con:
+    - Información del usuario.
+    - Todas las respuestas que ha enviado.
+    - Información del formulario relacionado.
+    - Preguntas y sus respectivas respuestas.
+    """
     
     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
@@ -650,6 +679,19 @@ def download_user_responses_excel(
     id_user: int,
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
 ):
+    """
+    Descarga en formato Excel las respuestas de un usuario para un formulario.
+
+    - **form_id**: ID del formulario.
+    - **id_user**: ID del usuario cuyas respuestas se desean consultar.
+    - **current_user**: Usuario autenticado, debe ser tipo `creator` o `admin`.
+    - **db**: Sesión de base de datos.
+
+    Retorna un archivo Excel que contiene:
+    - Información del usuario.
+    - Preguntas del formulario.
+    - Respuestas del usuario (incluyendo archivos si aplica).
+    """
     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -678,7 +720,21 @@ def download_user_responses_excel(
 
 @router.get("/form-schedules_table/", response_model=List[FormScheduleOut], )
 def get_form_schedules(form_id: int, user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    
+    """
+    Devuelve las programaciones (`FormSchedule`) asociadas a un formulario y usuario específicos.
+
+    - **form_id**: ID del formulario del cual se desea obtener las programaciones.
+    - **user_id**: ID del usuario al que están asociadas las programaciones.
+    - **current_user**: Usuario autenticado (verificado).
+    - **db**: Sesión de base de datos proporcionada por la dependencia `get_db`.
+
+    Retorna:
+    - Lista de objetos `FormScheduleOut` que contienen la información de las programaciones.
+
+    Errores posibles:
+    - **403**: Si no hay usuario autenticado.
+    - **404**: Si no se encuentran programaciones para ese formulario y usuario.
+    """ 
     if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -700,6 +756,14 @@ def download_all_user_responses_excel(
     form_id: int,
     db: Session = Depends(get_db)
 ):
+    """
+    Descarga un archivo Excel con las respuestas de todos los usuarios para un formulario dado.
+
+    - **form_id**: ID del formulario.
+    - **db**: Sesión de base de datos.
+
+    Retorna un archivo Excel (`.xlsx`) con las respuestas de todos los usuarios, con columnas dinámicas según las preguntas del formulario.
+    """
     data = get_all_user_responses_by_form_id(db, form_id)
 
     if not data or not data["data"]:

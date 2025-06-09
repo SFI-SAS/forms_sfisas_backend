@@ -1500,6 +1500,22 @@ def get_questions_and_answers_by_form_id(db: Session, form_id: int):
 
 
 def get_questions_and_answers_by_form_id_and_user(db: Session, form_id: int, user_id: int):
+    """
+    Obtiene todas las respuestas de un usuario para un formulario específico y las organiza en formato tabular.
+
+    - **form_id**: ID del formulario.
+    - **user_id**: ID del usuario.
+    - **db**: Sesión de la base de datos.
+
+    Retorna un diccionario con:
+    - `total_responses`: Número total de registros generados.
+    - `form_id`: ID del formulario.
+    - `form_title`: Título del formulario.
+    - `questions`: Lista de columnas ordenadas (preguntas más campos fijos).
+    - `data`: Lista de filas con información del usuario y sus respuestas.
+
+    Si el formulario no existe, retorna `None`.
+    """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         return None
@@ -1621,6 +1637,23 @@ def generate_unique_serial(db: Session, length: int = 5) -> str:
             return serial
         
 def get_form_responses_data(form_id: int, db: Session):
+    """
+    Consulta y estructura las respuestas de un formulario específico.
+
+    - **form_id**: ID del formulario.
+    - **db**: Sesión de la base de datos.
+
+    Retorna un diccionario con:
+    - `form_id`: ID del formulario.
+    - `form_title`: Título del formulario.
+    - `responses`: Lista de respuestas, cada una con:
+        - `response_id`
+        - `mode` y `mode_sequence`
+        - `user`: Datos del usuario que respondió.
+        - `answers`: Lista de respuestas por pregunta, incluyendo texto y archivos.
+
+    Devuelve `None` si el formulario no existe.
+    """
     form = db.query(Form).options(
         joinedload(Form.responses)
         .joinedload(Response.user),  # ← Atributo de clase, no string
@@ -1667,6 +1700,23 @@ def get_form_responses_data(form_id: int, db: Session):
     }
     
 def get_user_responses_data(user_id: int, db: Session):
+    """
+    Consulta y estructura las respuestas asociadas a un usuario específico.
+
+    - **user_id**: ID del usuario.
+    - **db**: Sesión de la base de datos.
+
+    Retorna un diccionario con:
+    - `user_id`: ID del usuario.
+    - `user_name`: Nombre del usuario.
+    - `email`: Correo del usuario.
+    - `responses`: Lista de respuestas con:
+        - `response_id`, `mode`, `mode_sequence`, `submitted_at`
+        - `form`: Información del formulario.
+        - `answers`: Lista de respuestas por pregunta (texto y archivo si aplica).
+
+    Devuelve `None` si el usuario no existe.
+    """
     user = db.query(User).options(
         joinedload(User.responses)
         .joinedload(Response.form),
@@ -1713,6 +1763,25 @@ def get_user_responses_data(user_id: int, db: Session):
     }
     
 def get_all_user_responses_by_form_id(db: Session, form_id: int):
+    """
+    Recupera y estructura las respuestas de todos los usuarios para un formulario específico.
+
+    - Agrupa respuestas por pregunta.
+    - Soporta preguntas con múltiples respuestas (como repeticiones).
+    - Devuelve filas planas donde cada fila representa una instancia única de respuestas de un usuario.
+
+    Args:
+        db (Session): Sesión activa de la base de datos.
+        form_id (int): ID del formulario del que se quiere obtener la información.
+
+    Returns:
+        dict: Estructura con claves:
+            - total_responses: número total de registros generados.
+            - form_id: ID del formulario.
+            - form_title: título del formulario.
+            - questions: lista ordenada de columnas (preguntas).
+            - data: lista de filas con respuestas por usuario.
+    """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         return None
