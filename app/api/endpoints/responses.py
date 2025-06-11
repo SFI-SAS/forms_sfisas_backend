@@ -532,7 +532,8 @@ def get_responses_with_answers(
 @router.delete("/responses/{response_id}")
 async def delete_response(
     response_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ) -> Dict[str, str]:
     """
     Elimina una respuesta y todas sus relaciones asociadas.
@@ -548,7 +549,12 @@ async def delete_response(
         HTTPException: Si la respuesta no existe o hay error en la eliminación
     """
     try:
-        # Verificar que la respuesta existe
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User does not have permission to access completed forms",
+            )
+            # Verificar que la respuesta existe
         response = db.query(Response).filter(Response.id == response_id).first()
         if not response:
             raise HTTPException(
