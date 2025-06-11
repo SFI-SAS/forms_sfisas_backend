@@ -1847,6 +1847,16 @@ def get_all_user_responses_by_form_id(db: Session, form_id: int):
 
 
 def get_unanswered_forms_by_user(db: Session, user_id: int):
+    """
+    Retorna los formularios asignados a un usuario que aún no ha respondido.
+
+    Args:
+        db (Session): Sesión activa de la base de datos.
+        user_id (int): ID del usuario autenticado.
+
+    Returns:
+        List[Form]: Lista de formularios no respondidos por el usuario.
+    """
     # Subconsulta: formularios que ya respondió el usuario
     subquery = db.query(Response.form_id).filter(Response.user_id == user_id)
     
@@ -1858,6 +1868,21 @@ def get_unanswered_forms_by_user(db: Session, user_id: int):
     
     return forms
 def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
+    """
+    Guarda las aprobaciones asociadas a un formulario.
+
+    - Verifica si el formulario existe.
+    - Revisa si ya existen aprobaciones activas para los usuarios.
+    - Crea nuevas aprobaciones si no hay duplicados o si el `sequence_number` es diferente.
+    - Retorna una lista de IDs de usuarios cuyas aprobaciones fueron creadas.
+
+    Args:
+        data (FormApprovalCreateSchema): Datos del formulario y aprobadores a guardar.
+        db (Session): Sesión de la base de datos.
+
+    Returns:
+        List[int]: Lista de IDs de usuarios aprobadores que fueron agregados.
+    """
     # Verifica si el formulario existe
     form = db.query(Form).filter(Form.id == data.form_id).first()
     if not form:

@@ -787,7 +787,10 @@ def download_all_user_responses_excel(
     )
 
 
-@router.get("/users/unanswered_forms")
+@router.get("/users/unanswered_forms",
+    summary="Obtener formularios no respondidos",
+    description="Retorna los formularios asignados al usuario autenticado que aún no han sido respondidos."
+)
 def get_unanswered_forms(
     db: Session = Depends(get_db), 
     current_user: User = Depends(get_current_user)
@@ -808,8 +811,7 @@ def get_unanswered_forms(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
-    
+
 @router.get("/responses/by-user/")
 def get_responses_by_user_and_form(
     form_id: int,
@@ -853,6 +855,21 @@ def create_form_approvals(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    """
+    Crea aprobaciones para un formulario específico.
+
+    - Requiere que el usuario actual esté autenticado.
+    - Valida la existencia del formulario.
+    - Agrega aprobadores si no existen o si el número de secuencia es diferente.
+    
+    Args:
+        data (FormApprovalCreateSchema): Datos del formulario y aprobadores.
+        db (Session): Sesión de la base de datos inyectada por dependencia.
+        current_user (User): Usuario autenticado actual.
+
+    Returns:
+        dict: Diccionario con los IDs de los nuevos aprobadores agregados.
+    """
     if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
