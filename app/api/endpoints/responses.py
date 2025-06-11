@@ -6,15 +6,16 @@ import uuid
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import inspect, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from app.api.controllers.mail import send_reconsideration_email
-from app.crud import create_answer_in_db, generate_unique_serial, post_create_response
+from app.crud import create_answer_in_db, generate_unique_serial, post_create_response, process_responses_with_history
 from app.database import get_db
-from app.schemas import FileSerialCreate, FilteredAnswersResponse, PostCreate, QuestionFilterConditionCreate, ResponseItem, UpdateAnswerText
-from app.models import Answer, AnswerFileSerial, ApprovalStatus, Form, FormApproval, FormQuestion, Question, QuestionFilterCondition, QuestionTableRelation, Response, ResponseApproval, User, UserType
+from app.schemas import AnswerHistoryCreate, FileSerialCreate, FilteredAnswersResponse, PostCreate, QuestionFilterConditionCreate, ResponseItem, UpdateAnswerText
+from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, Form, FormApproval, FormQuestion, Question, QuestionFilterCondition, QuestionTableRelation, Response, ResponseApproval, User, UserType
 from app.core.security import get_current_user
-
+from typing import Dict
+from sqlalchemy import delete
 
 router = APIRouter()
 
@@ -458,3 +459,152 @@ def set_reconsideration_true(response_id: int, mensaje_reconsideracion: str, db:
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al procesar la reconsideración: {str(e)}")
+    
+    
+@router.post("/answer-history", status_code=201)
+def create_answer_history(data: AnswerHistoryCreate, db: Session = Depends(get_db)):
+    new_history = AnswerHistory(
+        response_id=data.response_id,
+        previous_answer_id=data.previous_answer_id,
+        current_answer_id=data.current_answer_id
+    )
+
+    db.add(new_history)
+    db.commit()
+    db.refresh(new_history)
+
+    return {"message": "Historial de respuesta guardado", "id": new_history.id}
+
+from sqlalchemy import select
+
+
+
+@router.get("/responses/")
+def get_responses_with_answers(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Obtiene todas las respuestas completadas por el usuario autenticado para un formulario específico,
+    incluyendo sus respuestas, aprobaciones, estado de revisión y historial de cambios.
+     
+    Args:
+        form_id (int): ID del formulario del cual se desean obtener las respuestas.
+        db (Session): Sesión activa de la base de datos.
+        current_user (User): Usuario autenticado.
+     
+    Returns:
+        List[dict]: Lista de respuestas con sus respectivos detalles de aprobación y respuestas a preguntas,
+                   incluyendo historial de cambios cuando aplique.
+     
+    Raises:
+        HTTPException: 403 si no hay un usuario autenticado.
+        HTTPException: 404 si no se encuentran respuestas.
+    """
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to access completed forms",
+        )
+
+    # Obtener respuestas principales
+    stmt = (
+        select(Response)
+        .where(Response.form_id == form_id, Response.user_id == current_user.id)
+        .options(
+            joinedload(Response.answers).joinedload(Answer.question),
+            joinedload(Response.approvals).joinedload(ResponseApproval.user)
+        )
+    )
+    
+    responses = db.execute(stmt).unique().scalars().all()
+
+    if not responses:
+        raise HTTPException(status_code=404, detail="No se encontraron respuestas")
+
+    # Procesar respuestas con historial
+    result = process_responses_with_history(responses, db)
+
+    return result
+
+
+@router.delete("/responses/{response_id}")
+async def delete_response(
+    response_id: int,
+    db: Session = Depends(get_db)
+) -> Dict[str, str]:
+    """
+    Elimina una respuesta y todas sus relaciones asociadas.
+    
+    Args:
+        response_id: ID de la respuesta a eliminar
+        db: Sesión de base de datos
+        
+    Returns:
+        Dict con mensaje de confirmación
+        
+    Raises:
+        HTTPException: Si la respuesta no existe o hay error en la eliminación
+    """
+    try:
+        # Verificar que la respuesta existe
+        response = db.query(Response).filter(Response.id == response_id).first()
+        if not response:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Response with id {response_id} not found"
+            )
+        
+        # 1. Obtener IDs de las respuestas para eliminar file_serials
+        answer_ids = db.query(Answer.id).filter(Answer.response_id == response_id).all()
+        answer_ids_list = [answer.id for answer in answer_ids]
+        
+        # 2. Eliminar AnswerFileSerial relacionados
+        if answer_ids_list:
+            db.execute(
+                delete(AnswerFileSerial).where(
+                    AnswerFileSerial.answer_id.in_(answer_ids_list)
+                )
+            )
+        
+        # 3. Eliminar AnswerHistory relacionados
+        db.execute(
+            delete(AnswerHistory).where(AnswerHistory.response_id == response_id)
+        )
+        
+        # 4. Eliminar todas las respuestas (Answer) asociadas
+        db.execute(
+            delete(Answer).where(Answer.response_id == response_id)
+        )
+        
+        # 5. Eliminar ResponseApproval si existe
+        try:
+            db.execute(
+                delete(ResponseApproval).where(ResponseApproval.response_id == response_id)
+            )
+        except Exception:
+            # Si la tabla ResponseApproval no existe, continuamos
+            pass
+        
+        # 6. Finalmente eliminar la Response
+        db.execute(
+            delete(Response).where(Response.id == response_id)
+        )
+        
+        # Confirmar todos los cambios
+        db.commit()
+        
+        return {"message": f"Response {response_id} and all related data deleted successfully"}
+        
+    except HTTPException:
+        # Re-lanzar HTTPExceptions
+        db.rollback()
+        raise
+    except Exception as e:
+        # Rollback en caso de error
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error deleting response: {str(e)}"
+        )

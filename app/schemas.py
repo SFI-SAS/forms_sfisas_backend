@@ -454,3 +454,9 @@ class ResponseItem(BaseModel):
     response: Union[str, dict]  # puede ser string o dict
     file_path: Optional[str] = None
     repeated_id: Optional[str] = None
+    
+    
+class AnswerHistoryCreate(BaseModel):
+    response_id: int
+    previous_answer_id: Optional[int] = None
+    current_answer_id: int

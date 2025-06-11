@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from app import models
 from app.api.controllers.mail import send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
@@ -2902,3 +2902,180 @@ def create_email_config(db: Session, email_config: EmailConfigCreate):
 
 def get_all_email_configs(db: Session):
     return db.query(EmailConfig).all()
+
+def process_responses_with_history(responses: List[Response], db: Session) -> List[Dict]:
+    """
+    Procesa una lista de respuestas incluyendo su historial de cambios.
+    
+    Args:
+        responses (List[Response]): Lista de respuestas a procesar
+        db (Session): Sesión de la base de datos
+        
+    Returns:
+        List[Dict]: Lista de respuestas formateadas con historial cuando aplique
+    """
+    if not responses:
+        return []
+    
+    # Obtener todos los historiales de respuestas
+    response_ids = [r.id for r in responses]
+    
+    history_stmt = select(AnswerHistory).where(AnswerHistory.response_id.in_(response_ids))
+    histories = db.execute(history_stmt).scalars().all()
+    
+    # Obtener todos los IDs de respuestas (previous y current) del historial
+    all_answer_ids = set()
+    for history in histories:
+        if history.previous_answer_id:
+            all_answer_ids.add(history.previous_answer_id)
+        all_answer_ids.add(history.current_answer_id)
+    
+    # Obtener todas las respuestas del historial con sus preguntas
+    historical_answers = {}
+    if all_answer_ids:
+        answer_stmt = (
+            select(Answer)
+            .where(Answer.id.in_(all_answer_ids))
+            .options(joinedload(Answer.question))
+        )
+        historical_answer_list = db.execute(answer_stmt).unique().scalars().all()
+        
+        # Crear mapeo de answer_id -> Answer
+        for answer in historical_answer_list:
+            historical_answers[answer.id] = answer
+    
+    # Crear mapeo de current_answer_id -> history
+    history_map = {}
+    # Crear conjunto de previous_answer_ids para saber cuáles no mostrar individualmente
+    previous_answer_ids = set()
+    
+    for history in histories:
+        history_map[history.current_answer_id] = history
+        if history.previous_answer_id:
+            previous_answer_ids.add(history.previous_answer_id)
+    
+    def build_answer_chain(current_answer_id: int, max_depth: int = 5) -> List[Dict]:
+        """
+        Construye la cadena completa de historial para una respuesta.
+        Retorna una lista ordenada desde la más antigua hasta la más reciente.
+        """
+        chain = []
+        seen_ids = set()
+        current_id = current_answer_id
+        
+        # Primero agregamos la respuesta actual
+        if current_id in historical_answers:
+            current_answer = historical_answers[current_id]
+            chain.append({
+                "type": "current",
+                "answer_text": current_answer.answer_text,
+                "file_path": current_answer.file_path,
+                "answer_id": current_answer.id
+            })
+            seen_ids.add(current_id)
+        
+        # Luego buscamos hacia atrás en el historial
+        depth = 0
+        while current_id in history_map and depth < max_depth:
+            history_entry = history_map[current_id]
+            if history_entry.previous_answer_id and history_entry.previous_answer_id not in seen_ids:
+                previous_id = history_entry.previous_answer_id
+                if previous_id in historical_answers:
+                    previous_answer = historical_answers[previous_id]
+                    chain.append({
+                        "type": "previous",
+                        "answer_text": previous_answer.answer_text,
+                        "file_path": previous_answer.file_path,
+                        "answer_id": previous_answer.id
+                    })
+                    seen_ids.add(previous_id)
+                    current_id = previous_id
+                    depth += 1
+                else:
+                    break
+            else:
+                break
+        
+        # Invertir para que el orden sea: más antigua → más reciente
+        chain.reverse()
+        return chain
+    
+    # Procesar cada respuesta
+    result = []
+    for response in responses:
+        approval_result = get_response_approval_status(response.approvals)
+        
+        # Procesar las respuestas considerando el historial
+        processed_answers = []
+        
+        for answer in response.answers:
+            # Si esta respuesta es una respuesta anterior en el historial, saltarla
+            # (ya será incluida en el objeto con historial)
+            if answer.id in previous_answer_ids:
+                continue
+                
+            # Verificar si esta respuesta tiene historial
+            if answer.id in history_map:
+                history = history_map[answer.id]
+                
+                # Construir la cadena completa de historial
+                answer_chain = build_answer_chain(answer.id)
+                
+                # Crear objeto con historial completo
+                answer_with_history = {
+                    "question_id": answer.question.id,
+                    "question_text": answer.question.question_text,
+                    "question_type": answer.question.question_type,
+                    "has_history": True,
+                    "updated_at": history.updated_at,
+                    "answers": answer_chain
+                }
+                
+                processed_answers.append(answer_with_history)
+                    
+            else:
+                # Respuesta sin historial
+                answer_without_history = {
+                    "question_id": answer.question.id,
+                    "question_text": answer.question.question_text,
+                    "question_type": answer.question.question_type,
+                    "has_history": False,
+                    "answer_text": answer.answer_text,
+                    "file_path": answer.file_path,
+                    "answer_id": answer.id
+                }
+                
+                processed_answers.append(answer_without_history)
+
+        # Formatear respuesta completa
+        formatted_response = {
+            "response_id": response.id,
+            "repeated_id": response.repeated_id,
+            "submitted_at": response.submitted_at,
+            "approval_status": approval_result["status"],
+            "message": approval_result["message"],
+            "answers": processed_answers,
+            "approvals": [
+                {
+                    "approval_id": ap.id,
+                    "sequence_number": ap.sequence_number,
+                    "is_mandatory": ap.is_mandatory,
+                    "reconsideration_requested": ap.reconsideration_requested,
+                    "status": ap.status.value,
+                    "reviewed_at": ap.reviewed_at,
+                    "message": ap.message,
+                    "user": {
+                        "id": ap.user.id,
+                        "name": ap.user.name,
+                        "email": ap.user.email,
+                        "nickname": ap.user.nickname,
+                        "num_document": ap.user.num_document
+                    }
+                }
+                for ap in response.approvals
+            ]
+        }
+        
+        result.append(formatted_response)
+    
+    return result

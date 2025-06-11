@@ -298,4 +298,17 @@ def insert_default_emails(target, connection, **kwargs):
         ],
     )
     
+
+class AnswerHistory(Base):
+    __tablename__ = 'answer_history'
     
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    response_id = Column(BigInteger, ForeignKey('responses.id'), nullable=False)    
+    # ID de la respuesta anterior (None si es la primera)
+    previous_answer_id = Column(BigInteger, ForeignKey('answers.id'), nullable=True)
+    
+    # ID de la respuesta actual
+    current_answer_id = Column(BigInteger, ForeignKey('answers.id'), nullable=False)
+    
+    # Información adicional
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
