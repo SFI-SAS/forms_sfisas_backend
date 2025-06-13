@@ -1761,7 +1761,6 @@ def get_user_responses_data(user_id: int, db: Session):
         "email": user.email,
         "responses": results
     }
-    
 def get_all_user_responses_by_form_id(db: Session, form_id: int):
     """
     Recupera y estructura las respuestas de todos los usuarios para un formulario específico.
@@ -1769,6 +1768,7 @@ def get_all_user_responses_by_form_id(db: Session, form_id: int):
     - Agrupa respuestas por pregunta.
     - Soporta preguntas con múltiples respuestas (como repeticiones).
     - Devuelve filas planas donde cada fila representa una instancia única de respuestas de un usuario.
+    - Solo incluye las respuestas más recientes del historial.
 
     Args:
         db (Session): Sesión activa de la base de datos.
@@ -1794,13 +1794,56 @@ def get_all_user_responses_by_form_id(db: Session, form_id: int):
             joinedload(Response.user)
         ).all()
 
+    # Obtener todos los response_ids para buscar el historial
+    response_ids = [response.id for response in responses]
+    
+    # Obtener historiales de respuestas
+    histories = db.query(AnswerHistory).filter(AnswerHistory.response_id.in_(response_ids)).all()
+    
+    # Obtener todos los IDs de respuestas (previous y current) del historial
+    all_answer_ids = set()
+    for history in histories:
+        if history.previous_answer_id:
+            all_answer_ids.add(history.previous_answer_id)
+        all_answer_ids.add(history.current_answer_id)
+    
+    # Obtener todas las respuestas del historial con sus preguntas
+    historical_answers = {}
+    if all_answer_ids:
+        historical_answer_list = (
+            db.query(Answer)
+            .options(joinedload(Answer.question))
+            .filter(Answer.id.in_(all_answer_ids))
+            .all()
+        )
+        
+        # Crear mapeo de answer_id -> Answer
+        for answer in historical_answer_list:
+            historical_answers[answer.id] = answer
+    
+    # Crear mapeo de current_answer_id -> history
+    history_map = {}
+    # Crear conjunto de previous_answer_ids para saber cuáles no mostrar individualmente
+    previous_answer_ids = set()
+    
+    for history in histories:
+        history_map[history.current_answer_id] = history
+        if history.previous_answer_id:
+            previous_answer_ids.add(history.previous_answer_id)
+
     data = []
     counter = 1  # Contador para el consecutivo
 
     for response in responses:
+        # Filtrar solo las respuestas más recientes (excluyendo previous_answer_ids)
+        current_answers = [
+            answer for answer in response.answers 
+            if answer.id not in previous_answer_ids
+        ]
+        
         # Agrupar respuestas por orden de aparición de repetidas
         grouped_answers = {}
-        for answer in response.answers:
+        for answer in current_answers:
             q_text = answer.question.question_text
             grouped_answers.setdefault(q_text, []).append(answer.answer_text or answer.file_path or "")
 
@@ -1813,7 +1856,6 @@ def get_all_user_responses_by_form_id(db: Session, form_id: int):
                 "Registro #": counter,
                 "Nombre": response.user.name,
                 "Documento": response.user.num_document,
-                
             }
             counter += 1
 
@@ -1844,8 +1886,6 @@ def get_all_user_responses_by_form_id(db: Session, form_id: int):
         "questions": all_keys,
         "data": data
     }
-
-
 def get_unanswered_forms_by_user(db: Session, user_id: int):
     """
     Retorna los formularios asignados a un usuario que aún no ha respondido.
@@ -2532,7 +2572,6 @@ def get_response_approval_status(response_approvals: list) -> dict:
         "message": " | ".join(filter(None, messages))
     }
 
-
 def get_form_with_full_responses(form_id: int, db: Session):
     form = db.query(Form).options(
         joinedload(Form.questions),
@@ -2557,6 +2596,43 @@ def get_form_with_full_responses(form_id: int, db: Session):
         "responses": [],
     }
 
+    # Obtener todos los response_ids para buscar el historial
+    response_ids = [response.id for response in form.responses]
+    
+    # Obtener historiales de respuestas
+    histories = db.query(AnswerHistory).filter(AnswerHistory.response_id.in_(response_ids)).all()
+    
+    # Obtener todos los IDs de respuestas (previous y current) del historial
+    all_answer_ids = set()
+    for history in histories:
+        if history.previous_answer_id:
+            all_answer_ids.add(history.previous_answer_id)
+        all_answer_ids.add(history.current_answer_id)
+    
+    # Obtener todas las respuestas del historial con sus preguntas
+    historical_answers = {}
+    if all_answer_ids:
+        historical_answer_list = (
+            db.query(Answer)
+            .options(joinedload(Answer.question))
+            .filter(Answer.id.in_(all_answer_ids))
+            .all()
+        )
+        
+        # Crear mapeo de answer_id -> Answer
+        for answer in historical_answer_list:
+            historical_answers[answer.id] = answer
+    
+    # Crear mapeo de current_answer_id -> history
+    history_map = {}
+    # Crear conjunto de previous_answer_ids para saber cuáles no mostrar individualmente
+    previous_answer_ids = set()
+    
+    for history in histories:
+        history_map[history.current_answer_id] = history
+        if history.previous_answer_id:
+            previous_answer_ids.add(history.previous_answer_id)
+
     for response in form.responses:
         response_data = {
             "response_id": response.id,
@@ -2571,11 +2647,14 @@ def get_form_with_full_responses(form_id: int, db: Session):
             "approval_status": None,  # Aquí se agregará
         }
 
-        # Obtener respuestas
+        # Obtener respuestas actuales (excluyendo las que son previous_answer_ids)
         answers = (
             db.query(Answer)
             .options(joinedload(Answer.question))
-            .filter(Answer.response_id == response.id)
+            .filter(
+                Answer.response_id == response.id,
+                ~Answer.id.in_(previous_answer_ids) if previous_answer_ids else True
+            )
             .all()
         )
 

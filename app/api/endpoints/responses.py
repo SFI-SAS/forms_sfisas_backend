@@ -479,7 +479,7 @@ from sqlalchemy import select
 
 
 
-@router.get("/responses/")
+@router.get("/get_responses/")
 def get_responses_with_answers(
     form_id: int,
     db: Session = Depends(get_db),
@@ -529,7 +529,7 @@ def get_responses_with_answers(
     return result
 
 
-@router.delete("/responses/{response_id}")
+@router.delete("/responses_delete/{response_id}")
 async def delete_response(
     response_id: int,
     db: Session = Depends(get_db),
