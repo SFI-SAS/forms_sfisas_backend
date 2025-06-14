@@ -2396,7 +2396,6 @@ def send_rejection_email_to_all(response_id: int, db: Session):
 
     return True
 
-
 def update_response_approval_status(
     response_id: int,
     update_data: UpdateResponseApprovalRequest,
@@ -2419,7 +2418,7 @@ def update_response_approval_status(
     db.commit()
     db.refresh(response_approval)
 
-
+    # 2. Acciones según el estado
     if update_data.status == "aprobado":
         send_mails_to_next_supporters(response_id, db)
     elif update_data.status == "rechazado":
@@ -2454,6 +2453,26 @@ def update_response_approval_status(
             print(f"\n⛔ El aprobador '{fa.user.name}' rechazó y su aprobación es obligatoria. El proceso se detiene.")
             detener_proceso = True
             break
+
+    # 4. NUEVA FUNCIONALIDAD: Verificar si todos los aprobadores han aprobado
+    if not detener_proceso and update_data.status == "aprobado":
+        # Verificar si todos los aprobadores obligatorios han aprobado
+        todos_aprobadores_completados = all(
+            any(ra.user_id == fa.user_id and ra.status == ApprovalStatus.aprobado 
+                for ra in response_approvals)
+            for fa in form_approval_template if fa.is_mandatory
+        )
+        
+        # Verificar si todos los aprobadores (obligatorios y opcionales) han dado respuesta
+        todos_han_respondido = all(
+            any(ra.user_id == fa.user_id for ra in response_approvals)
+            for fa in form_approval_template
+        )
+        
+        if todos_aprobadores_completados and todos_han_respondido:
+            # El proceso está completamente finalizado, enviar correo al usuario original
+            send_final_approval_email_to_original_user(response_id, db)
+            print("✅ Proceso de aprobación completado. Correo enviado al usuario original.")
 
     if not detener_proceso:
         faltantes = [fa.user.name for fa in form_approval_template 
@@ -2514,6 +2533,72 @@ Mensaje: {response_approval.message or '-'}
             )
 
     return response_approval
+
+
+def send_final_approval_email_to_original_user(response_id: int, db: Session):
+    """
+    Envía un correo al usuario original notificándole que su respuesta fue completamente aprobada
+    """
+    try:
+        # Obtener información de la respuesta y usuario original
+        response = db.query(Response).filter(Response.id == response_id).first()
+        if not response:
+            print(f"❌ No se encontró la respuesta {response_id}")
+            return False
+            
+        form = db.query(Form).filter(Form.id == response.form_id).first()
+        usuario_original = response.user  # Este es quien envió originalmente el formulario
+        
+        # Obtener todos los aprobadores y su estado
+        form_approval_template = (
+            db.query(FormApproval)
+            .filter(
+                FormApproval.form_id == form.id,
+                FormApproval.is_active == True
+            )
+            .order_by(FormApproval.sequence_number)
+            .all()
+        )
+        
+        response_approvals = db.query(ResponseApproval).filter(
+            ResponseApproval.response_id == response_id
+        ).all()
+        
+        # Construir el contenido del correo
+        contenido = f"""🎉 ¡Excelentes noticias!
+
+Tu respuesta al formulario "{form.title}" ha sido COMPLETAMENTE APROBADA por todos los aprobadores requeridos.
+
+📋 Detalles de tu envío:
+• Formulario: {form.title}
+• Formato: {form.format_type.value}
+
+✅ Aprobadores que revisaron tu respuesta:
+"""
+        
+        for fa in form_approval_template:
+            ra = next((r for r in response_approvals if r.user_id == fa.user_id), None)
+            if ra and ra.status == ApprovalStatus.aprobado:
+                fecha_aprobacion = ra.reviewed_at.strftime('%d/%m/%Y %H:%M')
+                obligatorio = "Obligatorio" if fa.is_mandatory else "Opcional"
+                contenido += f"• [{fa.sequence_number}] {fa.user.name} ({obligatorio}) - Aprobado el {fecha_aprobacion}\n"
+                if ra.message:
+                    contenido += f"  💬 Comentario: {ra.message}\n"
+        
+        contenido += f"\n🎯 Tu respuesta ha sido procesada exitosamente y está lista para su implementación."
+        
+        # Enviar el correo usando la función existente
+        return send_email_plain_approval_status(
+            to_email=usuario_original.email,
+            name_form=form.title,
+            to_name=usuario_original.name,
+            body_text=contenido,
+            subject=f"✅ Tu formulario '{form.title}' ha sido APROBADO completamente"
+        )
+        
+    except Exception as e:
+        print(f"❌ Error enviando correo final al usuario original: {str(e)}")
+        return False
 
 
 def get_response_approval_status(response_approvals: list) -> dict:
