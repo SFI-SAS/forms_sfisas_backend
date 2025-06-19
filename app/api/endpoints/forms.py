@@ -3,7 +3,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
-from app.models import Answer, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormSchedule, Response, ResponseApproval, User, UserType
+from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormSchedule, Response, ResponseApproval, User, UserType
 from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, create_response_approval, delete_form, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_user, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_approvals, send_rejection_email_to_all, update_form_design_service, update_notification_status, update_response_approval_status
 from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCreate, FormDesignUpdate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, ResponseApprovalCreate, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
@@ -198,7 +198,6 @@ def register_form_schedule(schedule_data: FormScheduleCreate, db: Session = Depe
         specific_date=schedule_data.specific_date,
         status=schedule_data.status
     )
-    
 @router.get("/responses/")
 def get_responses_with_answers(
     form_id: int,
@@ -208,6 +207,7 @@ def get_responses_with_answers(
     """
     Obtiene todas las respuestas completadas por el usuario autenticado para un formulario específico,
     incluyendo sus respuestas, aprobaciones y estado de revisión.
+    Maneja el historial de respuestas para mostrar solo las más recientes.
 
     Args:
         form_id (int): ID del formulario del cual se desean obtener las respuestas.
@@ -236,22 +236,71 @@ def get_responses_with_answers(
         )
     )
 
-
     responses = db.execute(stmt).unique().scalars().all()
 
     if not responses:
         raise HTTPException(status_code=404, detail="No se encontraron respuestas")
 
+    # Obtener todos los response_ids para buscar el historial
+    response_ids = [response.id for response in responses]
+    
+    # Obtener historiales de respuestas
+    histories = db.query(AnswerHistory).filter(AnswerHistory.response_id.in_(response_ids)).all()
+    
+    # Obtener todos los IDs de respuestas (previous y current) del historial
+    all_answer_ids = set()
+    for history in histories:
+        if history.previous_answer_id:
+            all_answer_ids.add(history.previous_answer_id)
+        all_answer_ids.add(history.current_answer_id)
+    
+    # Obtener todas las respuestas del historial con sus preguntas
+    historical_answers = {}
+    if all_answer_ids:
+        historical_answer_list = (
+            db.query(Answer)
+            .options(joinedload(Answer.question))
+            .filter(Answer.id.in_(all_answer_ids))
+            .all()
+        )
+        
+        # Crear mapeo de answer_id -> Answer
+        for answer in historical_answer_list:
+            historical_answers[answer.id] = answer
+    
+    # Crear mapeo de current_answer_id -> history
+    history_map = {}
+    # Crear conjunto de previous_answer_ids para saber cuáles no mostrar individualmente
+    previous_answer_ids = set()
+    
+    for history in histories:
+        history_map[history.current_answer_id] = history
+        if history.previous_answer_id:
+            previous_answer_ids.add(history.previous_answer_id)
+
     result = []
     for r in responses:
         approval_result = get_response_approval_status(r.approvals)
 
+        # Obtener respuestas actuales (excluyendo las que son previous_answer_ids)
+        current_answers = []
+        for answer in r.answers:
+            # Solo incluir respuestas que no sean previous_answer_ids (es decir, las más recientes)
+            if answer.id not in previous_answer_ids:
+                current_answers.append(answer)
+
         result.append({
             "response_id": r.id,
-            
             "submitted_at": r.submitted_at,
             "approval_status": approval_result["status"],
             "message": approval_result["message"],
+            "form": {
+                "form_id": r.form.id,
+                "title": r.form.title,
+                "description": r.form.description,
+                "format_type": r.form.format_type.value if r.form.format_type else None,
+                "form_design": r.form.form_design
+            },
             "answers": [
                 {
                     "repeated_id": r.repeated_id,
@@ -261,7 +310,7 @@ def get_responses_with_answers(
                     "answer_text": a.answer_text,
                     "file_path": a.file_path
                 }
-                for a in r.answers
+                for a in current_answers
             ],
             "approvals": [
                 {
@@ -284,8 +333,8 @@ def get_responses_with_answers(
             ]
         })
 
-    return result
 
+    return result
 
 
 @router.get("/all/list", response_model=List[dict])

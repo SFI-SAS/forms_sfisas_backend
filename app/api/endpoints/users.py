@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status, Query
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 from typing import List
 from app import models
+from app.api.controllers.mail import send_welcome_email
 from app.database import get_db
 from app.models import EmailConfig, User, UserType
 from app.crud import create_email_config, create_user, create_user_with_random_password, fetch_all_users, get_all_email_configs, get_response_details_logic, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
@@ -256,3 +258,15 @@ def update_email_config_status(id: int, status_update: EmailStatusUpdate, db: Se
     db.refresh(status_config)
 
     return {"message": "Estado actualizado correctamente", "data": status_config}
+
+class WelcomeEmailRequest(BaseModel):
+    email: EmailStr
+    name: str
+    password: str
+
+@router.post("/send_welcome_email")
+def send_email(data: WelcomeEmailRequest):
+    success = send_welcome_email(email=data.email, name=data.name, password=data.password)
+    if not success:
+        raise HTTPException(status_code=500, detail="No se pudo enviar el correo")
+    return {"message": f"Correo enviado a {data.email}"}

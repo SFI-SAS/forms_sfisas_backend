@@ -24,7 +24,8 @@ class QuestionType(str, enum.Enum):
     table = "table"
     date = "date"
     number = "number"
-
+    time = "time"  
+    
 class ApprovalStatus(enum.Enum):
     pendiente = "pendiente"
     aprobado = "aprobado"
