@@ -303,6 +303,7 @@ def get_responses_with_answers(
             },
             "answers": [
                 {
+                    "id_answer": a.id,
                     "repeated_id": r.repeated_id,
                     "question_id": a.question.id,
                     "question_text": a.question.question_text,
