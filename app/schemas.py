@@ -233,7 +233,12 @@ class UpdateAnswerText(BaseModel):
     id: int
     answer_text: str
     
-    
+
+class UpdateAnswertHistory(BaseModel):
+    id_answer: int
+    answer_text: str
+
+
 class FormAnswerCreate(BaseModel):
     form_id: int
     question_id: int
@@ -460,3 +465,39 @@ class AnswerHistoryCreate(BaseModel):
     response_id: int
     previous_answer_id: Optional[int] = None
     current_answer_id: int
+    
+    
+class QuestionAnswerDetailSchema(BaseModel):
+    id: int
+    question_id: int
+    question_text: str
+    answer_text: Optional[str]
+    file_path: Optional[str]
+    
+    class Config:
+        from_attributes = True
+
+class AnswerHistoryChangeSchema(BaseModel):
+    id: int
+    previous_answer_id: Optional[int]
+    current_answer_id: int
+    updated_at: datetime
+    previous_answer: Optional[QuestionAnswerDetailSchema]
+    current_answer: QuestionAnswerDetailSchema
+    
+    class Config:
+        from_attributes = True
+
+class ResponseWithAnswersAndHistorySchema(BaseModel):
+    id: int
+    form_id: int
+    user_id: int
+    mode: str
+    mode_sequence: int
+    repeated_id: Optional[str]
+    submitted_at: datetime
+    current_answers: List[QuestionAnswerDetailSchema]
+    answer_history: List[AnswerHistoryChangeSchema]
+    
+    class Config:
+        from_attributes = True

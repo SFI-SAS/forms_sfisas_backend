@@ -11,7 +11,7 @@ from typing import List, Optional
 from app.api.controllers.mail import send_reconsideration_email
 from app.crud import create_answer_in_db, generate_unique_serial, post_create_response, process_responses_with_history
 from app.database import get_db
-from app.schemas import AnswerHistoryCreate, FileSerialCreate, FilteredAnswersResponse, PostCreate, QuestionFilterConditionCreate, ResponseItem, UpdateAnswerText
+from app.schemas import AnswerHistoryChangeSchema, AnswerHistoryCreate, FileSerialCreate, FilteredAnswersResponse, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
 from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, Form, FormApproval, FormQuestion, Question, QuestionFilterCondition, QuestionTableRelation, Response, ResponseApproval, User, UserType
 from app.core.security import get_current_user
 from typing import Dict
@@ -462,22 +462,199 @@ def set_reconsideration_true(response_id: int, mensaje_reconsideracion: str, db:
     
     
 @router.post("/answer-history", status_code=201)
-def create_answer_history(data: AnswerHistoryCreate, db: Session = Depends(get_db)):
-    new_history = AnswerHistory(
-        response_id=data.response_id,
-        previous_answer_id=data.previous_answer_id,
-        current_answer_id=data.current_answer_id
-    )
+def create_answer_history(data: AnswerHistoryCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get options"
+        )
+    else: 
+        new_history = AnswerHistory(
+            response_id=data.response_id,
+            previous_answer_id=data.previous_answer_id,
+            current_answer_id=data.current_answer_id
+        )
 
-    db.add(new_history)
-    db.commit()
-    db.refresh(new_history)
+        db.add(new_history)
+        db.commit()
+        db.refresh(new_history)
 
-    return {"message": "Historial de respuesta guardado", "id": new_history.id}
+        return {"message": "Historial de respuesta guardado", "id": new_history.id}
 
 from sqlalchemy import select
 
 
+@router.post("/create-answers", status_code=status.HTTP_201_CREATED)
+async def create_answers(
+    response_id: int,
+    question_id: int,
+    answer_text: Optional[str] = None,
+    file_path: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Registrar un nuevo Answer"""
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get options"
+        )
+    # Validar que existe el response_id
+    if not db.query(Response).filter(Response.id == response_id).first():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Response with id {response_id} not found"
+        )
+    
+    # Validar que existe el question_id
+    if not db.query(Question).filter(Question.id == question_id).first():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Question with id {question_id} not found"
+        )
+    
+    try:
+        new_answer = Answer(
+            response_id=response_id,
+            question_id=question_id,
+            answer_text=answer_text,
+            file_path=file_path
+        )
+        
+        db.add(new_answer)
+        db.commit()
+        db.refresh(new_answer)
+        
+        return {"message": "Answer created successfully", "id": new_answer.id}
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating answer: {str(e)}"
+        )
+@router.put("/update_answer_text/")
+def update_answer_text(data: UpdateAnswertHistory, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get options"
+        )
+    answer = db.query(Answer).filter(Answer.id == data.id_answer).first()
+    
+    if not answer:
+        raise HTTPException(status_code=404, detail="Respuesta no encontrada")
+
+    answer.answer_text = data.answer_text
+    db.commit()
+    db.refresh(answer)
+
+    return {
+        "message": "Respuesta actualizada correctamente",
+        "id_answer": answer.id,
+        "answer_text": answer.answer_text
+    }
+
+@router.get("/{response_id}/answers_and_history", response_model=ResponseWithAnswersAndHistorySchema)
+async def get_response_with_complete_answers_and_history(
+    response_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Obtiene todas las respuestas actuales y el historial de un response específico
+    """
+
+    # Buscar el response con sus respuestas actuales
+    response = db.query(Response).options(
+        joinedload(Response.answers).joinedload(Answer.question)
+    ).filter(Response.id == response_id).first()
+
+    if not response:
+        raise HTTPException(status_code=404, detail="Response not found")
+
+    # Obtener el historial de respuestas para este response
+    answer_history = db.query(AnswerHistory).filter(
+        AnswerHistory.response_id == response_id
+    ).order_by(AnswerHistory.updated_at.desc()).all()
+
+    # Obtener todas las respuestas mencionadas en el historial
+    all_answer_ids_in_history = set()
+    replaced_answer_ids = set()
+    for hist in answer_history:
+        if hist.previous_answer_id:
+            all_answer_ids_in_history.add(hist.previous_answer_id)
+            replaced_answer_ids.add(hist.previous_answer_id)
+        all_answer_ids_in_history.add(hist.current_answer_id)
+
+    # Obtener todas las respuestas del historial con sus preguntas
+    historical_answers_with_questions = {}
+    if all_answer_ids_in_history:
+        historical_answers = db.query(Answer).options(
+            joinedload(Answer.question)
+        ).filter(Answer.id.in_(all_answer_ids_in_history)).all()
+
+        for answer in historical_answers:
+            historical_answers_with_questions[answer.id] = answer
+
+    # Construir las respuestas actuales (excluyendo las reemplazadas)
+    current_answers_list = []
+    for answer in response.answers:
+        if answer.id not in replaced_answer_ids:
+            current_answers_list.append(QuestionAnswerDetailSchema(
+                id=answer.id,
+                question_id=answer.question_id,
+                question_text=answer.question.question_text,
+                answer_text=answer.answer_text,
+                file_path=answer.file_path
+            ))
+
+    # Construir el historial de cambios
+    history_changes_list = []
+    for history_item in answer_history:
+        previous_answer_detail = None
+        if history_item.previous_answer_id and history_item.previous_answer_id in historical_answers_with_questions:
+            prev_answer = historical_answers_with_questions[history_item.previous_answer_id]
+            previous_answer_detail = QuestionAnswerDetailSchema(
+                id=prev_answer.id,
+                question_id=prev_answer.question_id,
+                question_text=prev_answer.question.question_text,
+                answer_text=prev_answer.answer_text,
+                file_path=prev_answer.file_path
+            )
+
+        current_answer_detail = None
+        if history_item.current_answer_id in historical_answers_with_questions:
+            curr_answer = historical_answers_with_questions[history_item.current_answer_id]
+            current_answer_detail = QuestionAnswerDetailSchema(
+                id=curr_answer.id,
+                question_id=curr_answer.question_id,
+                question_text=curr_answer.question.question_text,
+                answer_text=curr_answer.answer_text,
+                file_path=curr_answer.file_path
+            )
+
+        # Solo agregar si encontramos la respuesta actual
+        if current_answer_detail:
+            history_changes_list.append(AnswerHistoryChangeSchema(
+                id=history_item.id,
+                previous_answer_id=history_item.previous_answer_id,
+                current_answer_id=history_item.current_answer_id,
+                updated_at=history_item.updated_at,
+                previous_answer=previous_answer_detail,
+                current_answer=current_answer_detail
+            ))
+
+    return ResponseWithAnswersAndHistorySchema(
+        id=response.id,
+        form_id=response.form_id,
+        user_id=response.user_id,
+        mode=response.mode,
+        mode_sequence=response.mode_sequence,
+        repeated_id=response.repeated_id,
+        submitted_at=response.submitted_at,
+        current_answers=current_answers_list,
+        answer_history=history_changes_list
+    )
 
 @router.get("/get_responses/")
 def get_responses_with_answers(
