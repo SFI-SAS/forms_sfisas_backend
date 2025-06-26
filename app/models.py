@@ -313,3 +313,27 @@ class AnswerHistory(Base):
     
     # Información adicional
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+
+
+class FormCloseConfig(Base):
+    __tablename__ = 'form_close_configs'
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=False)
+    
+    # Configuraciones de cierre (booleanos para cada acción)
+    create_pdf = Column(Boolean, default=False, nullable=False)
+    send_email = Column(Boolean, default=False, nullable=False)
+    send_pdf_attachment = Column(Boolean, default=False, nullable=False)
+    report_to = Column(Boolean, default=False, nullable=False)
+    do_nothing = Column(Boolean, default=True, nullable=False)  # Por defecto activado
+    
+    # Destinatarios para las acciones que los requieren
+    email_recipient = Column(String(255), nullable=True)  # Para send_pdf_attachment
+    report_recipient = Column(String(255), nullable=True)  # Para report_to
+    
+    # Timestamps
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+

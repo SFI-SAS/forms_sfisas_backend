@@ -501,3 +501,30 @@ class ResponseWithAnswersAndHistorySchema(BaseModel):
     
     class Config:
         from_attributes = True
+        
+
+class FormCloseConfigCreate(BaseModel):
+    form_id: int
+    create_pdf: bool = False
+    send_email: bool = False
+    send_pdf_attachment: bool = False
+    report_to: bool = False
+    do_nothing: bool = True
+    email_recipient: Optional[EmailStr] = None
+    report_recipient: Optional[EmailStr] = None
+
+class FormCloseConfigOut(BaseModel):
+    id: int
+    form_id: int
+    create_pdf: bool
+    send_email: bool
+    send_pdf_attachment: bool
+    report_to: bool
+    do_nothing: bool
+    email_recipient: Optional[str]
+    report_recipient: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
