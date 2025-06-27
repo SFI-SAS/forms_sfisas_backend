@@ -3243,3 +3243,6 @@ def process_responses_with_history(responses: List[Response], db: Session) -> Li
         result.append(formatted_response)
     
     return result
+
+
+

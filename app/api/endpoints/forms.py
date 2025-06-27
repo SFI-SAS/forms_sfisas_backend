@@ -3,9 +3,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
-from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCloseConfig, FormSchedule, Response, ResponseApproval, User, UserType
+from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormSchedule, Response, ResponseApproval, User, UserType
 from app.crud import  check_form_data, create_form, add_questions_to_form, create_form_schedule, create_response_approval, delete_form, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_user, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_approvals, send_rejection_email_to_all, update_form_design_service, update_notification_status, update_response_approval_status
-from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, ResponseApprovalCreate, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
+from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCreate, FormDesignUpdate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, ResponseApprovalCreate, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
 import pandas as pd
@@ -1221,20 +1221,3 @@ def delete_form_endpoint(form_id: int, db: Session = Depends(get_db), current_us
         )
     return delete_form(db, form_id)
 
-@router.post("/create_form_close_config", response_model=FormCloseConfigOut)
-def create_form_close_config(config: FormCloseConfigCreate, db: Session = Depends(get_db)):
-    """
-    Crea una nueva configuración de cierre para un formulario
-    """
-
-    # Validar si ya existe una configuración para el form_id
-    existing = db.query(FormCloseConfig).filter(FormCloseConfig.form_id == config.form_id).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Ya existe una configuración para este formulario.")
-
-    new_config = FormCloseConfig(**config.dict())
-    db.add(new_config)
-    db.commit()
-    db.refresh(new_config)
-
-    return new_config

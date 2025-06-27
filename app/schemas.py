@@ -505,26 +505,35 @@ class ResponseWithAnswersAndHistorySchema(BaseModel):
 
 class FormCloseConfigCreate(BaseModel):
     form_id: int
-    create_pdf: bool = False
-    send_email: bool = False
+    send_download_link: bool = False
     send_pdf_attachment: bool = False
-    report_to: bool = False
+    generate_report: bool = False
     do_nothing: bool = True
+    download_link_recipient: Optional[EmailStr] = None
+    email_recipient: Optional[EmailStr] = None
+    report_recipient: Optional[EmailStr] = None
+
+class FormCloseConfigUpdate(BaseModel):
+    send_download_link: Optional[bool] = None
+    send_pdf_attachment: Optional[bool] = None
+    generate_report: Optional[bool] = None
+    do_nothing: Optional[bool] = None
+    download_link_recipient: Optional[EmailStr] = None
     email_recipient: Optional[EmailStr] = None
     report_recipient: Optional[EmailStr] = None
 
 class FormCloseConfigOut(BaseModel):
     id: int
     form_id: int
-    create_pdf: bool
-    send_email: bool
+    send_download_link: bool
     send_pdf_attachment: bool
-    report_to: bool
+    generate_report: bool
     do_nothing: bool
+    download_link_recipient: Optional[str]
     email_recipient: Optional[str]
     report_recipient: Optional[str]
     created_at: datetime
     updated_at: datetime
-
+    
     class Config:
         from_attributes = True
