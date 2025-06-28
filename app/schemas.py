@@ -537,3 +537,20 @@ class FormCloseConfigOut(BaseModel):
     
     class Config:
         from_attributes = True
+
+class QuestionLocationRelationCreate(BaseModel):
+    form_id: int
+    origin_question_id: int
+    target_question_id: int  
+    
+    
+
+class QuestionLocationRelationOut(BaseModel):
+    id: int
+    form_id: int
+    origin_question_id: int
+    target_question_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

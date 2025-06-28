@@ -2,9 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
-from app.models import User, UserType
+from app.models import QuestionLocationRelation, User, UserType
 from app.crud import create_question, create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_filtered_questions, get_related_or_filtered_answers, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
-from app.schemas import AnswerSchema, QuestionCreate, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate
+from app.schemas import AnswerSchema, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate
 from app.core.security import get_current_user
 
 router = APIRouter()
@@ -162,3 +162,39 @@ def get_related_answers(question_id: int, db: Session = Depends(get_db), current
             )
     else: 
         return get_related_or_filtered_answers(db, question_id)
+
+
+@router.post("/location-relation", status_code=201)
+def create_location_relation(
+    relation: QuestionLocationRelationCreate,
+    db: Session = Depends(get_db)
+):
+    # Validación opcional: evita duplicados exactos
+    existing = db.query(QuestionLocationRelation).filter_by(
+        form_id=relation.form_id,
+        origin_question_id=relation.origin_question_id,
+        target_question_id=relation.target_question_id
+    ).first()
+
+    if existing:
+        raise HTTPException(status_code=400, detail="Relation already exists.")
+
+    new_relation = QuestionLocationRelation(
+        form_id=relation.form_id,
+        origin_question_id=relation.origin_question_id,
+        target_question_id=relation.target_question_id
+    )
+
+    db.add(new_relation)
+    db.commit()
+    db.refresh(new_relation)
+    return {"message": "Relation created successfully", "id": new_relation.id}
+
+@router.get("/location-relation/{form_id}", response_model=List[QuestionLocationRelationOut])
+def get_location_relations_by_form_id(form_id: int, db: Session = Depends(get_db)):
+    relations = db.query(QuestionLocationRelation).filter_by(form_id=form_id).all()
+
+    if not relations:
+        raise HTTPException(status_code=404, detail="No se encontraron relaciones para este formulario")
+
+    return relations
