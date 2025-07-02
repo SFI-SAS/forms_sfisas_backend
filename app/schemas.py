@@ -456,10 +456,9 @@ class FilteredAnswersResponse(BaseModel):
     
 class ResponseItem(BaseModel):
     question_id: int
-    response: Union[str, dict]  # puede ser string o dict
+    response: Union[str, dict, bool]  # ✅ Ahora puede ser string, dict o booleano
     file_path: Optional[str] = None
     repeated_id: Optional[str] = None
-    
     
 class AnswerHistoryCreate(BaseModel):
     response_id: int
