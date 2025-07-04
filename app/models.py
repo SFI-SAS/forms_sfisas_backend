@@ -340,11 +340,11 @@ class FormCloseConfig(Base):
 
 class QuestionLocationRelation(Base):
     __tablename__ = 'question_location_relations'
-    
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
 
-    form_id = Column(BigInteger, nullable=False)  # Relación lógica con Form.id
-    origin_question_id = Column(BigInteger, nullable=False)  # Relación lógica con Questions.id
-    target_question_id = Column(BigInteger, nullable=False)  # Otra pregunta relacionada
+    form_id = Column(BigInteger, nullable=False) 
+    origin_question_id = Column(BigInteger, nullable=False)  
+    target_question_id = Column(BigInteger, nullable=False)  
 
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)

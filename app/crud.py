@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from app import models
 from app.api.controllers.mail import send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
@@ -129,9 +129,8 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno del servidor: {str(e)}"
         )
-        
 def get_form(db: Session, form_id: int, user_id: int):
-    # Cargar el formulario con sus preguntas y respuestas
+    # Cargar el formulario con preguntas y respuestas
     form = db.query(Form).options(
         joinedload(Form.questions).joinedload(Question.options),
         joinedload(Form.responses).joinedload(Response.answers)
@@ -140,71 +139,114 @@ def get_form(db: Session, form_id: int, user_id: int):
     if not form:
         return None
 
-    # Filtrar las respuestas según el tipo de formato del formulario
+    # Filtrar respuestas según el tipo de formato
     if form.format_type.name in ['abierto', 'semi_abierto']:
         form.responses = [resp for resp in form.responses if resp.user_id == user_id]
     else:
-        form.responses = []  
+        form.responses = []
 
-    # Ahora agregamos is_repeated a cada pregunta
+    questions_data = []
+
     for question in form.questions:
-        # Buscar si hay algún registro de FormAnswer relacionado con esta pregunta
         form_answer = db.query(FormAnswer).filter(
             FormAnswer.form_id == form_id,
             FormAnswer.question_id == question.id
         ).first()
+        is_repeated = form_answer.is_repeated if form_answer else False
 
-        # Si se encuentra un registro en form_answers, asignamos el valor de is_repeated
-        if form_answer:
-            question.is_repeated = form_answer.is_repeated
-        else:
-            question.is_repeated = False  # Si no se encuentra, asumimos que no es repetido
+        question_dict = {
+            "id": question.id,
+            "required": question.required,
+            "question_text": question.question_text,
+            "question_type": question.question_type,
+            "root": question.root,
+            "options": [
+                {"id": option.id, "option_text": option.option_text}
+                for option in question.options
+            ],
+            "is_repeated": is_repeated
+        }
 
-    # Ahora devolvemos el formulario con las preguntas y el valor de is_repeated
-    form_data = {
+        # Si es tipo location, aplicar lógica extendida
+        if question.question_type == "location":
+            relation = db.query(QuestionLocationRelation).filter_by(
+                form_id=form_id,
+                origin_question_id=question.id
+            ).first()
+
+            if relation:
+                target_question_id = relation.target_question_id
+
+                # Buscar todas las respuestas al target_question_id
+                target_answers = db.query(Answer).filter(
+                    Answer.question_id == target_question_id
+                ).all()
+
+                # Agrupar por response_id y buscar todas las respuestas asociadas a ese formulario
+                related_data = []
+                seen_response_ids = set()
+
+                for ans in target_answers:
+                    response = db.query(Response).filter(Response.id == ans.response_id).first()
+                    if not response or response.id in seen_response_ids:
+                        continue  # evitar duplicados
+                    seen_response_ids.add(response.id)
+
+                    # Buscar todas las preguntas de ese formulario
+                    form_question_ids = db.query(FormQuestion.question_id).filter(
+                        FormQuestion.form_id == response.form_id
+                    ).all()
+                    form_question_ids = [fq[0] for fq in form_question_ids]
+
+                    # Obtener todas las respuestas del response actual
+                    all_answers = db.query(Answer).filter(
+                        Answer.response_id == response.id,
+                        Answer.question_id.in_(form_question_ids)
+                    ).all()
+
+                    related_data.append({
+                        "response_id": response.id,
+                        "form_id": response.form_id,
+                        "answers": [
+                            {
+                                "question_id": a.question_id,
+                                "answer_text": a.answer_text
+                            } for a in all_answers
+                        ]
+                    })
+
+                question_dict["related_answers"] = related_data
+
+        questions_data.append(question_dict)
+
+    # Respuestas del usuario (si corresponde)
+    responses_data = [
+        {
+            "id": response.id,
+            "user_id": response.user_id,
+            "answers": [
+                {
+                    "id": answer.id,
+                    "question_id": answer.question_id,
+                    "answer_text": answer.answer_text
+                }
+                for answer in response.answers
+            ]
+        }
+        for response in form.responses
+    ]
+
+    return {
         "id": form.id,
         "description": form.description,
         "created_at": form.created_at.isoformat(),
         "user_id": form.user_id,
         "title": form.title,
         "format_type": form.format_type.name,
-        "form_design":form.form_design,
-        "questions": [
-            {
-                "id": question.id,
-                "required": question.required,
-                "question_text": question.question_text,
-                "question_type": question.question_type,
-                "root": question.root,
-                "options": [
-                    {"id": option.id, "option_text": option.option_text}
-                    for option in question.options
-                ],
-                "is_repeated": getattr(question, 'is_repeated', False)  # Incluir is_repeated en la pregunta
-            }
-            for question in form.questions
-        ],
-        "responses": [
-            {
-                "id": response.id,
-                "user_id": response.user_id,
-                "answers": [
-                    {
-                        "id": answer.id,
-                        "question_id": answer.question_id,
-                        "answer_text": answer.answer_text,
-                    }
-                    for answer in response.answers
-                ]
-            }
-            for response in form.responses
-           
-        ]
+        "form_design": form.form_design,
+        "questions": questions_data,
+        "responses": responses_data
     }
-
-    return form_data
-
-
 
 def get_forms(db: Session, skip: int = 0, limit: int = 10):
     return db.query(Form).offset(skip).limit(limit).all()
@@ -2848,14 +2890,18 @@ def delete_form(db: Session, form_id: int):
         response_ids = [r.id for r in response_ids]
 
         if response_ids:
+            # Eliminar registros relacionados en orden de dependencias
+            answer_ids = db.query(Answer.id).filter(Answer.response_id.in_(response_ids)).all()
+            answer_ids = [a.id for a in answer_ids]
+
+            if answer_ids:
+                db.query(AnswerFileSerial).filter(AnswerFileSerial.answer_id.in_(answer_ids)).delete(synchronize_session=False)
+
             db.query(ResponseApproval).filter(ResponseApproval.response_id.in_(response_ids)).delete(synchronize_session=False)
-
             db.query(Answer).filter(Answer.response_id.in_(response_ids)).delete(synchronize_session=False)
-
             db.query(Response).filter(Response.id.in_(response_ids)).delete(synchronize_session=False)
 
         db.query(QuestionFilterCondition).filter(QuestionFilterCondition.form_id == form_id).delete(synchronize_session=False)
-
         db.query(FormAnswer).filter(FormAnswer.form_id == form_id).delete(synchronize_session=False)
         db.query(FormApproval).filter(FormApproval.form_id == form_id).delete(synchronize_session=False)
         db.query(FormApprovalNotification).filter(FormApprovalNotification.form_id == form_id).delete(synchronize_session=False)
@@ -2873,8 +2919,8 @@ def delete_form(db: Session, form_id: int):
             detail=f"Ocurrió un error al eliminar el formulario: {str(e)}"
         )
 
-
     return {"message": "Formulario, respuestas y registros relacionados eliminados correctamente."}
+
 
 def get_response_details_logic(db: Session):
     responses = db.query(Response).all()
