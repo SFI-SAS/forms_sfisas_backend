@@ -1803,6 +1803,83 @@ def get_user_responses_data(user_id: int, db: Session):
         "email": user.email,
         "responses": results
     }
+
+def parse_location_answer(answer_text: str) -> str:
+    """
+    Parsea el JSON de respuestas de tipo location y extrae solo el valor de selection.
+    
+    Args:
+        answer_text (str): El texto de respuesta en formato JSON
+        
+    Returns:
+        str: El valor del campo selection o el texto original si no se puede parsear
+    """
+    try:
+        # Intentar parsear el JSON
+        data = json.loads(answer_text)
+        
+        if isinstance(data, list):
+            # Buscar el elemento con type "selection"
+            for item in data:
+                if isinstance(item, dict) and item.get("type") == "selection":
+                    return item.get("value", "")
+            
+            # Si no se encuentra selection, devolver vacío
+            return ""
+        else:
+            # Si no es una lista, devolver tal como está
+            return str(data)
+            
+    except (json.JSONDecodeError, Exception):
+        # Si no es JSON válido, devolver el valor original
+        return answer_text
+
+def parse_location_answer(answer_text: str) -> Dict[str, str]:
+    """
+    Parsea el JSON de respuestas de tipo location y extrae los datos relevantes.
+    
+    Args:
+        answer_text (str): El texto de respuesta en formato JSON
+        
+    Returns:
+        Dict[str, str]: Diccionario con los datos extraídos
+    """
+    try:
+        # Intentar parsear el JSON
+        data = json.loads(answer_text)
+        
+        if isinstance(data, list):
+            # Extraer información de cada elemento
+            coordinates = ""
+            selection = ""
+            
+            for item in data:
+                if isinstance(item, dict):
+                    if item.get("type") == "coordinates":
+                        coordinates = item.get("value", "")
+                    elif item.get("type") == "selection":
+                        selection = item.get("value", "")
+                    
+                    # Si hay información adicional en all_answers
+                    if "all_answers" in item:
+                        for answer in item["all_answers"]:
+                            question_id = answer.get("question_id")
+                            answer_text = answer.get("answer_text", "")
+                            
+            
+            return {
+                "coordinates": coordinates,
+                "selection": selection,
+               
+            }
+        else:
+            # Si no es una lista, devolver tal como está
+            return {"raw_value": str(data)}
+            
+    except (json.JSONDecodeError, Exception):
+        # Si no es JSON válido, devolver el valor original
+        return {"raw_value": answer_text}
+
 def get_all_user_responses_by_form_id(db: Session, form_id: int):
     """
     Recupera y estructura las respuestas de todos los usuarios para un formulario específico.
@@ -1811,6 +1888,7 @@ def get_all_user_responses_by_form_id(db: Session, form_id: int):
     - Soporta preguntas con múltiples respuestas (como repeticiones).
     - Devuelve filas planas donde cada fila representa una instancia única de respuestas de un usuario.
     - Solo incluye las respuestas más recientes del historial.
+    - Maneja preguntas tipo location parseando el JSON y separando los datos.
 
     Args:
         db (Session): Sesión activa de la base de datos.
@@ -1829,6 +1907,9 @@ def get_all_user_responses_by_form_id(db: Session, form_id: int):
         return None
 
     questions = db.query(Question).join(Form.questions).filter(Form.id == form_id).all()
+    
+    # Crear mapeo de question_id -> question para acceso rápido
+    question_map = {q.id: q for q in questions}
 
     responses = db.query(Response).filter(Response.form_id == form_id)\
         .options(
@@ -1887,7 +1968,21 @@ def get_all_user_responses_by_form_id(db: Session, form_id: int):
         grouped_answers = {}
         for answer in current_answers:
             q_text = answer.question.question_text
-            grouped_answers.setdefault(q_text, []).append(answer.answer_text or answer.file_path or "")
+            question_type = answer.question.question_type
+            
+            # Procesar respuesta según el tipo de pregunta
+            if question_type == "location" and answer.answer_text:
+                # Parsear JSON de location
+                location_data = parse_location_answer(answer.answer_text)
+                
+                # Agregar cada campo del location como columna separada
+                for key, value in location_data.items():
+                    column_name = f"{q_text} - {key.replace('_', ' ').title()}"
+                    grouped_answers.setdefault(column_name, []).append(str(value))
+            else:
+                # Procesamiento normal para otros tipos de preguntas
+                answer_value = answer.answer_text or answer.file_path or ""
+                grouped_answers.setdefault(q_text, []).append(answer_value)
 
         # Determinar el número máximo de repeticiones
         max_len = max(len(vals) for vals in grouped_answers.values()) if grouped_answers else 1
