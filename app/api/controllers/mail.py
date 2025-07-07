@@ -572,3 +572,191 @@ def send_reconsideration_email(to_email: str, to_name: str, formato: dict, usuar
     except Exception as e:
         print(f"❌ Error al enviar correo de reconsideración a {to_email}: {str(e)}")
         return False
+async def send_action_notification_email(action: str, recipient: str, form, current_date: str, pdf_bytes=None, pdf_filename=None):
+    """
+    Envía un correo de notificación específico según el tipo de acción.
+    
+    Args:
+        action (str): Tipo de acción (send_download_link, send_pdf_attachment, generate_report)
+        recipient (str): Email del destinatario
+        form: Objeto Form de la base de datos
+        current_date (str): Fecha actual formateada
+        pdf_bytes (bytes, optional): Bytes del PDF generado
+        pdf_filename (str, optional): Nombre del archivo PDF
+    
+    Returns:
+        bool: True si el envío fue exitoso, False en caso contrario
+    """
+    try:
+        msg = EmailMessage()
+        
+        # Configurar asunto y contenido según el tipo de acción
+        action_configs = {
+            'send_download_link': {
+                'subject': f"Enlace de descarga - {form.title}",
+                'title': "Enlace de Descarga Disponible",
+                'icon': "📥",
+                'message': "Se ha generado un enlace de descarga para las respuestas del formulario en formato Excel.",
+                'color': "#2563eb"
+            },
+            'send_pdf_attachment': {
+                'subject': f"PDF del formulario - {form.title}",
+                'title': "PDF del Formulario",
+                'icon': "📄",
+                'message': "Se ha procesado el formulario y se adjunta el PDF con las respuestas.",
+                'color': "#dc2626"
+            },
+            'generate_report': {
+                'subject': f"Reporte generado - {form.title}",
+                'title': "Reporte Generado",
+                'icon': "📊",
+                'message': "Se ha generado un reporte con las respuestas del formulario.",
+                'color': "#16a34a"
+            }
+        }
+        
+        config = action_configs.get(action, {
+            'subject': f"Notificación - {form.title}",
+            'title': "Notificación del Formulario",
+            'icon': "📋",
+            'message': f"Se ha procesado la acción: {action}",
+            'color': "#6b7280"
+        })
+        
+        msg["Subject"] = config['subject']
+        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
+        msg["To"] = recipient
+        
+        # Contenido adicional según el tipo de acción
+        additional_content = ""
+        if action == 'send_download_link':
+            # URL del nuevo endpoint que funciona igual al original 
+            excel_download_url = f"https://api-forms-sfi.service.saferut.com/forms/{form.id}/answers/excel/all-users"
+            
+            
+            # excel_download_url = f"http://127.0.0.1:8000/forms/{form.id}/answers/excel/all-users"
+            
+            additional_content = f"""
+            <div style="margin: 20px 0; padding: 15px; background-color: #e3f2fd; border-radius: 5px; border-left: 4px solid #2563eb;">
+                <p style="margin: 0 0 15px 0; color: #1565c0; font-size: 15px;">
+                    <strong>📥 Descarga de datos:</strong><br>
+                    Haz clic en el botón para descargar el archivo Excel con todas las respuestas del formulario.
+                </p>
+                <div style="text-align: center;">
+                    <a href="{excel_download_url}" 
+                    style="display: inline-block; 
+                            background-color: #2563eb; 
+                            color: white; 
+                            padding: 15px 30px; 
+                            text-decoration: none; 
+                            border-radius: 8px; 
+                            font-weight: bold; 
+                            font-size: 16px;
+                            box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                        📊 Descargar Excel
+                    </a>
+                </div>
+                <p style="margin: 15px 0 0 0; color: #666; font-size: 12px; text-align: center;">
+                    📄 Archivo: Formulario_{form.id}_respuestas.xlsx
+                </p>
+            </div>
+            """
+        elif action == 'send_pdf_attachment':
+            additional_content = f"""
+            <div style="margin: 20px 0; padding: 15px; background-color: #ffebee; border-radius: 5px; border-left: 4px solid #dc2626;">
+                <p style="margin: 0; color: #c62828; font-size: 15px;">
+                    <strong>📎 Archivo adjunto:</strong> {pdf_filename}<br>
+                    El PDF con las respuestas del formulario se encuentra adjunto a este correo.
+                </p>
+            </div>
+            """
+        
+        html_content = f"""
+        <html>
+        <body style="font-family: 'Segoe UI', sans-serif; background-color: #f9f9f9; margin: 0; padding: 30px;">
+            <table width="100%" cellspacing="0" cellpadding="0" style="max-width: 600px; margin: auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 30px;">
+                <tr>
+                    <td>
+                        <h2 style="color: {config['color']}; margin-bottom: 10px;">{config['icon']} {config['title']}</h2>
+                        <p style="font-size: 16px; color: #333;">
+                            Estimado/a usuario,<br><br>
+                            {config['message']}
+                        </p>
+                        
+                        <hr style="margin: 25px 0; border: none; border-top: 1px solid #e0e0e0;">
+                        
+                        <h3 style="color: #333; font-size: 17px;">📄 Detalles del Formulario</h3>
+                        <ul style="padding-left: 20px; color: #555; font-size: 15px;">
+                            <li><strong>Título:</strong> {form.title}</li>
+                            <li><strong>Descripción:</strong> {form.description or 'Sin descripción'}</li>
+                            <li><strong>Tipo:</strong> {form.format_type.value.capitalize()}</li>
+                            <li><strong>Creado por:</strong> {form.user.name} ({form.user.email})</li>
+                            <li><strong>Fecha de creación:</strong> {form.created_at.strftime('%d/%m/%Y')}</li>
+                        </ul>
+                        
+                        <h3 style="color: #333; font-size: 17px;">⚙️ Configuración Ejecutada</h3>
+                        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; border-left: 4px solid {config['color']};">
+                            <p style="margin: 0; color: #555; font-size: 15px;">
+                                <strong>Acción seleccionada:</strong> {action.replace('_', ' ').title()}<br>
+                                <strong>Destinatario:</strong> {recipient}<br>
+                                <strong>Formulario ID:</strong> {form.id}
+                            </p>
+                        </div>
+                        
+                        {additional_content}
+                        
+                        <p style="font-size: 14px; color: #999; margin-top: 30px;">
+                            Enviado el {current_date}
+                        </p>
+                    </td>
+                </tr>
+            </table>
+        </body>
+        </html>
+        """
+        
+        # Contenido de texto plano
+        text_content = f"""
+        {config['title']}
+        
+        {config['message']}
+        
+        Detalles del formulario:
+        - Título: {form.title}
+        - Descripción: {form.description or 'Sin descripción'}
+        - Tipo: {form.format_type.value.capitalize()}
+        - Creado por: {form.user.name} ({form.user.email})
+        - Fecha de creación: {form.created_at.strftime('%d/%m/%Y')}
+        
+        Configuración ejecutada: {action.replace('_', ' ').title()}
+        Destinatario: {recipient}
+        Formulario ID: {form.id}
+        
+        {"Para descargar el archivo Excel, visita: https://tu-dominio.com/api/" + str(form.id) + "/questions-answers/excel" if action == 'send_download_link' else ""}
+        
+        Enviado el {current_date}
+        """
+        
+        msg.set_content(text_content)
+        msg.add_alternative(html_content, subtype="html")
+        
+        # Adjuntar PDF si es necesario
+        if action == 'send_pdf_attachment' and pdf_bytes:
+            msg.add_attachment(
+                pdf_bytes,
+                maintype='application',
+                subtype='pdf',
+                filename=pdf_filename
+            )
+        
+        # Enviar el correo
+        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
+            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
+            smtp.send_message(msg)
+        
+        print(f"✅ Correo de acción '{action}' enviado a {recipient}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error al enviar correo de acción '{action}' a {recipient}: {str(e)}")
+        return False

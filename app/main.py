@@ -1,9 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from jinja2 import Environment, FileSystemLoader
 from app.crud import  get_response_details_logic, get_schedules_by_frequency
 from app.database import SessionLocal, engine
 from app.models import Base
-from app.api.endpoints import projects, responses, users, forms, auth, questions
+from app.api.endpoints import pdf_router, projects, responses, users, forms, auth, questions
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -19,7 +20,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+templates_env = Environment(loader=FileSystemLoader("app/api/templates"))
+
+app.state.templates_env = templates_env
 # Incluye los routers de los diferentes módulos
+app.include_router(pdf_router.router, prefix="/pdf", tags=["pdf"])
 app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(forms.router, prefix="/forms", tags=["forms"])
 app.include_router(questions.router, prefix="/questions", tags=["questions"])

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 from typing import List
@@ -633,6 +633,38 @@ def download_questions_answers_excel(form_id: int, db: Session = Depends(get_db)
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=Formulario_{form_id}_respuestas.xlsx"}
     )
+    
+    
+@router.get("/{form_id}/answers/excel/all-users")
+def download_questions_answers_excel_all_users(form_id: int, db: Session = Depends(get_db)):
+    """
+    Genera un archivo Excel con las preguntas y respuestas de un formulario específico.
+
+    Este endpoint es idéntico al endpoint /{form_id}/questions-answers/excel
+    pero con una ruta diferente para uso en emails automáticos.
+    
+    Args:
+        form_id (int): ID del formulario del cual se desean exportar los datos.
+        db (Session): Sesión de base de datos proporcionada por FastAPI.
+
+    Returns:
+        StreamingResponse: Archivo Excel (.xlsx) con los datos de preguntas y respuestas.
+        Si el formulario no existe, retorna un error 404.
+    """
+    data = get_questions_and_answers_by_form_id(db, form_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+
+    df = pd.DataFrame(data["data"])
+    output = BytesIO()
+    df.to_excel(output, index=False, sheet_name="Respuestas")
+    output.seek(0)
+
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=Formulario_{form_id}_respuestas.xlsx"}
+    )
                                                                                                          
 @router.get("/{form_id}/questions-answers/excel/user")
 def download_user_responses_excel(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -977,10 +1009,13 @@ def create_notification(notification: NotificationCreate, db: Session = Depends(
 
 
 @router.put("/update-response-approval/{response_id}")
-def update_response_approval(
+async def update_response_approval(
+    request: Request,
     response_id: int,
     update_data: UpdateResponseApprovalRequest,
-    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user),
+
 ):
     try:
         print("Datos recibidos:", update_data)
@@ -989,11 +1024,13 @@ def update_response_approval(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User does not have permission to get options"
             )
-        updated_response_approval = update_response_approval_status(
+        updated_response_approval = await update_response_approval_status(
             response_id=response_id,
             user_id=current_user.id,
             update_data=update_data,
-            db=db
+            db=db,
+            current_user=current_user,
+            request = request
         )
         return {"message": "ResponseApproval updated successfully", "response_approval": updated_response_approval}
     except HTTPException as e:

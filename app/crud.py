@@ -7,9 +7,10 @@ from sqlalchemy import exists, func, not_, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from app import models
-from app.api.controllers.mail import send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
+from app.api.controllers.mail import send_action_notification_email, send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
+from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormCloseConfig, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
 from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
@@ -2533,11 +2534,163 @@ def send_rejection_email_to_all(response_id: int, db: Session):
 
     return True
 
-def update_response_approval_status(
+def get_active_form_actions(form_id: int, db):
+    """
+    Obtiene solo las acciones activas para un formulario en formato simplificado.
+    
+    Args:
+        form_id (int): ID del formulario
+        db: Instancia de la base de datos (session)
+    
+    Returns:
+        list: Lista de tuplas (acción, destinatario) para las configuraciones activas
+    """
+    try:
+        config = db.query(FormCloseConfig).filter(
+            FormCloseConfig.form_id == form_id
+        ).first()
+        
+        if not config:
+            return []
+        
+        active_actions = []
+        
+        if config.send_download_link and config.download_link_recipient:
+            active_actions.append(('send_download_link', config.download_link_recipient))
+        
+        if config.send_pdf_attachment and config.email_recipient:
+            active_actions.append(('send_pdf_attachment', config.email_recipient))
+        
+        if config.generate_report and config.report_recipient:
+            active_actions.append(('generate_report', config.report_recipient))
+        
+        if config.do_nothing:
+            active_actions.append(('do_nothing', None))
+        
+        return active_actions
+        
+    except Exception as e:
+        print(f"Error al obtener acciones activas: {str(e)}")
+        return []
+    
+    
+async def send_form_action_emails(form_id: int, db, current_user, request):
+    """
+    Envía correos electrónicos según las acciones activas configuradas para un formulario.
+    
+    Args:
+        form_id (int): ID del formulario
+        db: Instancia de la base de datos (session)
+        current_user: Usuario actual
+        request: Objeto request de FastAPI
+    
+    Returns:
+        dict: Resultados del envío de correos
+    """
+    try:
+        # Obtener información del formulario
+        form = db.query(Form).filter(Form.id == form_id).first()
+        if not form:
+            return {"success": False, "error": f"Formulario con ID {form_id} no encontrado", "emails_sent": 0}
+        
+        # Obtener las acciones activas
+        active_actions = get_active_form_actions(form_id, db)
+        
+        if not active_actions:
+            print(f"No hay acciones activas configuradas para el formulario {form_id}")
+            return {"success": True, "message": "No hay acciones configuradas", "emails_sent": 0}
+        
+        results = {
+            "success": True,
+            "emails_sent": 0,
+            "failed_emails": 0,
+            "actions_processed": []
+        }
+        
+        current_date = datetime.now().strftime("%d/%m/%Y")
+        
+        # Generar PDF una sola vez si es necesario
+        pdf_bytes = None
+        pdf_filename = f"form_{form_id}_response.pdf"
+        
+        # Verificar si necesitamos generar el PDF
+        needs_pdf = any(action in ['send_pdf_attachment', 'send_download_link'] for action, _ in active_actions)
+        
+        if needs_pdf:
+            try:
+                pdf_bytes = await generate_pdf_from_form_id(
+                    form_id=form_id,
+                    db=db,
+                    current_user=current_user,
+                    request=request
+                )
+                print(f"✅ PDF generado exitosamente para el formulario {form_id}")
+            except Exception as e:
+                print(f"❌ Error al generar PDF: {str(e)}")
+                # Marcar acciones que requieren PDF como fallidas
+                for action, recipient in active_actions:
+                    if action in ['send_pdf_attachment', 'send_download_link']:
+                        results["failed_emails"] += 1
+                        results["actions_processed"].append({
+                            "action": action,
+                            "recipient": recipient,
+                            "status": "failed",
+                            "error": f"Error al generar PDF: {str(e)}"
+                        })
+                # Filtrar acciones que no requieren PDF
+                active_actions = [(action, recipient) for action, recipient in active_actions 
+                                if action not in ['send_pdf_attachment', 'send_download_link']]
+        
+        # Procesar cada acción activa
+        for action, recipient in active_actions:
+            if action == 'do_nothing':
+                print(f"Acción 'do_nothing' detectada - no se envía correo")
+                results["actions_processed"].append({
+                    "action": action,
+                    "status": "skipped",
+                    "message": "Acción configurada para no hacer nada"
+                })
+                continue
+            
+            # Preparar el correo según el tipo de acción
+            email_sent = await send_action_notification_email(
+                action=action,
+                recipient=recipient,
+                form=form,
+                current_date=current_date,
+                pdf_bytes=pdf_bytes,
+                pdf_filename=pdf_filename
+            )
+            
+            if email_sent:
+                results["emails_sent"] += 1
+                results["actions_processed"].append({
+                    "action": action,
+                    "recipient": recipient,
+                    "status": "success"
+                })
+            else:
+                results["failed_emails"] += 1
+                results["actions_processed"].append({
+                    "action": action,
+                    "recipient": recipient,
+                    "status": "failed"
+                })
+        
+        return results
+        
+    except Exception as e:
+        print(f"❌ Error al procesar acciones del formulario {form_id}: {str(e)}")
+        return {"success": False, "error": str(e), "emails_sent": 0}
+
+
+async def update_response_approval_status(
     response_id: int,
     update_data: UpdateResponseApprovalRequest,
     user_id: int,
-    db: Session
+    db: Session,
+    current_user,
+    request
 ):
     # 1. Buscar el ResponseApproval correspondiente
     response_approval = db.query(ResponseApproval).filter(
@@ -2575,6 +2728,7 @@ def update_response_approval_status(
         .all()
     )
 
+    
     response_approvals = db.query(ResponseApproval).filter(
         ResponseApproval.response_id == response_id
     ).all()
@@ -2609,6 +2763,7 @@ def update_response_approval_status(
         if todos_aprobadores_completados and todos_han_respondido:
             # El proceso está completamente finalizado, enviar correo al usuario original
             send_final_approval_email_to_original_user(response_id, db)
+            await send_form_action_emails(form.id, db, current_user, request) 
             print("✅ Proceso de aprobación completado. Correo enviado al usuario original.")
 
     if not detener_proceso:
@@ -2990,7 +3145,9 @@ def delete_form(db: Session, form_id: int):
             answer_ids = [a.id for a in answer_ids]
 
             if answer_ids:
+                # Eliminar primero en tablas que dependen de Answer
                 db.query(AnswerFileSerial).filter(AnswerFileSerial.answer_id.in_(answer_ids)).delete(synchronize_session=False)
+                db.query(AnswerHistory).filter(AnswerHistory.previous_answer_id.in_(answer_ids)).delete(synchronize_session=False)
 
             db.query(ResponseApproval).filter(ResponseApproval.response_id.in_(response_ids)).delete(synchronize_session=False)
             db.query(Answer).filter(Answer.response_id.in_(response_ids)).delete(synchronize_session=False)

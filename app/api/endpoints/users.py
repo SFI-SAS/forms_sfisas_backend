@@ -1,10 +1,12 @@
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status, Query
-from fastapi.responses import JSONResponse
+import io
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status, Query
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
-from typing import List
+from typing import Any, List
 from app import models
 from app.api.controllers.mail import send_welcome_email
+from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.database import get_db
 from app.models import EmailConfig, User, UserType
 from app.crud import create_email_config, create_user, create_user_with_random_password, fetch_all_users, get_all_email_configs, get_response_details_logic, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
@@ -41,6 +43,49 @@ def get_user_endpoint(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return user
+
+
+
+@router.get("/forms/{form_id}/pdf")
+async def generate_pdf_endpoint(
+    form_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: Any = Depends(get_current_user)
+):
+    """
+    Endpoint para generar y descargar PDF de un formulario.
+    """
+    try:
+        pdf_bytes = await generate_pdf_from_form_id(
+            form_id=form_id,
+            db=db,
+            current_user=current_user,
+            request=request
+        )
+        
+        # Crear nombre del archivo
+        filename = f"form_{form_id}_response.pdf"
+        
+        # Crear response con el PDF
+        response = StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail="Error interno del servidor al generar el PDF"
+        )
+
 
 @router.put("/{user_id}", response_model=UserResponse)
 def update_user_endpoint(
