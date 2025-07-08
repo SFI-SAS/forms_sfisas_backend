@@ -559,19 +559,18 @@ def post_create_response(db: Session, form_id: int, user_id: int, mode: str = "o
         "mode_sequence": new_mode_sequence,
         "approvers_created": len(form_approvals)
     }
-
-
-def create_answer_in_db(answer, db: Session):
-
+async def create_answer_in_db(answer, db: Session, current_user: User, request):
+    created_answers = []
+    
     if isinstance(answer.question_id, str):
         try:
             parsed_answer = json.loads(answer.answer_text)
             if not isinstance(parsed_answer, dict):
                 raise ValueError("answer_text debe ser un JSON de tipo dict para respuestas múltiples")
-            
-            created_answers = []
+                         
             for question_id_str, text in parsed_answer.items():
-                question_id = int(question_id_str) 
+                question_id = int(question_id_str)
+                 
                 new_answer = Answer(
                     response_id=answer.response_id,
                     question_id=question_id,
@@ -581,25 +580,61 @@ def create_answer_in_db(answer, db: Session):
                 db.add(new_answer)
                 db.flush()
                 created_answers.append(new_answer)
-
+             
             db.commit()
             for ans in created_answers:
                 db.refresh(ans)
-
-            return {
-                "message": "Respuestas múltiples guardadas exitosamente",
-                "answers": [{"id": a.id, "question_id": a.question_id} for a in created_answers]
-            }
+             
         except Exception as e:
+            db.rollback()
             raise HTTPException(status_code=400, detail=f"Error procesando respuestas múltiples: {str(e)}")
-
+    
     # Caso de una sola respuesta (question_id como int)
     elif isinstance(answer.question_id, int):
-        return save_single_answer(answer, db)
-
+        single_answer_result = save_single_answer(answer, db)
+        created_answers = [single_answer_result] if single_answer_result else []
+    
     # Tipo de question_id no reconocido
     else:
         raise HTTPException(status_code=400, detail="Tipo de question_id no válido. Debe ser int o str.")
+    
+    # NUEVA LÓGICA: Verificar aprobaciones y enviar emails si es necesario
+    if created_answers:
+        try:
+            # Obtener el form_id desde la respuesta
+            response = db.query(Response).filter(Response.id == answer.response_id).first()
+            if not response:
+                raise HTTPException(status_code=404, detail="Response no encontrada")
+            
+            form_id = response.form_id
+            
+            # Verificar si el form_id existe en FormApproval y está activo
+            form_approval_exists = db.query(FormApproval).filter(
+                FormApproval.form_id == form_id,
+                FormApproval.is_active == True
+            ).first()
+            
+            # Si NO existe en FormApproval, enviar emails
+            if not form_approval_exists:
+                # Obtener el form completo para enviarlo a la función de emails
+                form = db.query(Form).filter(Form.id == form_id).first()
+                if form:
+                    await send_form_action_emails(form.id, db, current_user, request)
+        
+        except Exception as e:
+            # Log del error pero no interrumpir el proceso de guardado
+            print(f"Error en verificación de aprobaciones: {str(e)}")
+            # Opcionalmente podrías usar logging en lugar de print
+            # logger.error(f"Error en verificación de aprobaciones: {str(e)}")
+    
+    # Retornar resultado según el tipo de respuesta
+    if isinstance(answer.question_id, str):
+        return {
+            "message": "Respuestas múltiples guardadas exitosamente",
+            "answers": [{"id": a.id, "question_id": a.question_id} for a in created_answers]
+        }
+    else:
+        return created_answers[0] if created_answers else None
     
     
 def save_single_answer(answer, db: Session):
@@ -2659,7 +2694,9 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
                 form=form,
                 current_date=current_date,
                 pdf_bytes=pdf_bytes,
-                pdf_filename=pdf_filename
+                pdf_filename=pdf_filename,
+                db=db, 
+                current_user=current_user,
             )
             
             if email_sent:

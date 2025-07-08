@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import uuid
-from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session, joinedload
@@ -56,16 +56,20 @@ def save_response(
     return post_create_response(db, form_id, current_user.id, mode, repeated_id)
 
 @router.post("/save-answers/")  
-def create_answer(answer: PostCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def create_answer(
+    answer: PostCreate, 
+    request: Request,
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user)
+):
     if current_user == None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get all questions"
         )
     else: 
-        new_answer = create_answer_in_db(answer, db)
+        new_answer = await create_answer_in_db(answer, db, current_user, request)
         return {"message": "Answer created", "answer": new_answer}
-
 
 UPLOAD_FOLDER = "./documents"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)

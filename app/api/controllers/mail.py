@@ -9,6 +9,7 @@ from typing import List, Dict
 
 from fastapi import UploadFile
 
+
 # Configuración del servidor SMTP alternativo
 MAIL_HOST_ALT = os.getenv("MAIL_HOST_ALT")
 MAIL_PORT_ALT = os.getenv("MAIL_PORT_ALT")
@@ -572,9 +573,11 @@ def send_reconsideration_email(to_email: str, to_name: str, formato: dict, usuar
     except Exception as e:
         print(f"❌ Error al enviar correo de reconsideración a {to_email}: {str(e)}")
         return False
-async def send_action_notification_email(action: str, recipient: str, form, current_date: str, pdf_bytes=None, pdf_filename=None):
+    
+    
+async def send_action_notification_email(action: str, recipient: str, form, current_date: str, pdf_bytes=None, pdf_filename=None, db=None, current_user=None):
     """
-    Envía un correo de notificación específico según el tipo de acción.
+    Versión mejorada de send_action_notification_email que incluye tabla de reporte para generate_report.
     
     Args:
         action (str): Tipo de acción (send_download_link, send_pdf_attachment, generate_report)
@@ -583,10 +586,13 @@ async def send_action_notification_email(action: str, recipient: str, form, curr
         current_date (str): Fecha actual formateada
         pdf_bytes (bytes, optional): Bytes del PDF generado
         pdf_filename (str, optional): Nombre del archivo PDF
+        db: Sesión de base de datos (requerida para generate_report)
+        current_user: Usuario actual (requerido para generate_report)
     
     Returns:
         bool: True si el envío fue exitoso, False en caso contrario
     """
+    from app.crud import get_form
     try:
         msg = EmailMessage()
         
@@ -629,12 +635,10 @@ async def send_action_notification_email(action: str, recipient: str, form, curr
         
         # Contenido adicional según el tipo de acción
         additional_content = ""
+        
         if action == 'send_download_link':
             # URL del nuevo endpoint que funciona igual al original 
             excel_download_url = f"https://api-forms-sfi.service.saferut.com/forms/{form.id}/answers/excel/all-users"
-            
-            
-            # excel_download_url = f"http://127.0.0.1:8000/forms/{form.id}/answers/excel/all-users"
             
             additional_content = f"""
             <div style="margin: 20px 0; padding: 15px; background-color: #e3f2fd; border-radius: 5px; border-left: 4px solid #2563eb;">
@@ -670,11 +674,45 @@ async def send_action_notification_email(action: str, recipient: str, form, curr
                 </p>
             </div>
             """
+        elif action == 'generate_report':
+            # Para generate_report, necesitamos obtener los datos del formulario
+            if db and current_user:
+                try:
+                    # Obtener datos del formulario usando la función get_form
+                    form_data = get_form(db, form.id, current_user.id)
+                    
+                    if form_data:
+                        report_table = generate_report_table_html(form_data)
+                        additional_content = report_table
+                    else:
+                        additional_content = """
+                        <div style="margin: 20px 0; padding: 15px; background-color: #fff3cd; border-radius: 5px; border-left: 4px solid #ffc107;">
+                            <p style="margin: 0; color: #856404; font-size: 15px;">
+                                <strong>⚠️ Advertencia:</strong> No se pudieron obtener los datos del formulario para generar el reporte.
+                            </p>
+                        </div>
+                        """
+                except Exception as e:
+                    additional_content = f"""
+                    <div style="margin: 20px 0; padding: 15px; background-color: #f8d7da; border-radius: 5px; border-left: 4px solid #dc3545;">
+                        <p style="margin: 0; color: #721c24; font-size: 15px;">
+                            <strong>❌ Error:</strong> No se pudo generar el reporte. {str(e)}
+                        </p>
+                    </div>
+                    """
+            else:
+                additional_content = """
+                <div style="margin: 20px 0; padding: 15px; background-color: #e2e3e5; border-radius: 5px; border-left: 4px solid #6c757d;">
+                    <p style="margin: 0; color: #495057; font-size: 15px;">
+                        <strong>📊 Reporte generado:</strong> Los datos del formulario han sido procesados exitosamente.
+                    </p>
+                </div>
+                """
         
         html_content = f"""
         <html>
         <body style="font-family: 'Segoe UI', sans-serif; background-color: #f9f9f9; margin: 0; padding: 30px;">
-            <table width="100%" cellspacing="0" cellpadding="0" style="max-width: 600px; margin: auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 30px;">
+            <table width="100%" cellspacing="0" cellpadding="0" style="max-width: 800px; margin: auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 30px;">
                 <tr>
                     <td>
                         <h2 style="color: {config['color']}; margin-bottom: 10px;">{config['icon']} {config['title']}</h2>
@@ -732,7 +770,7 @@ async def send_action_notification_email(action: str, recipient: str, form, curr
         Destinatario: {recipient}
         Formulario ID: {form.id}
         
-        {"Para descargar el archivo Excel, visita: https://tu-dominio.com/api/" + str(form.id) + "/questions-answers/excel" if action == 'send_download_link' else ""}
+        {"Para descargar el archivo Excel, visita: https://api-forms-sfi.service.saferut.com/forms/" + str(form.id) + "/answers/excel/all-users" if action == 'send_download_link' else ""}
         
         Enviado el {current_date}
         """
@@ -760,3 +798,124 @@ async def send_action_notification_email(action: str, recipient: str, form, curr
     except Exception as e:
         print(f"❌ Error al enviar correo de acción '{action}' a {recipient}: {str(e)}")
         return False
+    
+    
+def generate_report_table_html(form_data):
+    """
+    Genera una tabla HTML con los datos del formulario para incluir en el correo de reporte.
+    
+    Args:
+        form_data: Datos del formulario obtenidos de get_form()
+    
+    Returns:
+        str: HTML de la tabla con los datos del reporte
+    """
+    if not form_data or not form_data.get('questions'):
+        return "<p>No hay datos disponibles para mostrar.</p>"
+    
+    # Crear encabezados de la tabla basados en las preguntas
+    headers = []
+    question_map = {}
+    
+    for question in form_data['questions']:
+        headers.append(question['question_text'])
+        question_map[question['id']] = question['question_text']
+    
+    # Si no hay respuestas, mostrar solo las preguntas
+    if not form_data.get('responses'):
+        table_html = f"""
+        <div style="margin: 20px 0; padding: 15px; background-color: #f8f9fa; border-radius: 5px; border-left: 4px solid #16a34a;">
+            <h4 style="color: #16a34a; margin: 0 0 15px 0;">📊 Estructura del Formulario</h4>
+            <div style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse; background-color: white; border-radius: 5px; overflow: hidden;">
+                    <thead>
+                        <tr style="background-color: #16a34a; color: white;">
+                            <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">Pregunta</th>
+                            <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">Tipo</th>
+                            <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">Requerida</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        """
+        
+        for i, question in enumerate(form_data['questions']):
+            row_color = "#f9f9f9" if i % 2 == 0 else "white"
+            required_text = "Sí" if question.get('required', False) else "No"
+            
+            table_html += f"""
+                        <tr style="background-color: {row_color};">
+                            <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: 500;">{question['question_text']}</td>
+                            <td style="padding: 10px; border-bottom: 1px solid #ddd;">{question['question_type'].capitalize()}</td>
+                            <td style="padding: 10px; border-bottom: 1px solid #ddd;">{required_text}</td>
+                        </tr>
+            """
+        
+        table_html += """
+                    </tbody>
+                </table>
+            </div>
+            <p style="margin: 15px 0 0 0; color: #666; font-size: 13px;">
+                📝 Este formulario aún no tiene respuestas registradas.
+            </p>
+        </div>
+        """
+        
+        return table_html
+    
+    # Crear tabla con respuestas
+    table_html = f"""
+    <div style="margin: 20px 0; padding: 15px; background-color: #f8f9fa; border-radius: 5px; border-left: 4px solid #16a34a;">
+        <h4 style="color: #16a34a; margin: 0 0 15px 0;">📊 Reporte de Respuestas</h4>
+        <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse; background-color: white; border-radius: 5px; overflow: hidden;">
+                <thead>
+                    <tr style="background-color: #16a34a; color: white;">
+                        <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">ID Respuesta</th>
+    """
+    
+    # Agregar encabezados de preguntas
+    for header in headers:
+        table_html += f'<th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">{header}</th>'
+    
+    table_html += """
+                    </tr>
+                </thead>
+                <tbody>
+    """
+    
+    # Agregar filas con respuestas
+    for i, response in enumerate(form_data['responses']):
+        row_color = "#f9f9f9" if i % 2 == 0 else "white"
+        
+        table_html += f"""
+                    <tr style="background-color: {row_color};">
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: 500;">{response['id']}</td>
+        """
+        
+        # Crear un diccionario de respuestas por question_id
+        answers_by_question = {}
+        for answer in response.get('answers', []):
+            answers_by_question[answer['question_id']] = answer['answer_text']
+        
+        # Agregar celdas para cada pregunta
+        for question in form_data['questions']:
+            answer_text = answers_by_question.get(question['id'], '-')
+            # Truncar texto muy largo
+            if len(answer_text) > 100:
+                answer_text = answer_text[:100] + "..."
+            
+            table_html += f'<td style="padding: 10px; border-bottom: 1px solid #ddd;">{answer_text}</td>'
+        
+        table_html += "</tr>"
+    
+    table_html += """
+                </tbody>
+            </table>
+        </div>
+        <p style="margin: 15px 0 0 0; color: #666; font-size: 13px;">
+            📈 Total de respuestas: """ + str(len(form_data['responses'])) + """
+        </p>
+    </div>
+    """
+    
+    return table_html
