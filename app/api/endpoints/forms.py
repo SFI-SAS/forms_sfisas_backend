@@ -966,6 +966,29 @@ def create_response_approval_endpoint(
     data: ResponseApprovalCreate,
     db: Session = Depends(get_db)
 ):
+    """
+    Crea un nuevo registro de aprobación de respuesta.
+
+    Este endpoint recibe los datos necesarios para crear un registro en la tabla `ResponseApproval`
+    y lo almacena en la base de datos.
+
+    Parámetros:
+    ----------
+    data : ResponseApprovalCreate
+        Objeto que contiene los datos requeridos para crear la aprobación.
+    db : Session
+        Sesión activa de la base de datos (inyectada automáticamente por FastAPI).
+
+    Retorna:
+    -------
+    ResponseApproval
+        Objeto creado de tipo ResponseApproval.
+
+    Excepciones:
+    -----------
+    HTTPException (400):
+        Si ocurre un error durante la creación del registro, se retorna una excepción con el mensaje de error.
+    """
     try:
         return create_response_approval(db, data)
     except Exception as e:
@@ -975,12 +998,70 @@ def create_response_approval_endpoint(
 
 @router.get("/user/assigned-forms-with-responses")
 def get_forms_to_approve( db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Obtiene los formularios asignados al usuario actual que tienen respuestas pendientes de aprobación.
+
+    Este endpoint retorna una lista de formularios con sus respuestas correspondientes que requieren 
+    la aprobación del usuario autenticado, respetando el orden de secuencia y verificando si es su turno 
+    de aprobar según las reglas definidas.
+
+    Parámetros:
+    ----------
+    db : Session
+        Sesión activa de la base de datos (inyectada por FastAPI).
+    current_user : User
+        Usuario autenticado (inyectado por el sistema de autenticación).
+
+    Retorna:
+    -------
+    List[Dict]
+        Lista de formularios con información detallada de las respuestas, 
+        aprobaciones y el estado de cada aprobador.
+    """
     return get_forms_pending_approval_for_user(current_user.id, db)
-
-
 
 @router.post("/create_notification")
 def create_notification(notification: NotificationCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Crea una notificación para eventos de aprobación de formularios.
+
+    Este endpoint permite registrar una notificación que se activará cuando se cumpla la condición 
+    especificada (por ejemplo, una nueva respuesta o aprobación).
+
+    Parámetros:
+    ----------
+    notification : NotificationCreate
+        Objeto con los datos necesarios para crear la notificación. Contiene:
+        - form_id: ID del formulario al cual aplica la notificación.
+        - user_id: ID del usuario que debe recibir la notificación.
+        - notify_on: Evento que dispara la notificación (por ejemplo: "on_submit", "on_approval").
+
+    db : Session
+        Sesión de base de datos (inyectada por FastAPI).
+    
+    current_user : User
+        Usuario autenticado. Se utiliza para validar si tiene permisos.
+
+    Validaciones:
+    ------------
+    - Si el usuario no está autenticado, se retorna un error 403.
+    - Si ya existe una notificación con los mismos datos (formulario, usuario y tipo de evento),
+      se retorna un error 400 para evitar duplicados.
+
+    Retorna:
+    -------
+    dict
+        Mensaje de éxito con el ID de la notificación creada:
+        {
+            "message": "Notificación creada correctamente",
+            "id": <id_notificación>
+        }
+
+    Errores:
+    -------
+    - 403 FORBIDDEN: Si el usuario no tiene permisos.
+    - 400 BAD REQUEST: Si la notificación ya existe.
+    """
     
     if current_user is None:
         raise HTTPException(
@@ -1017,6 +1098,45 @@ async def update_response_approval(
     current_user: User = Depends(get_current_user),
 
 ):
+    """
+    Actualiza el estado de una aprobación de respuesta asignada a un usuario.
+
+    Este endpoint permite que un usuario apruebe o rechace una respuesta específica. 
+    Si la aprobación es válida, se envían correos según la configuración del formulario y se 
+    ejecutan validaciones adicionales para verificar si el flujo de aprobación se ha completado.
+
+    Parámetros:
+    ----------
+    request : Request
+        Objeto de solicitud HTTP para contexto adicional (como host, headers, etc.).
+
+    response_id : int
+        ID de la respuesta que se desea aprobar/rechazar.
+
+    update_data : UpdateResponseApprovalRequest
+        Datos enviados por el usuario para actualizar el estado de la aprobación:
+        - `status`: "aprobado" o "rechazado".
+        - `message`: mensaje opcional del aprobador.
+        - `reviewed_at`: fecha de revisión.
+        - `selectedSequence`: número de secuencia de la aprobación.
+
+    db : Session
+        Sesión activa de la base de datos.
+
+    current_user : User
+        Usuario autenticado que realiza la aprobación.
+
+    Retorna:
+    -------
+    dict
+        Mensaje de éxito junto con los datos de la aprobación actualizada.
+
+    Errores:
+    -------
+    - 403 FORBIDDEN: Si el usuario no está autenticado.
+    - 404 NOT FOUND: Si no se encuentra el registro `ResponseApproval` correspondiente.
+    - 400 BAD REQUEST: Si los datos son inválidos o hay conflictos.
+    """
     try:
         print("Datos recibidos:", update_data)
         if current_user is None:
@@ -1040,6 +1160,40 @@ async def update_response_approval(
 @router.get("/form-details/{form_id}")
 def get_form_details(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     
+    """
+    Retorna los detalles completos de un formulario, incluidas preguntas, respuestas y estado de aprobación.
+
+    Este endpoint recupera:
+    - Información básica del formulario (ID, título, descripción).
+    - Preguntas asociadas al formulario.
+    - Respuestas completas con información del usuario que respondió.
+    - Historial de respuestas (si las respuestas fueron editadas).
+    - Estado de aprobación por respuesta.
+
+    Requiere autenticación.
+
+    Parámetros:
+    ----------
+    form_id : int
+        ID del formulario a consultar.
+
+    db : Session
+        Sesión activa de la base de datos.
+
+    current_user : User
+        Usuario autenticado (obligatorio).
+
+    Retorna:
+    -------
+    dict
+        Objeto con la estructura del formulario, preguntas, respuestas, aprobaciones e historial.
+
+    Errores:
+    -------
+    - 403 FORBIDDEN: Si el usuario no está autenticado.
+    - 404 NOT FOUND: Si el formulario no existe.
+    """
+    
     if current_user == None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1061,6 +1215,45 @@ def update_form_design(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    """
+    Actualiza el diseño visual del formulario especificado.
+
+    Este endpoint permite modificar el diseño personalizado de un formulario,
+    reemplazando completamente su estructura `form_design` con la nueva proporcionada.
+
+    Parámetros:
+    -----------
+    form_id : int
+        ID del formulario a actualizar.
+
+    payload : FormDesignUpdate
+        Datos del nuevo diseño a aplicar. Contiene:
+        - `form_design`: una lista de objetos/diccionarios con la estructura del diseño.
+
+    db : Session
+        Sesión activa de la base de datos.
+
+    current_user : User
+        Usuario autenticado que realiza la acción.
+
+    Retorna:
+    --------
+    list[dict]
+        Lista con un mensaje de confirmación y el ID del formulario actualizado:
+        ```json
+        [
+            {
+                "message": "Form design updated successfully",
+                "form_id": 123
+            }
+        ]
+        ```
+
+    Errores:
+    --------
+    - 403 FORBIDDEN: Si el usuario no está autenticado.
+    - 404 NOT FOUND: Si el formulario no existe.
+    """
     if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1082,6 +1275,33 @@ def get_form_with_approvers(
     db: Session = Depends(get_db),
         current_user: User = Depends(get_current_user)
 ):
+    """
+    Obtiene los datos básicos de un formulario junto con la lista de aprobadores activos asignados.
+
+    Este endpoint es útil para mostrar al usuario (usualmente administrador o creador del formulario)
+    qué usuarios están asignados como aprobadores y en qué orden.
+
+    Parámetros:
+    ----------
+    form_id : int
+        ID del formulario que se desea consultar.
+
+    db : Session
+        Sesión activa de la base de datos.
+
+    current_user : User
+        Usuario autenticado que realiza la consulta.
+
+    Retorna:
+    --------
+    FormWithApproversResponse
+        Información básica del formulario y lista de aprobadores activos (ordenados por secuencia).
+
+    Errores:
+    --------
+    - 403 FORBIDDEN: Si el usuario no está autenticado.
+    - 404 NOT FOUND: Si no se encuentra el formulario.
+    """
     if current_user == None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1115,6 +1335,48 @@ def get_form_with_approvers(
 
 @router.put("/form-approvals/bulk-update")
 def bulk_update_form_approvals(data: BulkUpdateFormApprovals, db: Session = Depends(get_db)):
+    """
+    Actualiza masivamente registros de aprobación (`FormApproval`) asociados a formularios.
+
+    Este endpoint permite modificar varios aprobadores simultáneamente.
+    Si se detecta un cambio en los campos clave (`user_id`, `sequence_number` o `is_mandatory`),
+    se inactiva el registro original y se crea uno nuevo con los datos actualizados.
+
+    Además, se actualizan las entradas de `ResponseApproval` pendientes correspondientes
+    para reflejar correctamente los nuevos aprobadores o secuencias.
+
+    Parámetros:
+    -----------
+    data : BulkUpdateFormApprovals
+        Contiene una lista de actualizaciones con los campos:
+        - `id`: ID del `FormApproval` a actualizar.
+        - `user_id`: Nuevo ID del usuario aprobador.
+        - `sequence_number`: Número de secuencia del aprobador.
+        - `is_mandatory`: Si la aprobación es obligatoria.
+        - `deadline_days`: Días límite para aprobar.
+
+    db : Session
+        Sesión activa de base de datos.
+
+    Retorna:
+    --------
+    dict:
+        Mensaje de confirmación.
+        ```json
+        {
+            "message": "FormApprovals updated successfully"
+        }
+        ```
+
+    Errores:
+    --------
+    - 404 NOT FOUND: Si alguno de los `FormApproval` especificados no existe o está inactivo.
+
+    Consideraciones:
+    ----------------
+    - Las aprobaciones existentes no se eliminan; se inactivan (`is_active = False`) por trazabilidad.
+    - Las respuestas pendientes (`ResponseApproval`) se reasignan al nuevo aprobador automáticamente si aplica.
+    """
     for update in data.updates:
         existing = db.query(FormApproval).filter(FormApproval.id == update.id, FormApproval.is_active == True).first()
         if not existing:
@@ -1173,7 +1435,29 @@ def bulk_update_form_approvals(data: BulkUpdateFormApprovals, db: Session = Depe
 @router.put("/form-approvals/{id}/set-not-is_active")
 def set_is_active_false(id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     # Buscar el FormApproval por ID
-    
+    """
+    Desactiva un aprobador (`FormApproval`) estableciendo `is_active = False`.
+
+    Este endpoint permite marcar un aprobador como inactivo, sin eliminar el registro de la base de datos.
+    Es útil cuando se desea reemplazar o remover temporalmente un aprobador del flujo de aprobación.
+
+    Parámetros:
+    -----------
+    id : int
+        ID del registro `FormApproval` que se desea desactivar.
+
+    db : Session
+        Sesión activa de la base de datos.
+
+    current_user : User
+        Usuario autenticado. Se requiere autenticación para ejecutar esta acción.
+
+
+    Errores:
+    --------
+    - 403 FORBIDDEN: Si el usuario no está autenticado.
+    - 404 NOT FOUND: Si el `FormApproval` no existe.
+    """
     if current_user == None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1196,6 +1480,39 @@ def set_is_active_false(id: int, db: Session = Depends(get_db), current_user: Us
 @router.get("/{form_id}/notifications", response_model=NotificationsByFormResponse_schema)
 def get_notifications_by_form(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     # Llamamos a la función para obtener las notificaciones
+    """
+    Obtiene todas las notificaciones configuradas para un formulario específico.
+
+    Este endpoint devuelve una lista de notificaciones que han sido definidas para
+    el formulario identificado por `form_id`. Cada notificación incluye información
+    del tipo de notificación y del usuario al que se notificará.
+
+    Solo usuarios autenticados pueden acceder a esta información.
+
+    Parámetros:
+    -----------
+    form_id : int
+        ID del formulario para el cual se desean obtener las notificaciones.
+
+    db : Session
+        Sesión activa de la base de datos proporcionada por FastAPI.
+
+    current_user : User
+        Usuario autenticado que realiza la solicitud.
+
+    Retorna:
+    --------
+    NotificationsByFormResponse_schema
+        Objeto con el ID del formulario y la lista de notificaciones asociadas.
+
+    Lanza:
+    ------
+    HTTPException 403:
+        Si el usuario no está autenticado o no tiene permisos para ver las notificaciones.
+    
+    HTTPException 404:
+        Si el formulario no existe (lanzado desde la función auxiliar `get_notifications_for_form`).
+    """
     if current_user == None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1213,7 +1530,43 @@ def get_notifications_by_form(form_id: int, db: Session = Depends(get_db), curre
 @router.put("/notifications/update-status/{notification_id}", response_model=UpdateNotifyOnSchema)
 def update_notify_status_endpoint(notification_id: int, request: UpdateNotifyOnSchema, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
-    Endpoint para actualizar el valor de 'notify_on' de una notificación.
+    Actualiza el tipo de notificación ('notify_on') de una notificación específica.
+
+    Este endpoint permite cambiar el tipo de evento que desencadenará la notificación,
+    como "cada_aprobacion" o "aprobacion_final", para una notificación ya existente
+    asociada a un formulario.
+
+    Requiere autenticación.
+
+    Parámetros:
+    -----------
+    notification_id : int
+        ID de la notificación a actualizar.
+
+    request : UpdateNotifyOnSchema
+        Objeto que contiene el nuevo valor del campo `notify_on`.
+
+    db : Session
+        Sesión activa de base de datos proporcionada por FastAPI.
+
+    current_user : User
+        Usuario autenticado que realiza la solicitud.
+
+    Retorna:
+    --------
+    UpdateNotifyOnSchema:
+        Datos actualizados de la notificación.
+
+    Lanza:
+    ------
+    HTTPException 403:
+        Si el usuario no está autenticado o no tiene permisos.
+
+    HTTPException 400:
+        Si el valor de `notify_on` no es válido.
+
+    HTTPException 404:
+        Si la notificación no existe.
     """
     if current_user == None:
         raise HTTPException(
@@ -1226,7 +1579,37 @@ def update_notify_status_endpoint(notification_id: int, request: UpdateNotifyOnS
 
 @router.delete("/notifications/{notification_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_notification(notification_id: int, db: Session = Depends(get_db),  current_user: User = Depends(get_current_user)):
-    # Buscar la notificación por ID
+    """
+    Elimina una notificación específica de un formulario.
+
+    Este endpoint permite eliminar una notificación creada previamente que
+    está asociada a un formulario de aprobación. Solo usuarios autenticados
+    con permisos pueden realizar esta acción.
+
+    Parámetros:
+    -----------
+    notification_id : int
+        ID de la notificación que se desea eliminar.
+
+    db : Session
+        Sesión activa de la base de datos proporcionada por FastAPI.
+
+    current_user : User
+        Usuario autenticado que realiza la solicitud.
+
+    Retorna:
+    --------
+    dict:
+        Mensaje de confirmación de eliminación (aunque el status sea 204).
+
+    Lanza:
+    ------
+    HTTPException 403:
+        Si el usuario no tiene permisos o no está autenticado.
+
+    HTTPException 404:
+        Si la notificación no existe.
+    """
     if current_user == None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

@@ -39,6 +39,45 @@ def save_response(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    """
+    Guarda una nueva respuesta para un formulario específico.
+
+    Este endpoint permite guardar una respuesta al formulario identificado por `form_id`.
+    También se generan aprobaciones automáticas basadas en las reglas configuradas para el formulario.
+
+    Parámetros:
+    -----------
+    form_id : int
+        ID del formulario al cual pertenece la respuesta.
+
+    responses : List[ResponseItem]
+        Lista de respuestas proporcionadas por el usuario, que pueden incluir
+        datos como `question_id`, `answer_text`, `file_path`, `repeated_id`, etc.
+
+    mode : str
+        Modo de envío: `"online"` (por defecto) o `"offline"`.
+
+    current_user : User
+        Usuario autenticado que está enviando la respuesta.
+
+    db : Session
+        Sesión de base de datos inyectada por FastAPI.
+
+    Retorna:
+    --------
+    dict:
+        - `message`: Mensaje de confirmación.
+        - `response_id`: ID de la respuesta creada.
+        - `mode`: Modo en que fue registrada la respuesta.
+        - `mode_sequence`: Número de secuencia para ese modo.
+        - `approvers_created`: Número de aprobadores registrados para esta respuesta.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 403: Si el usuario no tiene permisos para responder.
+        - 404: Si el formulario o el usuario no existen.
+    """
     if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -62,6 +101,39 @@ async def create_answer(
     db: Session = Depends(get_db), 
     current_user: User = Depends(get_current_user)
 ):
+    """
+    Crea una o múltiples respuestas para una respuesta (`response_id`) existente.
+
+    Este endpoint permite guardar una o varias respuestas relacionadas a una misma respuesta
+    de formulario. Si `question_id` es un `int`, se guarda una sola respuesta. Si es `str` con
+    formato JSON, se procesan múltiples respuestas al mismo tiempo.
+
+    Parámetros:
+    -----------
+    answer : PostCreate
+        Objeto con los datos necesarios para registrar una respuesta. Puede representar una
+        sola respuesta o un conjunto de respuestas.
+
+    request : Request
+        Objeto de solicitud para pasar al sistema de notificación por correo.
+
+    db : Session
+        Sesión activa de base de datos proporcionada por FastAPI.
+
+    current_user : User
+        Usuario autenticado que realiza la operación.
+
+    Retorna:
+    --------
+    - Si es una sola respuesta: dict con la respuesta creada.
+    - Si son múltiples respuestas: dict con lista de respuestas creadas.
+
+    Errores:
+    --------
+    - 403: Si el usuario no tiene permisos.
+    - 400: Si `question_id` no es válido o el JSON de múltiples respuestas no es correcto.
+    - 404: Si no se encuentra la respuesta (`response_id`) para asociar.
+    """
     if current_user == None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -76,6 +148,37 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 @router.post("/upload-file/")
 async def upload_file(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
+    """
+    Sube un archivo al servidor, generando un nombre único.
+
+    Este endpoint permite a un usuario autenticado subir un archivo (por ejemplo, PDF, imagen, etc.)
+    al servidor. El archivo se guarda en la carpeta predefinida `UPLOAD_FOLDER` con un nombre
+    único generado con `uuid`.
+
+    Requisitos:
+    -----------
+    - El usuario debe estar autenticado.
+    - El archivo debe ser enviado como `form-data` con la clave `file`.
+
+    Parámetros:
+    -----------
+    file : UploadFile (obligatorio)
+        Archivo a subir (formato `multipart/form-data`).
+    
+    current_user : User
+        Usuario autenticado extraído del token JWT.
+
+    Retorna:
+    --------
+    JSON con:
+    - `message`: confirmación del éxito.
+    - `file_name`: nombre único generado del archivo guardado.
+
+    Errores:
+    --------
+    - 403: Si el usuario no está autenticado.
+    - 500: Si ocurre un error al guardar el archivo.
+    """
     try:
         if current_user == None:
             raise HTTPException(
@@ -103,6 +206,30 @@ async def upload_file(file: UploadFile = File(...), current_user: User = Depends
 
 @router.get("/download-file/{file_name}")
 async def download_file(file_name: str, current_user: User = Depends(get_current_user)):
+    """
+    Descarga un archivo previamente subido al servidor.
+
+    Este endpoint permite a un usuario autenticado descargar un archivo que fue previamente
+    subido y almacenado en la carpeta `UPLOAD_FOLDER`.
+
+    Parámetros:
+    -----------
+    file_name : str
+        Nombre del archivo a descargar (incluye extensión).
+
+    current_user : User
+        Usuario autenticado obtenido desde el token JWT.
+
+    Retorna:
+    --------
+    FileResponse:
+        Archivo descargado como `application/octet-stream`.
+
+    Errores:
+    --------
+    - 403: Si el usuario no está autenticado.
+    - 404: Si el archivo no existe en la ruta especificada.
+    """
     if current_user == None:
         raise HTTPException(   
             status_code=status.HTTP_403_FORBIDDEN,
@@ -118,6 +245,32 @@ async def download_file(file_name: str, current_user: User = Depends(get_current
 
 @router.get("/db/columns/{table_name}")
 def get_table_columns(table_name: str, db: Session = Depends(get_db)):
+    """
+    Obtiene las columnas de una tabla específica de la base de datos.
+
+    Este endpoint inspecciona dinámicamente la estructura de una tabla en la base de datos
+    y devuelve una lista con los nombres de sus columnas, excluyendo columnas como `created_at`.
+
+    También permite definir manualmente columnas para ciertas tablas como `users`.
+
+    Parámetros:
+    -----------
+    table_name : str
+        Nombre de la tabla a consultar.
+
+    db : Session
+        Sesión activa de base de datos inyectada mediante dependencia.
+
+    Retorna:
+    --------
+    dict:
+        Diccionario con la clave `columns` y una lista de nombres de columnas.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 404: Si la tabla no existe o no se puede inspeccionar.
+    """
     inspector = inspect(db.bind)
 
     # Mapear nombre de tabla en plural a nombre de tabla en base de datos si es necesario
@@ -142,6 +295,35 @@ def get_table_columns(table_name: str, db: Session = Depends(get_db)):
 
 @router.put("/answers/update-answer-text")
 def update_answer_text(payload: UpdateAnswerText, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    
+    """
+    Actualiza el texto (`answer_text`) de una respuesta específica en la base de datos.
+
+    Este endpoint permite a un usuario autenticado modificar el contenido de una respuesta 
+    previamente registrada, validando primero que la respuesta exista.
+
+    Parámetros:
+    -----------
+    payload : UpdateAnswerText
+        Objeto que contiene el `id` de la respuesta a actualizar y el nuevo `answer_text`.
+
+    db : Session
+        Sesión activa de base de datos inyectada mediante dependencia.
+
+    current_user : User
+        Usuario autenticado extraído del token JWT.
+
+    Retorna:
+    --------
+    dict:
+        Diccionario con mensaje de éxito y el ID de la respuesta actualizada.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 403: Si el usuario no está autenticado.
+        - 404: Si la respuesta con el ID dado no existe.
+    """
     if current_user == None:
         raise HTTPException(   
             status_code=status.HTTP_403_FORBIDDEN,
@@ -163,6 +345,32 @@ def update_answer_text(payload: UpdateAnswerText, db: Session = Depends(get_db),
     
 @router.post("/file-serials/")
 def create_file_serial(data: FileSerialCreate, db: Session = Depends(get_db)):
+    """
+    Crea un nuevo serial asociado a una respuesta (`Answer`) existente.
+
+    Este endpoint permite registrar un serial relacionado con una respuesta específica. 
+    Se valida primero que la respuesta exista antes de crear el registro.
+
+    Parámetros:
+    -----------
+    data : FileSerialCreate
+        Objeto que contiene:
+        - `answer_id`: ID de la respuesta asociada.
+        - `serial`: Serial a registrar.
+
+    db : Session
+        Sesión activa de la base de datos proporcionada mediante dependencia.
+
+    Retorna:
+    --------
+    dict:
+        Mensaje de confirmación junto con el ID del nuevo serial creado y su valor.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 404: Si no se encuentra la respuesta asociada (`Answer`).
+    """
     # Verificamos si el answer existe
     answer = db.query(Answer).filter(Answer.id == data.answer_id).first()
     if not answer:
@@ -182,6 +390,22 @@ def create_file_serial(data: FileSerialCreate, db: Session = Depends(get_db)):
     
 @router.post("/file-serials/generate")
 def generate_serial(db: Session = Depends(get_db)):
+    """
+    Genera un serial aleatorio único que no exista previamente en la base de datos.
+
+    Este endpoint utiliza letras mayúsculas y dígitos para construir un serial de longitud fija (por defecto 5).
+    Garantiza unicidad antes de retornarlo.
+
+    Parámetros:
+    -----------
+    db : Session
+        Sesión activa de la base de datos proporcionada por la dependencia.
+
+    Retorna:
+    --------
+    dict:
+        - `serial`: El serial generado que no existe previamente en la base de datos.
+    """
     serial = generate_unique_serial(db)
     return {"serial": serial}
 
@@ -190,6 +414,41 @@ def create_question_filter_condition(
     condition_data: QuestionFilterConditionCreate,
     db: Session = Depends(get_db)
 ):
+    """
+    Crea una nueva condición de filtrado para una pregunta en un formulario.
+
+    Este endpoint permite registrar una regla que evalúa una condición sobre una pregunta determinada
+    y devuelve un subconjunto de respuestas basado en dicha lógica.
+
+    La condición se define con base en:
+    - El formulario (`form_id`)
+    - La pregunta a filtrar (`filtered_question_id`)
+    - La pregunta origen (`source_question_id`)
+    - La pregunta que define la condición (`condition_question_id`)
+    - El operador lógico (`operator`) entre el valor esperado y la respuesta
+    - El valor esperado (`expected_value`)
+
+    Validaciones:
+    -------------
+    - Verifica que no exista previamente una condición con los mismos parámetros antes de crearla.
+
+    Parámetros:
+    -----------
+    - condition_data: `QuestionFilterConditionCreate`
+        Objeto con los datos requeridos para crear la condición.
+    - db: `Session`
+        Sesión activa de la base de datos (inyectada automáticamente por FastAPI).
+
+    Retorna:
+    --------
+    dict:
+        - `message`: Mensaje de éxito.
+        - `id`: ID de la condición recién creada.
+
+    Errores:
+    --------
+    - 400: Si ya existe una condición con los mismos campos.
+    """
     # Verificar si ya existe una condición igual
     existing = db.query(QuestionFilterCondition).filter_by(
         form_id=condition_data.form_id,
@@ -228,6 +487,13 @@ def get_filtered_answers_endpoint(
     filtered_question_id: int,
     db: Session = Depends(get_db)
 ):
+    """
+    Retorna una lista de respuestas válidas filtradas según la condición asociada a la pregunta.
+    
+    - **filtered_question_id**: ID de la pregunta con condición de filtro.
+    - **Returns**: Lista de objetos con respuestas únicas válidas (sin nulos).
+    - **Raises**: HTTP 404 si no existe la condición.
+    """
     condition = db.query(QuestionFilterCondition).filter_by(filtered_question_id=filtered_question_id).first()
     
     if not condition:
@@ -273,6 +539,16 @@ def get_filtered_answers_endpoint(
 
 @router.get("/forms/by_question/{question_id}")
 def get_forms_questions_answers_by_question(question_id: int, db: Session = Depends(get_db)):
+    """
+    Retorna todos los formularios que contienen la pregunta especificada, incluyendo
+    sus preguntas asociadas y respuestas únicas.
+
+    Parámetros:
+    - question_id: ID de la pregunta base.
+
+    Retorna:
+    - Lista de formularios con sus preguntas y respuestas correspondientes.
+    """
     try:
         # Buscar los IDs únicos de formularios que contienen la pregunta
         form_ids = (
@@ -344,6 +620,17 @@ def get_forms_questions_answers_by_question(question_id: int, db: Session = Depe
 
 @router.put("/set_reconsideration/{response_id}")
 def set_reconsideration_true(response_id: int, mensaje_reconsideracion: str, db: Session = Depends(get_db)):
+    """
+    Marca una respuesta como reconsiderada, notifica a todos los aprobadores
+    y envía un correo con los detalles de la solicitud.
+
+    Parámetros:
+    - response_id: ID de la respuesta rechazada.
+    - mensaje_reconsideracion: Mensaje que justifica la solicitud de reconsideración.
+
+    Retorna:
+    - Detalle del proceso de notificación y actualización de aprobaciones.
+    """
     try:
         # Buscar la respuesta por ID
         response = db.query(Response).filter(Response.id == response_id).first()
@@ -467,6 +754,17 @@ def set_reconsideration_true(response_id: int, mensaje_reconsideracion: str, db:
     
 @router.post("/answer-history", status_code=201)
 def create_answer_history(data: AnswerHistoryCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Crea un registro de historial que documenta el cambio de una respuesta anterior a una nueva.
+
+    Parámetros:
+    - data: Objeto con los IDs de la respuesta actual, anterior y del formulario.
+    - db: Sesión de base de datos inyectada automáticamente.
+    - current_user: Usuario autenticado realizando la acción.
+
+    Retorna:
+    - Mensaje de éxito y el ID del historial creado.
+    """
     if current_user == None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -497,7 +795,20 @@ async def create_answers(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Registrar un nuevo Answer"""
+    """
+    Crea una nueva respuesta (`Answer`) asociada a una pregunta específica dentro de una respuesta general (`Response`).
+
+    Parámetros:
+    - response_id: ID de la respuesta general a la que pertenece esta respuesta.
+    - question_id: ID de la pregunta que se está respondiendo.
+    - answer_text: Texto de la respuesta (opcional).
+    - file_path: Ruta del archivo adjunto, si aplica (opcional).
+    - db: Sesión de base de datos inyectada automáticamente.
+    - current_user: Usuario autenticado que realiza la operación.
+
+    Retorna:
+    - Un diccionario con mensaje de éxito e ID del nuevo registro de respuesta.
+    """
     if current_user == None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -539,6 +850,21 @@ async def create_answers(
         )
 @router.put("/update_answer_text/")
 def update_answer_text(data: UpdateAnswertHistory, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Actualiza el contenido de texto (`answer_text`) de una respuesta existente.
+
+    Parámetros:
+    - data: Objeto con el ID de la respuesta y el nuevo texto (modelo `UpdateAnswertHistory`).
+    - db: Sesión de base de datos inyectada automáticamente.
+    - current_user: Usuario autenticado que realiza la operación.
+
+    Retorna:
+    - Un diccionario con un mensaje de éxito, el ID de la respuesta y el texto actualizado.
+
+    Errores:
+    - 403: Si el usuario no está autenticado.
+    - 404: Si no se encuentra la respuesta con el ID especificado.
+    """
     if current_user == None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -565,7 +891,21 @@ async def get_response_with_complete_answers_and_history(
     db: Session = Depends(get_db),
 ):
     """
-    Obtiene todas las respuestas actuales y el historial de un response específico
+    Obtiene todas las respuestas actuales y el historial de cambios de un `response` específico.
+
+    Este endpoint devuelve:
+    - Las respuestas actuales asociadas al `response` (excluyendo aquellas que han sido reemplazadas).
+    - El historial de cambios, incluyendo respuestas anteriores y actuales relacionadas.
+
+    Parámetros:
+    - response_id (int): ID del `response` a consultar.
+    - db (Session): Sesión de base de datos proporcionada por la dependencia.
+
+    Retorna:
+    - Un esquema con información del response, sus respuestas activas y su historial de cambios.
+
+    Errores:
+    - 404: Si el `response` no existe.
     """
 
     # Buscar el response con sus respuestas actuales

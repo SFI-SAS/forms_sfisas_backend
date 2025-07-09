@@ -33,6 +33,31 @@ def generate_nickname(name: str) -> str:
 
 # User CRUD Operations
 def create_user(db: Session, user: UserCreate):
+    """
+    Crea un nuevo usuario en la base de datos.
+
+    Esta función genera un nickname a partir del nombre, encripta la contraseña 
+    (ya debe estar encriptada antes de llamar a esta función), y almacena el nuevo
+    usuario en la base de datos.
+
+    Parámetros:
+    -----------
+    db : Session
+        Sesión activa de la base de datos.
+
+    user : UserCreate
+        Datos del usuario a registrar.
+
+    Retorna:
+    --------
+    User
+        Objeto del usuario recién creado.
+
+    Lanza:
+    ------
+    HTTPException 400:
+        Si el correo electrónico ya está registrado (conflicto de integridad).
+    """
     nickname = generate_nickname(user.name)
     db_user = User(
         num_document=user.num_document,
@@ -280,6 +305,32 @@ def get_questions(db: Session):
     return db.query(Question).all()  # Trae todas las preguntas sin paginación
 
 def update_question(db: Session, question_id: int, question: QuestionUpdate) -> Question:
+    """
+    Actualiza los campos de una pregunta en la base de datos.
+
+    Solo se modifican los campos que están presentes en el objeto `question`.
+
+    Parámetros:
+    -----------
+    db : Session
+        Sesión de base de datos activa.
+
+    question_id : int
+        ID de la pregunta que se desea modificar.
+
+    question : QuestionUpdate
+        Datos nuevos para la pregunta (pueden ser parciales).
+
+    Retorna:
+    --------
+    Question:
+        Instancia actualizada de la pregunta.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 400: Si ocurre un error de integridad al intentar actualizar.
+    """
     try:
         db_question = db.query(Question).filter(Question.id == question_id).first()
         if not db_question:
@@ -343,6 +394,27 @@ def add_questions_to_form(db: Session, form_id: int, question_ids: List[int]):
 
 # Option CRUD Operations
 def create_options(db: Session, options: List[OptionCreate]):
+    """
+    Crea varias opciones de respuesta en la base de datos.
+
+    Parámetros:
+    -----------
+    db : Session
+        Sesión activa de base de datos.
+
+    options : List[OptionCreate]
+        Lista de opciones con datos para ser insertadas en la tabla de opciones.
+
+    Retorna:
+    --------
+    List[Option]:
+        Lista de objetos `Option` creados en la base de datos.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 400: Si ocurre un error al insertar las opciones.
+    """
     try:
         db_options = []
         for option in options:
@@ -383,6 +455,22 @@ def get_answers(db: Session, response_id: int):
     return db.query(Answer).filter(Answer.response_id == response_id).all()
 
 def create_project(db: Session, project_data: ProjectCreate):
+    """
+    Crea un nuevo proyecto en la base de datos.
+
+    Parámetros:
+    -----------
+    db : Session
+        Sesión activa de la base de datos.
+
+    project_data : ProjectCreate
+        Datos del proyecto que se desean crear.
+
+    Retorna:
+    --------
+    Project:
+        Objeto del proyecto recién creado.
+    """
     new_project = Project(**project_data.dict())
     db.add(new_project)
     db.commit()
@@ -390,6 +478,19 @@ def create_project(db: Session, project_data: ProjectCreate):
     return new_project
 
 def get_all_projects(db: Session):
+    """
+    Consulta todos los proyectos registrados en la base de datos.
+
+    Parámetros:
+    -----------
+    db : Session
+        Sesión activa de la base de datos.
+
+    Retorna:
+    --------
+    List[Project]:
+        Lista de instancias del modelo `Project`.
+    """
     return db.query(Project).all()
 
 def delete_project_by_id(db: Session, project_id: int):
@@ -850,6 +951,25 @@ def get_answers_by_question(db: Session, question_id: int):
 
 def get_unrelated_questions(db: Session, form_id: int):
     # Subconsulta para obtener todos los IDs de preguntas relacionadas con el form_id dado
+    """
+    Consulta todas las preguntas que no están relacionadas con un formulario específico.
+
+    Esta función realiza una subconsulta para obtener los `question_id` ya relacionados al formulario,  
+    y luego retorna todas las preguntas que **no** se encuentran en esa lista.
+
+    Parámetros:
+    -----------
+    db : Session
+        Sesión activa de base de datos.
+
+    form_id : int
+        ID del formulario cuyas preguntas no relacionadas se desean obtener.
+
+    Retorna:
+    --------
+    List[Question]:
+        Lista de objetos `Question` no relacionados al formulario especificado.
+    """
     subquery = (
         select(FormQuestion.question_id)
         .where(FormQuestion.form_id == form_id)
@@ -1407,6 +1527,40 @@ def create_question_table_relation_logic(
     related_question_id: Optional[int] = None,
     field_name: Optional[str] = None  # <-- NUEVO
 ) -> QuestionTableRelation:
+    """
+    Lógica para crear una relación entre una pregunta y una tabla externa.
+
+    Esta función verifica que la pregunta (y la relacionada si aplica) existan y que no
+    exista una relación previa. Luego crea la relación usando la tabla y el campo proporcionados.
+
+    Parámetros:
+    -----------
+    db : Session
+        Sesión activa de base de datos.
+
+    question_id : int
+        ID de la pregunta origen.
+
+    name_table : str
+        Nombre de la tabla externa relacionada.
+
+    related_question_id : Optional[int]
+        ID de la pregunta relacionada (opcional).
+
+    field_name : Optional[str]
+        Nombre del campo de la tabla que se usará en la relación (opcional).
+
+    Retorna:
+    --------
+    QuestionTableRelation:
+        Objeto de relación recién creado.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 404: Si no se encuentra la pregunta o la relacionada.
+        - 400: Si ya existe una relación para esta pregunta.
+    """
     
     question = db.query(Question).filter(Question.id == question_id).first()
     if not question:
@@ -1441,6 +1595,37 @@ def create_question_table_relation_logic(
 
 
 def get_related_or_filtered_answers(db: Session, question_id: int):
+    """
+    Obtiene respuestas dinámicas relacionadas o filtradas para una pregunta.
+
+    Lógica:
+    -------
+    1. Si existe una condición en `QuestionFilterCondition`, evalúa cada respuesta del formulario
+       relacionado y filtra según el operador y valor esperado.
+    2. Si no hay condición, revisa si hay una relación con otra pregunta (`related_question_id`).
+    3. Si no hay `related_question_id`, obtiene los datos de una tabla externa (`name_table`)
+       usando un campo específico (`field_name`).
+
+    Parámetros:
+    -----------
+    db : Session
+        Sesión activa de base de datos.
+
+    question_id : int
+        ID de la pregunta para la que se buscan respuestas relacionadas.
+
+    Retorna:
+    --------
+    dict:
+        Diccionario con el origen (`source`) y una lista de valores (`data`) en formato:
+        - {"name": <valor>}
+
+    Lanza:
+    ------
+    HTTPException:
+        - 404: Si no se encuentra relación para la pregunta.
+        - 400: Si la tabla o campo especificado no es válido.
+    """
     # Verificar si existe una condición de filtro
     condition = db.query(QuestionFilterCondition).filter_by(filtered_question_id=question_id).first()
 
@@ -2143,6 +2328,28 @@ def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
     return newly_created_user_ids
 
 def create_response_approval(db: Session, approval_data: ResponseApprovalCreate) -> ResponseApproval:
+    """
+    Lógica para crear y almacenar una nueva aprobación de respuesta en la base de datos.
+
+    Esta función construye una instancia del modelo `ResponseApproval` a partir de los datos proporcionados,
+    la guarda en la base de datos y retorna el objeto creado.
+
+    Parámetros:
+    ----------
+    db : Session
+        Sesión activa de la base de datos.
+    approval_data : ResponseApprovalCreate
+        Datos necesarios para crear el objeto `ResponseApproval`.
+
+    Retorna:
+    -------
+    ResponseApproval
+        Objeto persistido con los datos de aprobación.
+
+    Excepciones:
+    -----------
+    Cualquier excepción lanzada durante el proceso será manejada por la función que la invoca.
+    """
     new_approval = ResponseApproval(**approval_data.model_dump())
     db.add(new_approval)
     db.commit()
@@ -2151,6 +2358,30 @@ def create_response_approval(db: Session, approval_data: ResponseApprovalCreate)
 
 
 def get_forms_pending_approval_for_user(user_id: int, db: Session):
+    """
+    Recupera los formularios y respuestas que requieren aprobación por parte de un usuario específico.
+
+    Esta función consulta las aprobaciones asignadas al usuario, valida que sea su turno 
+    (es decir, que los aprobadores anteriores obligatorios ya hayan aprobado) 
+    y construye una estructura de datos con toda la información relevante de las respuestas y sus aprobadores.
+
+    Parámetros:
+    ----------
+    user_id : int
+        ID del usuario autenticado.
+    db : Session
+        Sesión activa de la base de datos.
+
+    Retorna:
+    -------
+    List[Dict]
+        Una lista de objetos con la siguiente información:
+        - Datos del formulario (ID, título, descripción, diseño).
+        - Información del usuario que respondió.
+        - Respuestas por pregunta (texto, archivo si aplica).
+        - Estado de aprobación del usuario actual.
+        - Estado de todos los aprobadores del flujo.
+    """
     results = []
 
     form_approvals = (
@@ -2729,6 +2960,54 @@ async def update_response_approval_status(
     current_user,
     request
 ):
+    """
+    Lógica principal para actualizar el estado de una aprobación de respuesta y realizar
+    acciones relacionadas como notificaciones, verificación de flujos y envío de correos.
+
+    Flujo general:
+    --------------
+    1. Busca el registro de `ResponseApproval` correspondiente.
+    2. Actualiza su estado (aprobado o rechazado).
+    3. Si es una aprobación, verifica si deben activarse las siguientes aprobaciones.
+    4. Si todos los aprobadores (obligatorios y opcionales) han aprobado, finaliza el proceso.
+    5. Envía correos a usuarios interesados según su configuración de notificación.
+
+    Parámetros:
+    ----------
+    response_id : int
+        ID de la respuesta a la cual está asociada la aprobación.
+
+    update_data : UpdateResponseApprovalRequest
+        Objeto con los nuevos valores para la aprobación.
+
+    user_id : int
+        ID del usuario que realiza la aprobación.
+
+    db : Session
+        Sesión activa de base de datos.
+
+    current_user : User
+        Usuario autenticado que realiza la solicitud.
+
+    request : Request
+        Objeto de solicitud, útil para URLs completas o cabeceras.
+
+    Retorna:
+    -------
+    ResponseApproval
+        Objeto actualizado de aprobación de respuesta.
+
+    Lanza:
+    ------
+    HTTPException 404:
+        Si no se encuentra el `ResponseApproval` correspondiente.
+
+    Efectos adicionales:
+    --------------------
+    - Envía correo al siguiente aprobador (si aplica).
+    - Envía correo al creador del formulario si se finaliza el proceso.
+    - Envía notificaciones a usuarios registrados según el evento configurado.
+    """
     # 1. Buscar el ResponseApproval correspondiente
     response_approval = db.query(ResponseApproval).filter(
         ResponseApproval.response_id == response_id,
@@ -2987,6 +3266,36 @@ def get_response_approval_status(response_approvals: list) -> dict:
     }
 
 def get_form_with_full_responses(form_id: int, db: Session):
+    """
+    Recupera todos los detalles de un formulario con sus preguntas, respuestas, historial de respuestas
+    y estado de aprobación para cada una.
+
+    Parámetros:
+    ----------
+    form_id : int
+        ID del formulario a consultar.
+
+    db : Session
+        Sesión activa de la base de datos.
+
+    Retorna:
+    -------
+    dict
+        Estructura detallada del formulario con:
+        - form_id, título y descripción.
+        - Lista de preguntas (id, texto, tipo).
+        - Lista de respuestas con:
+            - Datos del usuario que respondió.
+            - Fecha de envío.
+            - Respuestas por pregunta.
+            - Estado de aprobación general.
+        - Historial de cambios en respuestas (si existen).
+
+    Notas:
+    ------
+    - Se excluyen respuestas históricas (`previous_answer_id`) para evitar duplicidad.
+    - Se utiliza `joinedload` para mejorar eficiencia en la carga de datos relacionados.
+    """
     form = db.query(Form).options(
         joinedload(Form.questions),
         joinedload(Form.responses).joinedload(Response.user),
@@ -3091,6 +3400,34 @@ def get_form_with_full_responses(form_id: int, db: Session):
 
 
 def update_form_design_service(db: Session, form_id: int, design_data: List[Dict[str, Any]]):
+    """
+    Lógica de base de datos para actualizar el diseño de un formulario.
+
+    Esta función reemplaza por completo el campo `form_design` del formulario con el nuevo
+    diseño recibido, que debe ser una lista de objetos JSON.
+
+    Parámetros:
+    -----------
+    db : Session
+        Sesión activa de base de datos.
+
+    form_id : int
+        ID del formulario que se desea actualizar.
+
+    design_data : List[Dict[str, Any]]
+        Nueva estructura de diseño a guardar. Puede incluir posiciones, tipos de campos,
+        estilos u orden personalizado.
+
+    Retorna:
+    --------
+    Form
+        Objeto del formulario actualizado.
+
+    Lanza:
+    ------
+    HTTPException 404:
+        Si el formulario no existe.
+    """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Form not found")
@@ -3104,6 +3441,31 @@ def update_form_design_service(db: Session, form_id: int, design_data: List[Dict
 
 def get_notifications_for_form(form_id: int, db: Session):
     # Verifica si el formulario existe
+    """
+    Recupera las notificaciones configuradas para un formulario específico.
+
+    Esta función consulta en la base de datos todas las notificaciones asociadas 
+    a un formulario a través del modelo `FormApprovalNotification`. Además, incluye 
+    la información del usuario asignado a cada notificación.
+
+    Parámetros:
+    -----------
+    form_id : int
+        ID del formulario para el cual se desean obtener las notificaciones.
+
+    db : Session
+        Objeto de sesión SQLAlchemy utilizado para interactuar con la base de datos.
+
+    Retorna:
+    --------
+    List[NotificationResponse]
+        Lista de notificaciones configuradas, cada una con su usuario relacionado.
+
+    Lanza:
+    ------
+    HTTPException 404:
+        Si el formulario con el `form_id` especificado no existe en la base de datos.
+    """
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Formulario no encontrado.")
@@ -3159,6 +3521,7 @@ def update_notification_status(notification_id: int, notify_on: str, db: Session
     db.refresh(notification)
 
     return notification
+
 def delete_form(db: Session, form_id: int):
     """
     Elimina un formulario y todos sus registros relacionados, incluyendo respuestas si existen.

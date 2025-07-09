@@ -8,7 +8,12 @@ from app.api.endpoints import pdf_router, projects, responses, users, forms, aut
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
-app = FastAPI()
+app = FastAPI(
+    title="Safemetrics Forms API",
+    version="1.0.0",
+    description="API para gestión de formularios",
+    openapi_version="3.1.0"  # o "3.0.3" si prefieres
+)
 
 origins = ["*"]
 

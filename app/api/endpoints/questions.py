@@ -15,6 +15,38 @@ def create_question_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    """
+    Crea una nueva pregunta en el sistema.
+
+    Solo los usuarios con rol de **administrador** pueden crear preguntas.  
+    Este endpoint guarda una nueva pregunta en la base de datos, incluyendo el texto, tipo y configuración.
+
+    Parámetros:
+    -----------
+    question : QuestionCreate
+        Objeto con los datos de la nueva pregunta:
+        - `question_text` (str): Texto de la pregunta.
+        - `question_type` (str): Tipo de pregunta (por ejemplo: "text", "select").
+        - `required` (bool): Si la pregunta es obligatoria o no.
+        - `root` (bool): Si la pregunta es una pregunta raíz o no.
+
+    db : Session
+        Sesión de base de datos proporcionada por la dependencia `get_db`.
+
+    current_user : User
+        Usuario autenticado, extraído mediante `get_current_user`.
+
+    Retorna:
+    --------
+    QuestionResponse:
+        Objeto con los datos de la pregunta creada.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 403: Si el usuario no tiene permisos para crear preguntas.
+        - 400: Si ocurre un error de integridad al guardar la pregunta.
+    """
     # Restringir la creación de preguntas solo a usuarios permitidos (e.g., admin)
     if current_user.user_type.name != UserType.admin.name:
         raise HTTPException(
@@ -30,6 +62,42 @@ def update_question_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    """
+    Actualiza una pregunta existente en el sistema.
+
+    Solo los usuarios con rol de **administrador** pueden modificar preguntas.  
+    Este endpoint permite actualizar uno o más campos de una pregunta existente, como su texto, tipo o si es obligatoria.
+
+    Parámetros:
+    -----------
+    question_id : int
+        ID de la pregunta que se desea actualizar.
+
+    question : QuestionUpdate
+        Objeto con los nuevos datos de la pregunta. Solo se actualizarán los campos proporcionados:
+        - `question_text` (str, opcional): Nuevo texto de la pregunta.
+        - `question_type` (str, opcional): Nuevo tipo de pregunta.
+        - `required` (bool, opcional): Nuevo valor que indica si es obligatoria.
+        - `root` (bool, opcional): Nuevo valor que indica si es pregunta raíz.
+
+    db : Session
+        Sesión de base de datos proporcionada por la dependencia `get_db`.
+
+    current_user : User
+        Usuario autenticado, extraído mediante `get_current_user`.
+
+    Retorna:
+    --------
+    QuestionResponse:
+        Objeto con los datos actualizados de la pregunta.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 403: Si el usuario no tiene permisos para actualizar preguntas.
+        - 404: Si la pregunta con el ID especificado no existe.
+        - 400: Si ocurre un error de integridad al actualizar la pregunta.
+    """
     # Restringir la actualización de preguntas solo a usuarios permitidos (e.g., admin)
     if current_user.user_type.name != UserType.admin.name:
         raise HTTPException(
@@ -48,6 +116,30 @@ def get_all_questions(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    """
+    Obtiene todas las preguntas registradas en el sistema.
+
+    Este endpoint permite recuperar una lista de todas las preguntas disponibles en la base de datos.  
+    El usuario debe estar autenticado para poder acceder a esta información.
+
+    Parámetros:
+    -----------
+    db : Session
+        Sesión de base de datos proporcionada por la dependencia `get_db`.
+
+    current_user : User
+        Usuario autenticado, extraído mediante `get_current_user`.
+
+    Retorna:
+    --------
+    List[QuestionResponse]:
+        Lista de objetos que representan las preguntas almacenadas.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 403: Si el usuario no está autenticado.
+    """
     if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -61,6 +153,36 @@ def get_all_questions(
     
 @router.post("/options/", response_model=List[OptionResponse])
 def create_multiple_options(options: List[OptionCreate], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Crea múltiples opciones para una o varias preguntas.
+
+    Este endpoint permite crear varias opciones de respuesta asociadas a preguntas existentes.  
+    El usuario debe estar autenticado para realizar esta operación.
+
+    Parámetros:
+    -----------
+    options : List[OptionCreate]
+        Lista de objetos con los datos de cada opción a crear:
+        - `question_id` (int): ID de la pregunta a la que pertenece la opción.
+        - `option_text` (str): Texto de la opción.
+
+    db : Session
+        Sesión activa de la base de datos proporcionada por la dependencia `get_db`.
+
+    current_user : User
+        Usuario autenticado mediante `get_current_user`.
+
+    Retorna:
+    --------
+    List[OptionResponse]:
+        Lista con las opciones creadas exitosamente.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 403: Si el usuario no está autenticado.
+        - 400: Si ocurre un error de integridad al crear las opciones.
+    """
     if current_user == None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -71,6 +193,33 @@ def create_multiple_options(options: List[OptionCreate], db: Session = Depends(g
 
 @router.get("/options/{question_id}", response_model=List[OptionResponse])
 def read_options_by_question(question_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Obtiene todas las opciones asociadas a una pregunta específica.
+
+    Este endpoint permite recuperar la lista de opciones de respuesta vinculadas a una pregunta determinada por su ID.  
+    El usuario debe estar autenticado para acceder a esta información.
+
+    Parámetros:
+    -----------
+    question_id : int
+        ID de la pregunta de la cual se desean obtener las opciones.
+
+    db : Session
+        Sesión activa de la base de datos, inyectada mediante la dependencia `get_db`.
+
+    current_user : User
+        Usuario autenticado mediante la dependencia `get_current_user`.
+
+    Retorna:
+    --------
+    List[OptionResponse]:
+        Lista de opciones asociadas a la pregunta especificada.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 403: Si el usuario no está autenticado.
+    """
     if current_user == None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -81,6 +230,33 @@ def read_options_by_question(question_id: int, db: Session = Depends(get_db), cu
 
 @router.delete("/delete/{question_id}")
 def delete_question(question_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Elimina una pregunta y todas sus relaciones en cascada.
+
+    Este endpoint permite eliminar una pregunta del sistema junto con todas sus dependencias, como respuestas, opciones, relaciones y filtros.  
+    El usuario debe estar autenticado para ejecutar esta operación.
+
+    Parámetros:
+    -----------
+    question_id : int
+        ID de la pregunta que se desea eliminar.
+
+    db : Session
+        Sesión activa de la base de datos proporcionada por `get_db`.
+
+    current_user : User
+        Usuario autenticado mediante `get_current_user`.
+
+    Retorna:
+    --------
+    dict:
+        Mensaje de confirmación o resultado de la operación.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 403: Si el usuario no está autenticado.
+    """
     if current_user == None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -92,6 +268,34 @@ def delete_question(question_id: int, db: Session = Depends(get_db), current_use
 
 @router.get("/{question_id}/answers", response_model=List[AnswerSchema])
 def get_question_answers(question_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Obtiene todas las respuestas asociadas a una pregunta específica.
+
+    Este endpoint permite recuperar las respuestas que han sido registradas para una pregunta específica,
+    identificada por su `question_id`. El usuario debe estar autenticado para acceder a la información.
+
+    Parámetros:
+    -----------
+    question_id : int
+        ID de la pregunta cuyas respuestas se desean consultar.
+
+    db : Session
+        Sesión activa de base de datos, proporcionada por `get_db`.
+
+    current_user : User
+        Usuario autenticado mediante `get_current_user`.
+
+    Retorna:
+    --------
+    List[AnswerSchema]:
+        Lista de respuestas correspondientes a la pregunta.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 403: Si el usuario no está autenticado.
+        - 403: Si ocurre un error o no se encuentran respuestas (se podría cambiar a 404 si prefieres más precisión).
+    """
     try:
         if current_user == None:
             raise HTTPException(
@@ -110,6 +314,25 @@ def get_question_answers(question_id: int, db: Session = Depends(get_db), curren
         
 @router.get("/unrelated_questions/{form_id}")
 def get_unrelated_questions_endpoint(form_id: int, db: Session = Depends(get_db)):
+    """
+    Obtiene todas las preguntas que no están relacionadas con un formulario específico.
+
+    Este endpoint devuelve una lista de preguntas que aún no están asociadas al formulario con el `form_id` proporcionado.  
+    Es útil para agregar nuevas preguntas a un formulario sin duplicar las ya relacionadas.
+
+    Parámetros:
+    -----------
+    form_id : int
+        ID del formulario al que se desea buscar preguntas no relacionadas.
+
+    db : Session
+        Sesión activa de base de datos proporcionada por la dependencia `get_db`.
+
+    Retorna:
+    --------
+    List[Question]:
+        Lista de preguntas que no están asociadas al formulario indicado.
+    """
     unrelated_questions = get_unrelated_questions(db, form_id)
     return unrelated_questions
 
@@ -117,7 +340,37 @@ def get_unrelated_questions_endpoint(form_id: int, db: Session = Depends(get_db)
 
 @router.get("/filtered")
 def fetch_filtered_questions(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """Endpoint para obtener preguntas filtradas"""
+    """
+    Obtiene preguntas raíz, sus respuestas únicas y formularios no raíz asignados al usuario.
+
+    Este endpoint devuelve:
+    - Preguntas donde `root=True`.
+    - Respuestas únicas asociadas a esas preguntas.
+    - Formularios donde `is_root=False` y que estén asignados al usuario autenticado.
+
+    El usuario debe estar autenticado para acceder a este recurso.
+
+    Parámetros:
+    -----------
+    db : Session
+        Sesión activa de la base de datos.
+
+    current_user : User
+        Usuario autenticado extraído mediante la dependencia `get_current_user`.
+
+    Retorna:
+    --------
+    dict:
+        Un diccionario con:
+        - `default_questions`: Lista de preguntas raíz (`root=True`).
+        - `answers`: Diccionario con respuestas únicas agrupadas por pregunta.
+        - `non_root_forms`: Lista de formularios asignados al usuario (`is_root=False`).
+
+    Lanza:
+    ------
+    HTTPException:
+        - 403: Si el usuario no está autenticado.
+    """
     if current_user == None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -133,6 +386,36 @@ def create_question_table_relation(
     relation_data: QuestionTableRelationCreate,
     db: Session = Depends(get_db)
 ):
+    """
+    Crea una relación entre una pregunta y una tabla externa.
+
+    Este endpoint permite establecer una relación entre una pregunta y una tabla externa
+    (por ejemplo, para cargar datos dinámicamente) mediante un campo específico.
+    Opcionalmente, también puede relacionarse con otra pregunta.
+
+    Parámetros:
+    -----------
+    relation_data : QuestionTableRelationCreate
+        Objeto con la información necesaria para crear la relación:
+        - `question_id` (int): ID de la pregunta origen.
+        - `name_table` (str): Nombre de la tabla relacionada.
+        - `related_question_id` (Optional[int]): ID de la pregunta relacionada (si aplica).
+        - `field_name` (Optional[str]): Campo específico que se utilizará en la relación.
+
+    db : Session
+        Sesión activa de base de datos proporcionada por la dependencia `get_db`.
+
+    Retorna:
+    --------
+    dict:
+        Diccionario con un mensaje de éxito y los datos de la relación creada.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 404: Si no se encuentra la pregunta o la pregunta relacionada.
+        - 400: Si ya existe una relación para la pregunta dada.
+    """
     relation = create_question_table_relation_logic(
         db=db,
         question_id=relation_data.question_id,
@@ -155,6 +438,38 @@ def create_question_table_relation(
     
 @router.get("/question-table-relation/answers/{question_id}")
 def get_related_answers(question_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Obtiene respuestas dinámicas relacionadas o filtradas para una pregunta específica.
+
+    Este endpoint verifica si una pregunta tiene una condición de filtro (`QuestionFilterCondition`)
+    o una relación con otra pregunta o una tabla externa (`QuestionTableRelation`).
+    Dependiendo de eso, retorna las respuestas correspondientes.
+
+    Parámetros:
+    -----------
+    question_id : int
+        ID de la pregunta para la que se buscan respuestas relacionadas o filtradas.
+
+    db : Session
+        Sesión activa de base de datos proporcionada por `get_db`.
+
+    current_user : User
+        Usuario autenticado requerido para acceder al recurso.
+
+    Retorna:
+    --------
+    dict:
+        Diccionario con los campos:
+        - `source` (str): origen de los datos (`condicion_filtrada`, `pregunta_relacionada`, `usuarios`, etc.).
+        - `data` (List[dict]): lista de respuestas con el campo `name`.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 403: Si el usuario no está autenticado.
+        - 404: Si no se encuentra relación para la pregunta.
+        - 400: Si la tabla o campo especificado no es válido.
+    """
     if current_user == None:
         raise HTTPException(   
             status_code=status.HTTP_403_FORBIDDEN,
@@ -169,6 +484,35 @@ def create_location_relation(
     relation: QuestionLocationRelationCreate,
     db: Session = Depends(get_db)
 ):
+    """
+    Crea una relación de ubicación entre dos preguntas dentro de un formulario.
+
+    Este endpoint permite registrar una relación entre una pregunta origen y una pregunta destino
+    dentro de un formulario específico. Sirve para vincular campos que representan ubicaciones
+    geográficas o dependencias entre preguntas.
+
+    Parámetros:
+    -----------
+    relation : QuestionLocationRelationCreate
+        Objeto con los datos necesarios para crear la relación:
+        - `form_id` (int): ID del formulario donde se establece la relación.
+        - `origin_question_id` (int): ID de la pregunta origen (por ejemplo, departamento).
+        - `target_question_id` (int): ID de la pregunta destino (por ejemplo, municipio).
+
+    db : Session
+        Sesión de base de datos proporcionada por la dependencia `get_db`.
+
+    Retorna:
+    --------
+    dict:
+        - `message`: Mensaje de confirmación.
+        - `id`: ID de la relación creada.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 400: Si ya existe una relación con los mismos `form_id`, `origin_question_id` y `target_question_id`.
+    """
     # Validación opcional: evita duplicados exactos
     existing = db.query(QuestionLocationRelation).filter_by(
         form_id=relation.form_id,
@@ -192,6 +536,25 @@ def create_location_relation(
 
 @router.get("/location-relation/{form_id}", response_model=List[QuestionLocationRelationOut])
 def get_location_relations_by_form_id(form_id: int, db: Session = Depends(get_db)):
+    """
+    Obtiene las relaciones de ubicación asociadas a un formulario específico.
+
+    Este endpoint retorna todas las relaciones entre preguntas de ubicación (por ejemplo, 
+    departamento → municipio) registradas para un formulario dado.
+
+    Parámetros:
+    -----------
+    form_id : int
+        ID del formulario del cual se desean obtener las relaciones de ubicación.
+
+    db : Session
+        Sesión activa de la base de datos proporcionada por la dependencia `get_db`.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 404: Si no se encuentran relaciones para el formulario especificado.
+    """
     relations = db.query(QuestionLocationRelation).filter_by(form_id=form_id).all()
 
     if not relations:
