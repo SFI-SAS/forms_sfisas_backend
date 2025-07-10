@@ -573,14 +573,14 @@ class QuestionCategoryOut(BaseModel):
     name: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
         
 class CategorySchema(BaseModel):
     id: int
     name: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 class QuestionWithCategory(BaseModel):
@@ -592,7 +592,7 @@ class QuestionWithCategory(BaseModel):
     category: CategorySchema | None  # o directamente Optional[CategorySchema]
 
     class Config:
-        orm_mode = True
+        from_attributes = True
         
 class UpdateQuestionCategory(BaseModel):
     id_category: int | None
@@ -605,7 +605,7 @@ class UserCategoryResponse(BaseModel):
     name: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class UpdateUserCategory(BaseModel):
     id_category: Optional[int] = None
