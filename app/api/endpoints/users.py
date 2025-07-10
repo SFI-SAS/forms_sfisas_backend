@@ -762,7 +762,7 @@ def list_all_user_categories(db: Session = Depends(get_db), current_user: User =
     if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tienes permiso para actualizar la categoría de un usuario"
+            detail="No tienes permiso"
         )
     return get_all_user_categories(db)
 
@@ -775,7 +775,7 @@ def delete_user_category(category_id: int, db: Session = Depends(get_db),current
         )
     return delete_user_category_by_id(db, category_id)
 
-@router.put("/{user_id}/category")
+@router.put("update_user_category/{user_id}/category")
 def update_user_category(
     user_id: int,
     category_data: UpdateUserCategory,

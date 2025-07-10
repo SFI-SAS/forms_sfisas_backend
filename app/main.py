@@ -15,24 +15,24 @@ app = FastAPI(
     openapi_version="3.1.0"  # o "3.0.3" si prefieres
 )
 
-# origins = ["*"]
-
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=origins,
-#     allow_credentials=True,
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
-origins = ["https://forms.sfisas.com.co"]
+origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://forms.sfisas.com.co"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# origins = ["https://forms.sfisas.com.co"]
+
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["https://forms.sfisas.com.co"],
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
 
 
 templates_env = Environment(loader=FileSystemLoader("app/api/templates"))

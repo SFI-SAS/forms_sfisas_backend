@@ -891,10 +891,10 @@ def create_form_schedule(
 
 
 def fetch_all_users(db: Session):
-    """Función para obtener todos los usuarios de la base de datos."""
-    stmt = select(User)
-    result = db.execute(stmt)  # No usar `await`
-    users = result.scalars().all()  # No usar `await`
+    """Función para obtener todos los usuarios con su categoría."""
+    stmt = select(User).options(joinedload(User.category))
+    result = db.execute(stmt)
+    users = result.scalars().all()
 
     if not users:
         raise HTTPException(status_code=404, detail="No se encontraron usuarios")
@@ -1850,44 +1850,44 @@ def generate_random_password(length=10):
 def create_user_with_random_password(db: Session, user: UserBaseCreate) -> User:
     password = generate_random_password()
     hashed = hash_password(password)
-
+    
     user_data = UserCreate(
         num_document=user.num_document,
         name=user.name,
         email=user.email,
         telephone=user.telephone,
         password=hashed,
+        id_category=user.id_category  # Incluir categoría
     )
-
+    
     nickname = generate_nickname(user.name)
-
+    
     db_user = User(
         num_document=user_data.num_document,
         name=user_data.name,
         email=user_data.email,
         telephone=user_data.telephone,
         password=user_data.password,
-        nickname=nickname
+        nickname=nickname,
+        id_category=user_data.id_category  # Asignar categoría
     )
-
+    
     try:
         db.add(db_user)
         db.commit()
         db.refresh(db_user)
-
+        
         # Enviar correo con contraseña generada
         send_welcome_email(db_user.email, db_user.name, password)
-
+        
         return db_user
-
+        
     except IntegrityError:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
         )
-        
-
 
 def get_user_by_document(db: Session, num_document: str):
     return db.query(models.User).filter(models.User.num_document == num_document).first()

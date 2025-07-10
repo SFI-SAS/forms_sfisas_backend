@@ -26,7 +26,8 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str = Field(..., min_length=8, example="securepassword")
-
+    id_category: Optional[int] = Field(None, example=1)
+    
 class UserResponse(UserBase):
     id: int
 
@@ -238,6 +239,7 @@ class UserBaseCreate(BaseModel):
     name: str
     email: EmailStr
     telephone: str
+    id_category: Optional[int] = None 
     
 class UpdateAnswerText(BaseModel):
     id: int
