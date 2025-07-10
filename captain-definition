@@ -1,7 +1,7 @@
 {
 "schemaVersion": 2,
 "dockerfileLines": [
-"FROM python:3.12",
+"FROM python:3.12-slim",
 "ARG ALGORITHM",
 "ARG AWS_ACCESS_KEY_ID",
 "ARG AWS_DEFAULT_REGION",
@@ -42,10 +42,12 @@
 "ENV MAIL_PORT_ALT=$MAIL_PORT_ALT",
 "ENV MAIL_USERNAME_ALT=$MAIL_USERNAME_ALT",
 "ENV RECAPTCHA_SECRET_KEY=$RECAPTCHA_SECRET_KEY",
+"ENV PYTHONDONTWRITEBYTECODE=1",
+"ENV PYTHONUNBUFFERED=1",
 "WORKDIR /app",
 "COPY requirements.txt .",
 "RUN pip install --no-cache-dir -r requirements.txt",
 "COPY . .",
-"CMD [ \"fastapi\", \"run\"]"
+"CMD [\"uvicorn\", \"main:app\", \"--host\", \"0.0.0.0\", \"--port\", \"8000\", \"--workers\", \"1\"]"
 ]
 }
