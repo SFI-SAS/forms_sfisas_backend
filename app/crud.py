@@ -10,8 +10,8 @@ from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormCloseConfig, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion
-from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormCloseConfig, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
@@ -3944,4 +3944,31 @@ def process_responses_with_history(responses: List[Response], db: Session) -> Li
     return result
 
 
+def create_user_category(db: Session, category: UserCategoryCreate):
+    try:
+        new_category = UserCategory(name=category.name)
+        db.add(new_category)
+        db.commit()
+        db.refresh(new_category)
+        return new_category
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La categoría ya existe."
+        )
 
+def get_all_user_categories(db: Session):
+    return db.query(UserCategory).order_by(UserCategory.name).all()
+
+
+def delete_user_category_by_id(db: Session, category_id: int):
+    category = db.query(UserCategory).filter(UserCategory.id == category_id).first()
+    if not category:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Categoría no encontrada"
+        )
+    db.delete(category)
+    db.commit()
+    return {"message": "Categoría eliminada correctamente"}

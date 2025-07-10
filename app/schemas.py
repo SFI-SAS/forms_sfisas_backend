@@ -596,3 +596,16 @@ class QuestionWithCategory(BaseModel):
         
 class UpdateQuestionCategory(BaseModel):
     id_category: int | None
+    
+class UserCategoryCreate(BaseModel):
+    name: str
+
+class UserCategoryResponse(BaseModel):
+    id: int
+    name: str
+
+    class Config:
+        orm_mode = True
+
+class UpdateUserCategory(BaseModel):
+    id_category: Optional[int] = None

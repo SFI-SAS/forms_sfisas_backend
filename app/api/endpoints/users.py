@@ -8,9 +8,9 @@ from app import models
 from app.api.controllers.mail import send_welcome_email
 from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.database import get_db
-from app.models import EmailConfig, User, UserType
-from app.crud import create_email_config, create_user, create_user_with_random_password, fetch_all_users, get_all_email_configs, get_response_details_logic, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
-from app.schemas import EmailConfigCreate, EmailConfigResponse, EmailConfigUpdate, EmailStatusUpdate, UserBaseCreate, UserCreate, UserResponse, UserUpdate, UserUpdateInfo
+from app.models import EmailConfig, User, UserCategory, UserType
+from app.crud import create_email_config, create_user, create_user_category, create_user_with_random_password, delete_user_category_by_id, fetch_all_users, get_all_email_configs, get_all_user_categories, get_response_details_logic, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
+from app.schemas import EmailConfigCreate, EmailConfigResponse, EmailConfigUpdate, EmailStatusUpdate, UpdateUserCategory, UserBaseCreate, UserCategoryCreate, UserCategoryResponse, UserCreate, UserResponse, UserUpdate, UserUpdateInfo
 from app.core.security import get_current_user, hash_password
 
 router = APIRouter()
@@ -743,3 +743,66 @@ def send_email(data: WelcomeEmailRequest):
     if not success:
         raise HTTPException(status_code=500, detail="No se pudo enviar el correo")
     return {"message": f"Correo enviado a {data.email}"}
+
+
+@router.post("/create_category", response_model=UserCategoryResponse, status_code=status.HTTP_201_CREATED)
+def create_category_endpoint(
+    category: UserCategoryCreate,
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para actualizar la categoría de un usuario"
+        )
+    return create_user_category(db, category)
+
+@router.get("/list_all_user", response_model=List[UserCategoryResponse])
+def list_all_user_categories(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para actualizar la categoría de un usuario"
+        )
+    return get_all_user_categories(db)
+
+@router.delete("delete_user_category/{category_id}", status_code=status.HTTP_200_OK)
+def delete_user_category(category_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para actualizar la categoría de un usuario"
+        )
+    return delete_user_category_by_id(db, category_id)
+
+@router.put("/{user_id}/category")
+def update_user_category(
+    user_id: int,
+    category_data: UpdateUserCategory,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para actualizar la categoría de un usuario"
+        )
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if category_data.id_category is not None:
+        category = db.query(UserCategory).filter(UserCategory.id == category_data.id_category).first()
+        if not category:
+            raise HTTPException(status_code=404, detail="Categoría no encontrada")
+
+    user.id_category = category_data.id_category
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": "Categoría actualizada correctamente",
+        "user_id": user.id,
+        "new_category_id": user.id_category
+    }

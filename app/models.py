@@ -51,12 +51,24 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False)
     telephone = Column(String(20), nullable=False)
     user_type = Column(Enum(UserType), default=UserType.user, nullable=False)
-    nickname = Column(String(100), nullable=True)  # Nuevo campo agregado
+    nickname = Column(String(100), nullable=True)
     password = Column(Text, nullable=False)
-    
+
+    id_category = Column(BigInteger, ForeignKey('user_categories.id'), nullable=True)  # <-- nuevo campo
+    category = relationship("UserCategory", back_populates="users")  # <-- relación
+
+    # Relaciones existentes
     form_moderators = relationship('FormModerators', back_populates='user')
     forms = relationship('Form', back_populates='user')
-    responses = relationship('Response', back_populates='user')  # Corrige esto si tienes definida la tabla Response
+    responses = relationship('Response', back_populates='user')
+
+class UserCategory(Base):
+    __tablename__ = 'user_categories'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False, unique=True)
+
+    users = relationship("User", back_populates="category")
 
 # Modelo Forms
 class Form(Base):
