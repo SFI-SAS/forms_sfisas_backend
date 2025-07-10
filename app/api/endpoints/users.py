@@ -757,7 +757,7 @@ def create_category_endpoint(
         )
     return create_user_category(db, category)
 
-@router.get("/list_all_user", response_model=List[UserCategoryResponse])
+@router.get("/list_all_user/categories", response_model=List[UserCategoryResponse])
 def list_all_user_categories(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if current_user is None:
         raise HTTPException(
@@ -766,7 +766,7 @@ def list_all_user_categories(db: Session = Depends(get_db), current_user: User =
         )
     return get_all_user_categories(db)
 
-@router.delete("delete_user_category/{category_id}", status_code=status.HTTP_200_OK)
+@router.delete("/delete_user_category/{category_id}", status_code=status.HTTP_200_OK)
 def delete_user_category(category_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
     if current_user is None:
         raise HTTPException(
