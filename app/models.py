@@ -84,15 +84,27 @@ class Question(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     question_text = Column(String(255), nullable=False)
     question_type = Column(Enum(QuestionType), server_default=QuestionType.text.name, nullable=False)
-    required = Column(Boolean, nullable=False, server_default=text("1"))  # Solución aquí
+    required = Column(Boolean, nullable=False, server_default=text("1"))
     root = Column(Boolean, nullable=False, server_default=text("0"))
 
+    id_category = Column(BigInteger, ForeignKey('question_categories.id'), nullable=True)
 
+    # Relaciones
+    category = relationship('QuestionCategory', back_populates='questions')
     forms = relationship('Form', secondary='form_questions', back_populates='questions')
     options = relationship('Option', back_populates='question')
     answers = relationship('Answer', back_populates='question')
-    form_answers = relationship('FormAnswer', back_populates='question') 
+    form_answers = relationship('FormAnswer', back_populates='question')
 # Tabla intermedia para la relación muchos a muchos entre Form y Question
+
+class QuestionCategory(Base):
+    __tablename__ = 'question_categories'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False, unique=True)
+
+    questions = relationship('Question', back_populates='category')
+    
 class FormQuestion(Base):
     __tablename__ = 'form_questions'
     

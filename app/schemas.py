@@ -58,11 +58,21 @@ class QuestionBase(BaseModel):
     question_type: str = Field(..., example="multiple_choice")
     required: bool = Field(..., example=True) 
     root:bool =  Field(..., example=True) 
+    id_category: Optional[int] = None
 
+
+class QuestionBaseAll(BaseModel):
+    question_text: str = Field(..., example="What is your favorite color?")
+    question_type: str = Field(..., example="multiple_choice")
+    required: bool = Field(..., example=True) 
+    root:bool =  Field(..., example=True)
+    id_category: int | None = None
+    
+    
 class QuestionCreate(QuestionBase):
     pass # Allow creation without assignment
 
-class QuestionResponse(QuestionBase):
+class QuestionResponse(QuestionBaseAll):
     id: int
     
     class Config:
@@ -553,3 +563,36 @@ class QuestionLocationRelationOut(BaseModel):
 
     class Config:
         from_attributes = True
+        
+        
+class QuestionCategoryCreate(BaseModel):
+    name: str
+    
+class QuestionCategoryOut(BaseModel):
+    id: int
+    name: str
+
+    class Config:
+        orm_mode = True
+        
+class CategorySchema(BaseModel):
+    id: int
+    name: str
+
+    class Config:
+        orm_mode = True
+
+
+class QuestionWithCategory(BaseModel):
+    id: int
+    question_text: str
+    question_type: str
+    required: bool
+    root: bool
+    category: CategorySchema | None  # o directamente Optional[CategorySchema]
+
+    class Config:
+        orm_mode = True
+        
+class UpdateQuestionCategory(BaseModel):
+    id_category: int | None

@@ -2,9 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
-from app.models import QuestionLocationRelation, User, UserType
+from app.models import Question, QuestionCategory, QuestionLocationRelation, User, UserType
 from app.crud import create_question, create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_filtered_questions, get_related_or_filtered_answers, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
-from app.schemas import AnswerSchema, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate
+from app.schemas import AnswerSchema, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionWithCategory, UpdateQuestionCategory
 from app.core.security import get_current_user
 
 router = APIRouter()
@@ -111,7 +111,7 @@ def update_question_endpoint(
 
     return update_question(db=db, question_id=question_id, question=question)
 
-@router.get("/", response_model=List[QuestionResponse])
+@router.get("/", response_model=List[QuestionWithCategory])
 def get_all_questions(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -561,3 +561,84 @@ def get_location_relations_by_form_id(form_id: int, db: Session = Depends(get_db
         raise HTTPException(status_code=404, detail="No se encontraron relaciones para este formulario")
 
     return relations
+
+@router.post("/categories", status_code=201)
+def create_question_category(category: QuestionCategoryCreate, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
+    # Verificar si ya existe
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get options"
+            )
+    existing = db.query(QuestionCategory).filter(QuestionCategory.name == category.name).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="La categoría ya existe")
+
+    new_category = QuestionCategory(name=category.name)
+    db.add(new_category)
+    db.commit()
+    db.refresh(new_category)
+    return {"id": new_category.id, "name": new_category.name}
+
+
+@router.get("/categories", response_model=list[QuestionCategoryOut])
+def get_all_categories(db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get options"
+            )
+    return db.query(QuestionCategory).all()
+
+
+@router.delete("/categories/{category_id}", status_code=204)
+def delete_category(category_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get options"
+            )
+    category = db.query(QuestionCategory).filter(QuestionCategory.id == category_id).first()
+    
+    if not category:
+        raise HTTPException(status_code=404, detail="Categoría no encontrada")
+
+    # Poner id_category = NULL en las preguntas relacionadas
+    db.query(Question).filter(Question.id_category == category_id).update(
+        {Question.id_category: None}
+    )
+
+    # Eliminar la categoría
+    db.delete(category)
+    db.commit()
+    return
+
+@router.put("/{question_id}/category")
+def update_question_category(
+    question_id: int,
+    category_data: UpdateQuestionCategory,
+    db: Session = Depends(get_db),current_user: User = Depends(get_current_user)
+):
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get options"
+            )
+    question = db.query(Question).filter(Question.id == question_id).first()
+    if not question:
+        raise HTTPException(status_code=404, detail="Pregunta no encontrada")
+
+    if category_data.id_category is not None:
+        category = db.query(QuestionCategory).filter(QuestionCategory.id == category_data.id_category).first()
+        if not category:
+            raise HTTPException(status_code=404, detail="Categoría no encontrada")
+
+    question.id_category = category_data.id_category
+    db.commit()
+    db.refresh(question)
+
+    return {
+        "message": "Categoría actualizada correctamente",
+        "question_id": question.id,
+        "new_category_id": question.id_category
+    }

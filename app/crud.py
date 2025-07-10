@@ -284,13 +284,13 @@ def create_question(db: Session, question: QuestionCreate):
             question_text=question.question_text,
             question_type=question.question_type,
             required=question.required, 
-            root=question.root
-            
+            root=question.root,
+            id_category=question.id_category  # <-- Aquí lo agregas
         )
         db.add(db_question)
         db.commit()
         db.refresh(db_question)
-        return db_question        
+        return db_question
     except IntegrityError:
         db.rollback()
         raise HTTPException(
@@ -302,7 +302,8 @@ def get_question_by_id(db: Session, question_id: int) -> Question:
     return db.query(Question).filter(Question.id == question_id).first()
 
 def get_questions(db: Session):
-    return db.query(Question).all()  # Trae todas las preguntas sin paginación
+    return db.query(Question).options(joinedload(Question.category)).all()
+
 
 def update_question(db: Session, question_id: int, question: QuestionUpdate) -> Question:
     """
