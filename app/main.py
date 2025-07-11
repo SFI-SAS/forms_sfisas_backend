@@ -26,6 +26,17 @@ app.add_middleware(
 )
 
 
+# origins = ["*"]
+
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=origins,
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+
 templates_env = Environment(loader=FileSystemLoader("app/api/templates"))
 
 app.state.templates_env = templates_env
