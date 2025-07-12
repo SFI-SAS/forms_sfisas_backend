@@ -15,10 +15,7 @@ app = FastAPI(
     openapi_version="3.1.0"  # o "3.0.3" si prefieres
 )
 
-origins = [
-    "https://forms.sfisas.com.co",
-    "https://app.safemetrics.co",
-]
+origins = ["https://forms.sfisas.com.co"]
 
 app.add_middleware(
     CORSMiddleware,
