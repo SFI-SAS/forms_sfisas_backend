@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+import os
+import shutil
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 from typing import List
@@ -9,7 +11,7 @@ from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalC
 from app.core.security import get_current_user
 from io import BytesIO
 import pandas as pd
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 
 router = APIRouter()
@@ -1670,3 +1672,75 @@ def create_form_close_config(config: FormCloseConfigCreate, db: Session = Depend
     return new_config
 
 
+UPLOAD_FOLDER = "logo"
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
+
+# Asegurar que la carpeta exista
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+@router.post("/upload-logo/")
+async def upload_logo(file: UploadFile = File(...),current_user: User = Depends(get_current_user)):
+    # Validar extensión
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get options"
+            )
+    filename = file.filename
+    extension = filename.split(".")[-1].lower()
+
+    if extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Tipo de archivo no permitido. Solo se permiten: png, jpg, jpeg.")
+
+    # Elimina cualquier imagen anterior en la carpeta
+    for f in os.listdir(UPLOAD_FOLDER):
+        os.remove(os.path.join(UPLOAD_FOLDER, f))
+
+    # Guardar la nueva imagen
+    file_path = os.path.join(UPLOAD_FOLDER, f"logo.{extension}")
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    return JSONResponse(content={"message": "Imagen subida correctamente", "path": file_path})
+
+
+@router.get("/get-logo/")
+def get_logo(current_user: User = Depends(get_current_user)):
+    if current_user == None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get options"
+            )
+    if not os.path.exists(UPLOAD_FOLDER):
+        raise HTTPException(status_code=404, detail="No se encontró la carpeta de logo.")
+
+    archivos = os.listdir(UPLOAD_FOLDER)
+    if not archivos:
+        raise HTTPException(status_code=404, detail="No hay imagen guardada.")
+
+    # Tomar el primer archivo (solo debe haber uno)
+    imagen_path = os.path.join(UPLOAD_FOLDER, archivos[0])
+    return FileResponse(imagen_path, media_type="image/*", filename=archivos[0])
+
+
+
+@router.get("/public-logo/")
+def get_public_logo():
+    if not os.path.exists(UPLOAD_FOLDER):
+        raise HTTPException(status_code=404, detail="No se encontró la carpeta de logo.")
+    
+    archivos = os.listdir(UPLOAD_FOLDER)
+    if not archivos:
+        raise HTTPException(status_code=404, detail="No hay imagen guardada.")
+    
+    imagen_path = os.path.join(UPLOAD_FOLDER, archivos[0])
+    extension = archivos[0].split(".")[-1].lower()
+    
+    if extension == "png":
+        media_type = "image/png"
+    elif extension in ["jpg", "jpeg"]:
+        media_type = "image/jpeg"
+    else:
+        media_type = "image/*"
+    
+    return FileResponse(imagen_path, media_type=media_type)
