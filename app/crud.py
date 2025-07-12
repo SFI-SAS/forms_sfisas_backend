@@ -3561,6 +3561,8 @@ def delete_form(db: Session, form_id: int):
         db.query(FormSchedule).filter(FormSchedule.form_id == form_id).delete(synchronize_session=False)
         db.query(FormModerators).filter(FormModerators.form_id == form_id).delete(synchronize_session=False)
         db.query(FormQuestion).filter(FormQuestion.form_id == form_id).delete(synchronize_session=False)
+        db.query(FormCloseConfig).filter(FormCloseConfig.form_id == form_id).delete(synchronize_session=False)
+
 
         db.delete(form)
         db.commit()
