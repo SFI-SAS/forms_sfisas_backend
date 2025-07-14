@@ -563,32 +563,44 @@ def get_location_relations_by_form_id(form_id: int, db: Session = Depends(get_db
     return relations
 
 @router.post("/categories", status_code=201)
-def create_question_category(category: QuestionCategoryCreate, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
-    # Verificar si ya existe
-    if current_user == None:
+def create_question_category(
+    category: QuestionCategoryCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
-            )
+            detail="User does not have permission to create categories"
+        )
+
     existing = db.query(QuestionCategory).filter(QuestionCategory.name == category.name).first()
     if existing:
         raise HTTPException(status_code=400, detail="La categoría ya existe")
 
-    new_category = QuestionCategory(name=category.name)
+    new_category = QuestionCategory(name=category.name, parent_id=category.parent_id)
     db.add(new_category)
     db.commit()
     db.refresh(new_category)
-    return {"id": new_category.id, "name": new_category.name}
+
+    return {"id": new_category.id, "name": new_category.name, "parent_id": new_category.parent_id}
 
 
-@router.get("/categories", response_model=list[QuestionCategoryOut])
-def get_all_categories(db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
-    if current_user == None:
+@router.get("/categories", response_model=List[QuestionCategoryOut])
+def get_all_categories(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
-            )
-    return db.query(QuestionCategory).all()
+            detail="User does not have permission to get categories"
+        )
+
+    # Solo las categorías raíz (padre None)
+    root_categories = db.query(QuestionCategory).filter(QuestionCategory.parent_id == None).all()
+    return root_categories
+
 
 
 @router.delete("/categories/{category_id}", status_code=204)
@@ -612,6 +624,22 @@ def delete_category(category_id: int, db: Session = Depends(get_db),current_user
     db.delete(category)
     db.commit()
     return
+
+
+@router.get("/categories/all", response_model=List[QuestionCategoryOut])
+def get_all_categories_including_subcategories(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get categories"
+        )
+    
+    # Obtener todas las categorías (incluyendo subcategorías)
+    all_categories = db.query(QuestionCategory).all()
+    return all_categories
 
 @router.put("/{question_id}/category")
 def update_question_category(

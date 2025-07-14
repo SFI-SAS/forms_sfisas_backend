@@ -115,7 +115,15 @@ class QuestionCategory(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False, unique=True)
 
+    # Campo que permite jerarquía (categoría padre)
+    parent_id = Column(BigInteger, ForeignKey('question_categories.id'), nullable=True)
+
+    # Relación con su categoría padre
+    parent = relationship('QuestionCategory', remote_side=[id], backref='subcategories')
+
+    # Relación con preguntas
     questions = relationship('Question', back_populates='category')
+
     
 class FormQuestion(Base):
     __tablename__ = 'form_questions'

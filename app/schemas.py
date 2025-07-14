@@ -569,14 +569,15 @@ class QuestionLocationRelationOut(BaseModel):
         
 class QuestionCategoryCreate(BaseModel):
     name: str
-    
+    parent_id: Optional[int] = None  
 class QuestionCategoryOut(BaseModel):
     id: int
     name: str
+    parent_id: Optional[int] = None
+    subcategories: Optional[List["QuestionCategoryOut"]] = []
 
     class Config:
         from_attributes = True
-        
 class CategorySchema(BaseModel):
     id: int
     name: str
