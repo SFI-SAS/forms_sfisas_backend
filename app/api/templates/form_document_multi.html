@@ -8,12 +8,12 @@
         body {
             font-family: Arial, sans-serif;
             margin: 0;
-            padding: 20mm; /* Márgenes para impresión */
+            padding: 20mm;
             font-size: 10pt;
             line-height: 1.6;
         }
         .container {
-            max-width: 180mm; /* Ancho máximo del contenido */
+            max-width: 180mm;
             margin: 0 auto;
         }
         header {
@@ -54,7 +54,6 @@
         }
         .header-table-container {
             margin-bottom: 20px;
-            /* No aplicar bordes aquí, se aplicarán en la tabla interna generada */
         }
         footer {
             position: fixed;
@@ -65,12 +64,7 @@
             font-size: 8pt;
             color: #777;
         }
-        /* Clases personalizadas de la tabla de encabezado si son necesarias */
-        .logo-cell {
-            background-color: #f8fafc; /* Ejemplo de estilo de celda si tiene customClass */
-        }
-        
-        /* ✅ AGREGADO: Estilos para la sección de aprobadores */
+
         .approval-status {
             display: inline-block;
             padding: 4px 8px;
@@ -124,29 +118,36 @@
             margin-top: 5px;
             border: 1px solid #ffeaa7;
         }
+
+        .response-separator {
+            border-top: 2px dashed #ccc;
+            margin: 30px 0;
+        }
     </style>
 </head>
 <body>
     <div class="header-table-container">
-        {{ header_html | safe }} {# El header_html ya viene renderizado desde el servicio #}
+        {{ header_html | safe }}
     </div>
 
     <div class="container">
         <h1>{{ form_title }}</h1>
         <p>Descripción: {{ form_description }}</p>
 
+        {% for response in responses %}
+        <div class="response-separator"></div>
+
         <div class="section">
             <h2>Información General de la Respuesta</h2>
-            <p><span class="label">ID de Respuesta:</span> <span class="value">{{ response_id }}</span></p>
-            <p><span class="label">Enviado el:</span> <span class="value">{{ submitted_at }}</span></p>
-            <p><span class="label">Estado de Aprobación:</span> <span class="value">{{ approval_status }}</span></p>
-            {% if form_message %}
-                <p><span class="label">Mensaje:</span> <span class="value">{{ form_message }}</span></p>
+            <p><span class="label">ID de Respuesta:</span> <span class="value">{{ response.response_id }}</span></p>
+            <p><span class="label">Enviado el:</span> <span class="value">{{ response.submitted_at }}</span></p>
+            <p><span class="label">Estado de Aprobación:</span> <span class="value">{{ response.approval_status }}</span></p>
+            {% if response.message %}
+                <p><span class="label">Mensaje:</span> <span class="value">{{ response.message }}</span></p>
             {% endif %}
         </div>
 
-        <!-- ✅ AGREGADO: Sección de Aprobadores -->
-        {% if approvals and approvals|length > 0 %}
+        {% if response.approvals and response.approvals | length > 0 %}
         <div class="section">
             <h2>Historial de Aprobaciones</h2>
             <table>
@@ -161,7 +162,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {% for approval in approvals %}
+                    {% for approval in response.approvals %}
                     <tr>
                         <td style="text-align: center; font-weight: bold;">{{ approval.sequence_number }}</td>
                         <td>
@@ -227,11 +228,10 @@
                     <tr>
                         <th>Pregunta</th>
                         <th>Respuesta</th>
-                     
                     </tr>
                 </thead>
                 <tbody>
-                    {% for answer in answers %}
+                    {% for answer in response.answers %}
                     <tr>
                         <td>{{ answer.question_text }}</td>
                         <td>
@@ -243,12 +243,13 @@
                                 {{ answer.answer_text }}
                             {% endif %}
                         </td>
-                        
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
+
+        {% endfor %}
     </div>
 
     {% if footer_text %}

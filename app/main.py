@@ -4,7 +4,7 @@ from jinja2 import Environment, FileSystemLoader
 from app.crud import  get_response_details_logic, get_schedules_by_frequency
 from app.database import SessionLocal, engine
 from app.models import Base
-from app.api.endpoints import pdf_router, projects, responses, users, forms, auth, questions
+from app.api.endpoints import list_form, pdf_router, projects, responses, users, forms, auth, questions
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -15,21 +15,10 @@ app = FastAPI(
     openapi_version="3.1.0"  # o "3.0.3" si prefieres
 )
 
-origins = [
-    "https://forms.sfisas.com.co",
-    "https://app.safemetrics.co",
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# origins = ["*"]
+# origins = [
+#     "https://forms.sfisas.com.co",
+#     "https://app.safemetrics.co",
+# ]
 
 # app.add_middleware(
 #     CORSMiddleware,
@@ -38,6 +27,17 @@ app.add_middleware(
 #     allow_methods=["*"],
 #     allow_headers=["*"],
 # )
+
+
+origins = ["*"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 templates_env = Environment(loader=FileSystemLoader("app/api/templates"))
@@ -51,6 +51,7 @@ app.include_router(questions.router, prefix="/questions", tags=["questions"])
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(projects.router,prefix="/projects", tags=["projects"] )
 app.include_router(responses.router,prefix="/responses", tags=["responses"] )
+app.include_router(list_form.router, prefix="/list_form", tags=["list_form"] )
 # Crear todas las tablas definidas en models.py
 Base.metadata.create_all(bind=engine)
 

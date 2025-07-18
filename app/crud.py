@@ -3522,38 +3522,40 @@ def update_notification_status(notification_id: int, notify_on: str, db: Session
     db.refresh(notification)
 
     return notification
-
 def delete_form(db: Session, form_id: int):
     """
     Elimina un formulario y todos sus registros relacionados, incluyendo respuestas si existen.
     """
     form = db.query(Form).filter(Form.id == form_id).first()
-
+    
     if not form:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Formulario no encontrado."
         )
-
+    
     try:
+        # 🔍 ANÁLISIS DE RELACIONES ANTES DE ELIMINAR
+        relations_info = analyze_form_relations(db, form_id)
+        
         # Obtener todos los response_ids relacionados con el formulario
         response_ids = db.query(Response.id).filter(Response.form_id == form_id).all()
         response_ids = [r.id for r in response_ids]
-
+        
         if response_ids:
             # Eliminar registros relacionados en orden de dependencias
             answer_ids = db.query(Answer.id).filter(Answer.response_id.in_(response_ids)).all()
             answer_ids = [a.id for a in answer_ids]
-
+            
             if answer_ids:
                 # Eliminar primero en tablas que dependen de Answer
                 db.query(AnswerFileSerial).filter(AnswerFileSerial.answer_id.in_(answer_ids)).delete(synchronize_session=False)
                 db.query(AnswerHistory).filter(AnswerHistory.previous_answer_id.in_(answer_ids)).delete(synchronize_session=False)
-
+            
             db.query(ResponseApproval).filter(ResponseApproval.response_id.in_(response_ids)).delete(synchronize_session=False)
             db.query(Answer).filter(Answer.response_id.in_(response_ids)).delete(synchronize_session=False)
             db.query(Response).filter(Response.id.in_(response_ids)).delete(synchronize_session=False)
-
+        
         db.query(QuestionFilterCondition).filter(QuestionFilterCondition.form_id == form_id).delete(synchronize_session=False)
         db.query(FormAnswer).filter(FormAnswer.form_id == form_id).delete(synchronize_session=False)
         db.query(FormApproval).filter(FormApproval.form_id == form_id).delete(synchronize_session=False)
@@ -3562,19 +3564,177 @@ def delete_form(db: Session, form_id: int):
         db.query(FormModerators).filter(FormModerators.form_id == form_id).delete(synchronize_session=False)
         db.query(FormQuestion).filter(FormQuestion.form_id == form_id).delete(synchronize_session=False)
         db.query(FormCloseConfig).filter(FormCloseConfig.form_id == form_id).delete(synchronize_session=False)
-
-
+        
         db.delete(form)
         db.commit()
-
+        
     except Exception as e:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ocurrió un error al eliminar el formulario: {str(e)}"
         )
+    
+    return {
+        "message": "Formulario, respuestas y registros relacionados eliminados correctamente.",
+        "relations_deleted": relations_info
+    }
 
-    return {"message": "Formulario, respuestas y registros relacionados eliminados correctamente."}
+def analyze_form_relations(db: Session, form_id: int):
+    """
+    Analiza todas las relaciones de un formulario antes de eliminarlo.
+    """
+    relations = {}
+    
+    # Obtener información básica del formulario
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if form:
+        relations["form_info"] = {
+            "id": form.id,
+            "title": form.title,
+            "description": form.description
+        }
+    
+    # Respuestas del formulario
+    responses = db.query(Response).filter(Response.form_id == form_id).all()
+    if responses:
+        relations["responses"] = {
+            "count": len(responses),
+            "name": "Respuestas de usuarios",
+            "description": "Respuestas enviadas por los usuarios que llenaron el formulario",
+            "icon": "📝",
+            "category": "user_data"
+        }
+        
+        # Respuestas con detalles
+        response_ids = [r.id for r in responses]
+        
+        # Answers relacionadas
+        answers = db.query(Answer).filter(Answer.response_id.in_(response_ids)).all()
+        if answers:
+            relations["answers"] = {
+                "count": len(answers),
+                "name": "Respuestas específicas",
+                "description": "Respuestas individuales a cada pregunta del formulario",
+                "icon": "✍️",
+                "category": "user_data"
+            }
+            
+            answer_ids = [a.id for a in answers]
+            
+            # AnswerFileSerial
+            file_serials = db.query(AnswerFileSerial).filter(AnswerFileSerial.answer_id.in_(answer_ids)).all()
+            if file_serials:
+                relations["answer_file_serials"] = {
+                    "count": len(file_serials),
+                    "name": "Archivos adjuntos",
+                    "description": "Documentos, imágenes y otros archivos subidos por los usuarios",
+                    "icon": "📎",
+                    "category": "files"
+                }
+            
+            # AnswerHistory
+            answer_history = db.query(AnswerHistory).filter(AnswerHistory.previous_answer_id.in_(answer_ids)).all()
+            if answer_history:
+                relations["answer_history"] = {
+                    "count": len(answer_history),
+                    "name": "Historial de cambios",
+                    "description": "Registro de modificaciones realizadas a las respuestas",
+                    "icon": "📋",
+                    "category": "audit"
+                }
+        
+        # ResponseApproval
+        response_approvals = db.query(ResponseApproval).filter(ResponseApproval.response_id.in_(response_ids)).all()
+        if response_approvals:
+            relations["response_approvals"] = {
+                "count": len(response_approvals),
+                "name": "Aprobaciones de respuestas",
+                "description": "Estados de aprobación o rechazo de las respuestas enviadas",
+                "icon": "✅",
+                "category": "approval"
+            }
+    
+    # Relaciones directas con el formulario
+    relations_to_check = [
+        {
+            "query": db.query(QuestionFilterCondition).filter(QuestionFilterCondition.form_id == form_id),
+            "key": "question_filter_conditions",
+            "name": "Condiciones de filtro",
+            "description": "Reglas de lógica condicional para mostrar u ocultar preguntas",
+            "icon": "🔍",
+            "category": "logic"
+        },
+        {
+            "query": db.query(FormAnswer).filter(FormAnswer.form_id == form_id),
+            "key": "form_answers",
+            "name": "Respuestas del formulario",
+            "description": "Respuestas almacenadas en el formulario",
+            "icon": "💬",
+            "category": "user_data"
+        },
+        {
+            "query": db.query(FormApproval).filter(FormApproval.form_id == form_id),
+            "key": "form_approvals",
+            "name": "Configuración de aprobaciones",
+            "description": "Configuración del flujo de aprobación del formulario",
+            "icon": "⚙️",
+            "category": "config"
+        },
+        {
+            "query": db.query(FormApprovalNotification).filter(FormApprovalNotification.form_id == form_id),
+            "key": "form_approval_notifications",
+            "name": "Notificaciones de aprobación",
+            "description": "Configuración de notificaciones para el proceso de aprobación",
+            "icon": "🔔",
+            "category": "notifications"
+        },
+        {
+            "query": db.query(FormSchedule).filter(FormSchedule.form_id == form_id),
+            "key": "form_schedules",
+            "name": "Programación del formulario",
+            "description": "Configuración de fechas de apertura y cierre del formulario",
+            "icon": "📅",
+            "category": "schedule"
+        },
+        {
+            "query": db.query(FormModerators).filter(FormModerators.form_id == form_id),
+            "key": "form_moderators",
+            "name": "Moderadores asignados",
+            "description": "Usuarios con permisos de moderación en este formulario",
+            "icon": "👥",
+            "category": "permissions"
+        },
+        {
+            "query": db.query(FormQuestion).filter(FormQuestion.form_id == form_id),
+            "key": "form_questions",
+            "name": "Preguntas del formulario",
+            "description": "Todas las preguntas y campos configurados en el formulario",
+            "icon": "❓",
+            "category": "structure"
+        },
+        {
+            "query": db.query(FormCloseConfig).filter(FormCloseConfig.form_id == form_id),
+            "key": "form_close_configs",
+            "name": "Configuración de cierre",
+            "description": "Configuración del comportamiento cuando el formulario se cierra",
+            "icon": "🔒",
+            "category": "config"
+        }
+    ]
+    
+    for relation in relations_to_check:
+        records = relation["query"].all()
+        if records:
+            relations[relation["key"]] = {
+                "count": len(records),
+                "name": relation["name"],
+                "description": relation["description"],
+                "icon": relation["icon"],
+                "category": relation["category"]
+            }
+    
+    return relations
 
 
 def get_response_details_logic(db: Session):

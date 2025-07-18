@@ -1,9 +1,12 @@
-# pdf_router.py - Versión corregida
+# pdf_router.py - Versión modificada para mostrar todas las respuestas
+import os
+import json
+import re
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import select
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import io
 import logging
 from datetime import datetime
@@ -15,6 +18,63 @@ from app.models import Answer, AnswerHistory, Response, ResponseApproval
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 router = APIRouter()
+
+# Funciones de procesamiento de ubicación (sin cambios)
+def process_location_answer(answer_text: str, question_type: str) -> str:
+    """
+    Procesa las respuestas de tipo location para mostrar información legible
+    en lugar del JSON crudo.
+    """
+    if question_type != 'location' or not answer_text:
+        return answer_text
+    
+    try:
+        # Intentar parsear como JSON
+        location_data = json.loads(answer_text)
+        
+        if not isinstance(location_data, list):
+            return answer_text
+        
+        # Extraer información relevante
+        coordinates = None
+        selection = None
+        timestamp = None
+        
+        for item in location_data:
+            if isinstance(item, dict):
+                if item.get('type') == 'coordinates':
+                    coordinates = item.get('value')
+                    if not timestamp:
+                        timestamp = item.get('timestamp')
+                elif item.get('type') == 'selection':
+                    selection = item.get('value')
+                    if not timestamp:
+                        timestamp = item.get('timestamp')
+        
+        # Construir respuesta legible
+        result_parts = []
+        
+        if selection:
+            # Limpiar la selección si contiene coordenadas duplicadas
+            clean_selection = re.sub(r'\s*\([^)]*\)\s*$', '', selection).strip()
+            result_parts.append(f"Ubicación: {clean_selection}")
+        
+        if coordinates:
+            result_parts.append(f"Coordenadas: {coordinates}")
+        
+        if timestamp:
+            try:
+                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                formatted_time = dt.strftime('%d/%m/%Y %H:%M:%S')
+                result_parts.append(f"Fecha: {formatted_time}")
+            except:
+                pass
+        
+        return " | ".join(result_parts) if result_parts else answer_text
+        
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        # Si no se puede parsear o procesar, devolver el texto original
+        return answer_text
 
 # Dependencia para obtener una instancia del servicio de PDF
 def get_pdf_generator_service(request: Request) -> PdfGeneratorService:
@@ -38,19 +98,8 @@ async def generate_pdf_from_form_id(
     request: Request
 ) -> bytes:
     """
-    Función para generar un PDF a partir de un form_id.
-    
-    Args:
-        form_id: ID del formulario
-        db: Sesión de base de datos
-        current_user: Usuario actual (obtenido del token de autenticación)
-        request: Objeto Request de FastAPI para acceder al estado de la aplicación
-        
-    Returns:
-        bytes: Contenido del PDF generado
-        
-    Raises:
-        HTTPException: Si no se encuentran respuestas o hay errores en la generación
+    Función para generar un PDF a partir de un form_id con procesamiento de ubicación.
+    MODIFICADO: Ahora procesa TODAS las respuestas del formulario.
     """
     logging.info(f"Generating PDF for form_id: {form_id}, user: {current_user.id}")
     
@@ -62,7 +111,7 @@ async def generate_pdf_from_form_id(
             .options(
                 joinedload(Response.answers).joinedload(Answer.question),
                 joinedload(Response.approvals).joinedload(ResponseApproval.user),
-                joinedload(Response.form)  # Agregamos el joinedload para form
+                joinedload(Response.form)
             )
         )
 
@@ -109,7 +158,7 @@ async def generate_pdf_from_form_id(
             if history.previous_answer_id:
                 previous_answer_ids.add(history.previous_answer_id)
 
-        # Procesar las respuestas
+        # ✅ MODIFICADO: Procesar TODAS las respuestas en lugar de solo la primera
         form_data_list = []
         for r in responses:
             approval_result = get_response_approval_status(r.approvals)
@@ -121,8 +170,24 @@ async def generate_pdf_from_form_id(
                 if answer.id not in previous_answer_ids:
                     current_answers.append(answer)
 
+            # Procesar respuestas con ubicación
+            processed_answers = []
+            for a in current_answers:
+                answer_data = {
+                    "id_answer": a.id,
+                    "repeated_id": r.repeated_id,
+                    "question_id": a.question.id,
+                    "question_text": a.question.question_text,
+                    "question_type": a.question.question_type,
+                    "answer_text": process_location_answer(a.answer_text, a.question.question_type),
+                    "file_path": a.file_path,
+                    "original_answer_text": a.answer_text
+                }
+                processed_answers.append(answer_data)
+
             form_response_data = {
                 "response_id": r.id,
+                "repeated_id": r.repeated_id,  # ✅ AGREGADO: repeated_id para diferenciación
                 "submitted_at": r.submitted_at,
                 "approval_status": approval_result["status"],
                 "message": approval_result["message"],
@@ -133,18 +198,7 @@ async def generate_pdf_from_form_id(
                     "format_type": r.form.format_type.value if r.form.format_type else None,
                     "form_design": r.form.form_design
                 },
-                "answers": [
-                    {
-                        "id_answer": a.id,
-                        "repeated_id": r.repeated_id,
-                        "question_id": a.question.id,
-                        "question_text": a.question.question_text,
-                        "question_type": a.question.question_type,
-                        "answer_text": a.answer_text,
-                        "file_path": a.file_path
-                    }
-                    for a in current_answers
-                ],
+                "answers": processed_answers,
                 "approvals": [
                     {
                         "approval_id": ap.id,
@@ -165,24 +219,58 @@ async def generate_pdf_from_form_id(
                     for ap in r.approvals
                 ]
             }
+            
             form_data_list.append(form_response_data)
 
         if not form_data_list:
             logging.warning(f"No form data processed for form_id: {form_id}")
             raise HTTPException(status_code=404, detail="No se pudieron procesar los datos del formulario")
 
-        # Tomamos el primer elemento como en el código original
-        form_data_single = form_data_list[0]
+        # ✅ MODIFICADO: Pasar TODAS las respuestas en lugar de solo la primera
+        # Crear un objeto que contenga todas las respuestas
+        form_data_complete = {
+            "form_id": form_id,
+            "form_info": form_data_list[0]["form"],  # La info del formulario es la misma para todas
+            "responses": form_data_list,  # ✅ TODAS las respuestas
+            "user_id": current_user.id,
+            "total_responses": len(form_data_list)
+        }
         
-        # ✅ CORRECTO - Usar notación de diccionario
-        logging.info(f"Processing form response with ID: {form_data_single['response_id']}")
+        logging.info(f"Processing {len(form_data_list)} form responses for form_id: {form_id}")
         
-        # Obtener el servicio de PDF
+        # Configurar la carpeta de uploads para el logo con ruta absoluta
+        UPLOAD_FOLDER = "logo"
+        ABSOLUTE_UPLOAD_FOLDER = os.path.abspath(UPLOAD_FOLDER)
+        
+        # Asegurar que la carpeta exista
+        os.makedirs(ABSOLUTE_UPLOAD_FOLDER, exist_ok=True)
+        
+        logging.info(f"Using upload folder for logos: {ABSOLUTE_UPLOAD_FOLDER}")
+        
+        # Verificar si existe algún logo en la carpeta
+        logo_files = []
+        if os.path.exists(ABSOLUTE_UPLOAD_FOLDER):
+            for file in os.listdir(ABSOLUTE_UPLOAD_FOLDER):
+                if file.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')):
+                    logo_files.append(file)
+        
+        if logo_files:
+            logging.info(f"✅ Found logo files in {ABSOLUTE_UPLOAD_FOLDER}: {logo_files}")
+        else:
+            logging.warning(f"⚠️ No logo files found in {ABSOLUTE_UPLOAD_FOLDER}")
+        
+        # Obtener el servicio de PDF con la carpeta de uploads absoluta
         templates_env = request.app.state.templates_env
-        pdf_service = PdfGeneratorService(templates_env=templates_env)
         
-        # Generar el PDF
-        pdf_bytes = pdf_service.generate_pdf(form_data=form_data_single)
+        pdf_service = PdfGeneratorService(
+            templates_env=templates_env,
+            upload_folder=ABSOLUTE_UPLOAD_FOLDER
+        )
+        
+        logging.info(f"PDF service initialized with upload folder: {ABSOLUTE_UPLOAD_FOLDER}")
+        
+        # ✅ MODIFICADO: Generar el PDF con todas las respuestas
+        pdf_bytes = pdf_service.generate_pdf_multi_responses(form_data=form_data_complete)
         
         if not pdf_bytes:
             logging.error("PdfGeneratorService returned empty bytes.")
