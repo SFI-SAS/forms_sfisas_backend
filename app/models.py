@@ -73,7 +73,7 @@ class UserCategory(Base):
 # Modelo Forms
 class Form(Base):
     __tablename__ = 'forms'
-
+    
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
     title = Column(String(255), nullable=False)
@@ -81,13 +81,30 @@ class Form(Base):
     format_type = Column(Enum(FormatType), nullable=False, default=FormatType.abierto)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     form_design = Column(JSON, nullable=True, default=dict)
+    
+    # Nuevo campo para categoría
+    id_category = Column(BigInteger, ForeignKey('form_categories.id'), nullable=True)
+    
+    # Relaciones existentes
     user = relationship('User', back_populates='forms')
     form_moderators = relationship("FormModerators", back_populates="form", cascade="all, delete-orphan")
     questions = relationship("Question", secondary="form_questions", back_populates="forms")
-    responses = relationship('Response', back_populates='form')  # Esto debe coincidir con la tabla Response
-    form_answers = relationship('FormAnswer', back_populates='form')  # Nueva relación
+    responses = relationship('Response', back_populates='form')
+    form_answers = relationship('FormAnswer', back_populates='form')
     
+    # Nueva relación con categoría
+    category = relationship("FormCategory", back_populates="forms")
+
+
+class FormCategory(Base):
+    __tablename__ = 'form_categories'
     
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False, unique=True)
+    description = Column(String(255), nullable=True)  # Opcional: descripción de la categoría
+    
+    # Relación con formularios
+    forms = relationship("Form", back_populates="category")
 
 # Modelo Questions
 class Question(Base):

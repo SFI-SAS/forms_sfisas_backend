@@ -5,9 +5,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 from typing import List
 from app.database import get_db
-from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCloseConfig, FormSchedule, Response, ResponseApproval, User, UserType
-from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_schedule, create_response_approval, delete_form, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_user, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_approvals, send_rejection_email_to_all, update_form_design_service, update_notification_status, update_response_approval_status
-from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, ResponseApprovalCreate, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
+from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormSchedule, Response, ResponseApproval, User, UserType
+from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category_by_id, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_form_categories, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_user, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_approvals, send_rejection_email_to_all, update_form_design_service, update_notification_status, update_response_approval_status
+from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryResponse, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, ResponseApprovalCreate, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
 import pandas as pd
@@ -1767,3 +1767,116 @@ def get_public_logo():
         media_type = "image/*"
     
     return FileResponse(imagen_path, media_type=media_type)
+
+
+
+# Endpoints para categorías de formularios
+
+@router.post("/create_form_category", response_model=FormCategoryResponse, status_code=status.HTTP_201_CREATED)
+def create_form_category_endpoint(
+    category: FormCategoryCreate,
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para crear categorías de formularios"
+        )
+    return create_form_category(db, category)
+
+@router.get("/list_all_form/categories", response_model=List[FormCategoryResponse])
+def list_all_form_categories(
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso"
+        )
+    return get_all_form_categories(db)
+
+@router.delete("/delete_form_category/{category_id}", status_code=status.HTTP_200_OK)
+def delete_form_category(
+    category_id: int, 
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para eliminar categorías de formularios"
+        )
+    return delete_form_category_by_id(db, category_id)
+
+@router.put("/update_form_category/{form_id}/category")
+def update_form_category(
+    form_id: int,
+    category_data: UpdateFormCategory,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para actualizar la categoría de un formulario"
+        )
+
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+
+    if category_data.id_category is not None:
+        category = db.query(FormCategory).filter(FormCategory.id == category_data.id_category).first()
+        if not category:
+            raise HTTPException(status_code=404, detail="Categoría no encontrada")
+
+    form.id_category = category_data.id_category
+    db.commit()
+    db.refresh(form)
+
+    return {
+        "message": "Categoría actualizada correctamente",
+        "form_id": form.id,
+        "new_category_id": form.id_category
+    }
+
+# Endpoint adicional: Obtener formularios por categoría
+@router.get("/forms/by_category/{category_id}", response_model=List[FormResponse])
+def get_forms_by_category(
+    category_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso"
+        )
+    
+    category = db.query(FormCategory).filter(FormCategory.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Categoría no encontrada")
+    
+    forms = db.query(Form).filter(Form.id_category == category_id).all()
+    return forms
+
+# Endpoint adicional: Obtener una categoría específica con sus formularios
+@router.get("/form_category/{category_id}", response_model=FormCategoryWithFormsResponse)
+def get_form_category_with_forms(
+    category_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso"
+        )
+    
+    category = db.query(FormCategory).filter(FormCategory.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Categoría no encontrada")
+    
+    return category

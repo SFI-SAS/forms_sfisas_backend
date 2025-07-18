@@ -612,3 +612,55 @@ class UserCategoryResponse(BaseModel):
 
 class UpdateUserCategory(BaseModel):
     id_category: Optional[int] = None
+    
+    
+class FormCategoryBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+# Esquema para crear categoría
+class FormCategoryCreate(FormCategoryBase):
+    pass
+
+# Esquema para actualizar categoría de un formulario
+class UpdateFormCategory(BaseModel):
+    id_category: Optional[int] = None
+
+# Esquema de respuesta para categoría
+class FormCategoryResponse(FormCategoryBase):
+    id: int
+    
+    class Config:
+        from_attributes = True
+
+# Esquema para respuesta con formularios incluidos
+class FormCategoryWithFormsResponse(FormCategoryResponse):
+    forms: List['FormResponse'] = []
+    
+    class Config:
+        from_attributes = True
+
+# Esquema básico de formulario para evitar importación circular
+class FormBasicResponse(BaseModel):
+    id: int
+    title: str
+    description: Optional[str] = None
+    format_type: str
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+# Actualizar el esquema de Form para incluir categoría
+class FormResponse(BaseModel):
+    id: int
+    title: str
+    description: Optional[str] = None
+    format_type: str
+    created_at: datetime
+    user_id: int
+    id_category: Optional[int] = None
+    category: Optional[FormCategoryResponse] = None
+    
+    class Config:
+        from_attributes = True
