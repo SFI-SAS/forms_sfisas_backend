@@ -113,12 +113,13 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
                 detail="Uno o más usuarios asignados no existen"
             )
 
-        # Crear el formulario base
+        # Crear el formulario base, incluyendo la categoría
         db_form = Form(
             user_id=user_id,
             title=form.title,
             description=form.description,
-            format_type=form.format_type,  
+            format_type=form.format_type,
+            id_category=form.id_category,  # ← Añadido aquí
             created_at=datetime.utcnow()
         )
 
@@ -130,14 +131,15 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
         db.commit()
         db.refresh(db_form)
 
-        # Crear y devolver la respuesta con la estructura correcta
+        # Crear y devolver la respuesta
         response = {
             "id": db_form.id,
             "user_id": db_form.user_id,
             "title": db_form.title,
             "description": db_form.description,
-            "format_type": db_form.format_type.value,  # ← Añadido
+            "format_type": db_form.format_type.value,
             "created_at": db_form.created_at,
+            "id_category": db_form.id_category,  # ← Incluir en la respuesta
             "assign_user": [moderator.user_id for moderator in db_form.form_moderators]
         }
 
@@ -155,6 +157,8 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno del servidor: {str(e)}"
         )
+
+        
 def get_form(db: Session, form_id: int, user_id: int):
     # Cargar el formulario con preguntas y respuestas
     form = db.query(Form).options(
@@ -937,15 +941,21 @@ def get_all_forms(db: Session):
     ]
 def get_forms_by_user(db: Session, user_id: int):
     """
-    Obtiene los formularios asociados al usuario a través de la relación con la tabla `form_moderators`.
+    Obtiene los formularios asociados al usuario a través de la relación con la tabla `form_moderators`,
+    incluyendo la información de la categoría asociada.
 
     :param db: Sesión de base de datos activa.
     :param user_id: ID del usuario autenticado.
-    :return: Lista de objetos Form.
+    :return: Lista de objetos Form con su categoría precargada.
     """
-    forms = db.query(Form).join(FormModerators).filter(FormModerators.user_id == user_id).all()
+    forms = (
+        db.query(Form)
+        .join(FormModerators)
+        .options(joinedload(Form.category))  # ← Esto precarga la info de la categoría
+        .filter(FormModerators.user_id == user_id)
+        .all()
+    )
     return forms
-
 
 def get_answers_by_question(db: Session, question_id: int):
     # Consulta todas las respuestas asociadas al question_id
@@ -4175,23 +4185,23 @@ def get_form_category_by_id(db: Session, category_id: int):
 # Eliminar categoría por ID
 def delete_form_category_by_id(db: Session, category_id: int):
     category = db.query(FormCategory).filter(FormCategory.id == category_id).first()
+    
     if not category:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Categoría no encontrada"
         )
     
-    # Verificar si hay formularios usando esta categoría
-    forms_with_category = db.query(Form).filter(Form.id_category == category_id).count()
-    if forms_with_category > 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"No se puede eliminar la categoría porque tiene {forms_with_category} formulario(s) asociado(s)"
-        )
-    
+    # Establecer en NULL la categoría de los formularios que la usan
+    forms_with_category = db.query(Form).filter(Form.id_category == category_id).all()
+    for form in forms_with_category:
+        form.id_category = None
+
+    # Eliminar la categoría
     db.delete(category)
     db.commit()
-    return {"message": "Categoría eliminada correctamente"}
+    
+    return {"message": "Categoría eliminada correctamente y formularios actualizados"}
 
 # Actualizar categoría de formulario
 def update_form_category_assignment(db: Session, form_id: int, category_id: Optional[int]):

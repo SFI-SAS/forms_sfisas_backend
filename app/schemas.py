@@ -109,6 +109,7 @@ class FormBaseUser(BaseModel):
     description: Optional[str] = Field(None, example="This is a survey form description.")
     assign_user: List[int]  
     format_type: FormatTypeEnum = Field(..., example="abierto") 
+    id_category: Optional[int] 
 
 class FormBaseUserCreate(BaseModel):
    
