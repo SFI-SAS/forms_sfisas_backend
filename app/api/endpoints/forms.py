@@ -1747,6 +1747,7 @@ def get_logo(current_user: User = Depends(get_current_user)):
 
 
 
+# Endpoint principal para obtener el logo
 @router.get("/public-logo/")
 def get_public_logo():
     if not os.path.exists(UPLOAD_FOLDER):
@@ -1757,18 +1758,80 @@ def get_public_logo():
         raise HTTPException(status_code=404, detail="No hay imagen guardada.")
     
     imagen_path = os.path.join(UPLOAD_FOLDER, archivos[0])
+    
+    # Verificar que el archivo realmente existe
+    if not os.path.isfile(imagen_path):
+        raise HTTPException(status_code=404, detail="Archivo de logo no encontrado.")
+    
     extension = archivos[0].split(".")[-1].lower()
     
-    if extension == "png":
-        media_type = "image/png"
-    elif extension in ["jpg", "jpeg"]:
-        media_type = "image/jpeg"
-    else:
-        media_type = "image/*"
+    # Mapeo más completo de tipos MIME
+    media_type_map = {
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "gif": "image/gif",
+        "webp": "image/webp",
+        "svg": "image/svg+xml"
+    }
     
-    return FileResponse(imagen_path, media_type=media_type)
+    media_type = media_type_map.get(extension, "image/*")
+    
+    # Headers para mejor manejo de cache y CORS
+    headers = {
+        "Cache-Control": "public, max-age=300",  # Cache por 5 minutos
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "*"
+    }
+    
+    return FileResponse(
+        imagen_path, 
+        media_type=media_type,
+        headers=headers
+    )
 
+# Endpoint adicional para verificar existencia (opcional pero recomendado)
+@router.get("/public-logo/exists")
+def check_logo_exists():
+    """Verifica si existe un logo sin descargar el archivo"""
+    try:
+        if not os.path.exists(UPLOAD_FOLDER):
+            return {"exists": False, "reason": "Carpeta no existe"}
+        
+        archivos = os.listdir(UPLOAD_FOLDER)
+        if not archivos:
+            return {"exists": False, "reason": "No hay archivos"}
+        
+        imagen_path = os.path.join(UPLOAD_FOLDER, archivos[0])
+        if not os.path.isfile(imagen_path):
+            return {"exists": False, "reason": "Archivo no válido"}
+        
+        return {
+            "exists": True, 
+            "filename": archivos[0],
+            "url": "/forms/public-logo/"
+        }
+    except Exception as e:
+        return {"exists": False, "reason": f"Error: {str(e)}"}
 
+# Soporte para HEAD requests
+@router.head("/public-logo/")
+def head_public_logo():
+    """HEAD request para verificar existencia sin descargar"""
+    if not os.path.exists(UPLOAD_FOLDER):
+        raise HTTPException(status_code=404, detail="No se encontró la carpeta de logo.")
+    
+    archivos = os.listdir(UPLOAD_FOLDER)
+    if not archivos:
+        raise HTTPException(status_code=404, detail="No hay imagen guardada.")
+    
+    imagen_path = os.path.join(UPLOAD_FOLDER, archivos[0])
+    if not os.path.isfile(imagen_path):
+        raise HTTPException(status_code=404, detail="Archivo de logo no encontrado.")
+    
+    # ESTA ES LA CORRECCIÓN - Response correcto para FastAPI
+    return Response(status_code=200)
 
 # Endpoints para categorías de formularios
 

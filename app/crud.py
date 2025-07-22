@@ -930,6 +930,7 @@ def get_all_forms(db: Session):
             "user_id": form.user_id,
             "title": form.title,
             "description": form.description,
+            "format_type": form.format_type.value,
             "created_at": form.created_at,
             "category": {
                 "id": form.category.id,
