@@ -110,7 +110,8 @@ async def generate_pdf_from_form_id(
             .options(
                 joinedload(Response.answers).joinedload(Answer.question),
                 joinedload(Response.approvals).joinedload(ResponseApproval.user),
-                joinedload(Response.form)
+                joinedload(Response.form),
+                joinedload(Response.user) 
             )
         )
 
@@ -190,6 +191,13 @@ async def generate_pdf_from_form_id(
                 "submitted_at": r.submitted_at,
                 "approval_status": approval_result["status"],
                 "message": approval_result["message"],
+                "responded_by": {
+                    "id": r.user.id if r.user else None,
+                    "name": r.user.name if r.user else "Usuario no disponible",
+                    "email": r.user.email if r.user else None,
+                    "nickname": r.user.nickname if r.user else None,
+                    "num_document": r.user.num_document if r.user else None
+                },
                 "form": {
                     "form_id": r.form.id,
                     "title": r.form.title,

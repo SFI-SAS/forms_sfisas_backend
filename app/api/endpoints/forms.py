@@ -1974,7 +1974,8 @@ async def get_response_details_json(
             .options(
                 joinedload(Response.answers).joinedload(Answer.question),
                 joinedload(Response.approvals).joinedload(ResponseApproval.user),
-                joinedload(Response.form)
+                joinedload(Response.form),
+                joinedload(Response.user)  # ✅ AGREGAR ESTA LÍNEA
             )
         )
         
@@ -2005,7 +2006,7 @@ async def get_response_details_json(
                     'num_document': user_info.num_document
                 }
             })
-                
+        
         # Ordenar aprobaciones por sequence_number
         processed_approvals.sort(key=lambda x: x.get('sequence_number', 0))
         
@@ -2019,6 +2020,17 @@ async def get_response_details_json(
                 'file_path': answer.file_path
             })
         
+        # ✅ NUEVA SECCIÓN: Procesar información del usuario que respondió
+        responded_by = None
+        if response.user:
+            responded_by = {
+                'id': response.user.id,
+                'name': response.user.name,
+                'email': response.user.email,
+                'nickname': response.user.nickname,
+                'num_document': response.user.num_document
+            }
+        
         # Preparar respuesta JSON
         response_data = {
             'response_id': response.id,
@@ -2026,6 +2038,7 @@ async def get_response_details_json(
             'submitted_at': response.submitted_at.isoformat() if response.submitted_at else None,
             'approval_status': approval_result["status"],
             'message': approval_result["message"],
+            'responded_by': responded_by,  # ✅ AGREGAR ESTA LÍNEA
             'form': {
                 'id': response.form.id,
                 'title': response.form.title,

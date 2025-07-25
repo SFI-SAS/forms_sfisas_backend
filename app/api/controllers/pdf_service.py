@@ -827,6 +827,7 @@ class PdfGeneratorService:
                     'submitted_at': response.get('submitted_at', 'N/A'),
                     'approval_status': response.get('approval_status'),
                     'message': response.get('message'),
+                    'responded_by': response.get('responded_by', {}),
                     'answers': processed_answers,
                     'approvals': processed_approvals,
                     'show_qr': show_qr,  # ✅ NUEVO

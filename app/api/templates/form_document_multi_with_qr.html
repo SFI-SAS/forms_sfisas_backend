@@ -124,6 +124,40 @@
             margin: 30px 0;
         }
 
+        /* ✅ NUEVO: Estilos para la información del usuario que respondió */
+        .responded-by-section {
+            background-color: #f8f9fa;
+            border-left: 4px solid #28a745;
+            padding: 12px;
+            margin: 15px 0;
+            border-radius: 5px;
+        }
+
+        .responded-by-title {
+            color: #28a745;
+            font-weight: bold;
+            margin-bottom: 8px;
+            font-size: 11pt;
+        }
+
+        .user-info {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            font-size: 9pt;
+        }
+
+        .user-detail {
+            display: flex;
+            align-items: center;
+        }
+
+        .user-detail .icon {
+            margin-right: 5px;
+            color: #28a745;
+            font-weight: bold;
+        }
+
         /* ESTILOS PARA QR CODE EN ESQUINA */
         .qr-section {
             position: relative;
@@ -197,6 +231,36 @@
 
         {% for response in responses %}
         <div class="response-separator"></div>
+
+        <!-- ✅ NUEVO: Sección de quien respondió el formulario -->
+        {% if response.responded_by %}
+        <div class="responded-by-section">
+            <div class="responded-by-title">👤 Formulario Respondido Por:</div>
+            <div class="user-info">
+                {% if response.responded_by.name %}
+                <div class="user-detail">
+                    <span class="icon">📝</span>
+                    <strong>{{ response.responded_by.name }}</strong>
+                </div>
+                {% endif %}
+                
+                {% if response.responded_by.email %}
+                <div class="user-detail">
+                    <span class="icon">📧</span>
+                    {{ response.responded_by.email }}
+                </div>
+                {% endif %}
+                
+                {% if response.responded_by.num_document %}
+                <div class="user-detail">
+                    <span class="icon">🆔</span>
+                    Doc: {{ response.responded_by.num_document }}
+                </div>
+                {% endif %}
+         
+            </div>
+        </div>
+        {% endif %}
 
         {% if response.show_qr and response.qr_code_data %}
             <!-- MOSTRAR QR CODE EN ESQUINA -->
