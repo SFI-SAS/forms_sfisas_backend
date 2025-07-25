@@ -106,7 +106,7 @@ async def generate_pdf_from_form_id(
         # Obtener las respuestas del formulario para el usuario actual
         stmt = (
             select(Response)
-            .where(Response.form_id == form_id, Response.user_id == current_user.id)
+            .where(Response.form_id == form_id)
             .options(
                 joinedload(Response.answers).joinedload(Answer.question),
                 joinedload(Response.approvals).joinedload(ResponseApproval.user),
