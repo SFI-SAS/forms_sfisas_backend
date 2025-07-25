@@ -1,9 +1,10 @@
+import logging
 import os
 import shutil
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
-from typing import List
+from typing import Any, List
 from app.database import get_db
 from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormSchedule, Response, ResponseApproval, User, UserType
 from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category_by_id, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_form_categories, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_user, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_approvals, send_rejection_email_to_all, update_form_design_service, update_notification_status, update_response_approval_status
@@ -1798,15 +1799,15 @@ def check_logo_exists():
     try:
         if not os.path.exists(UPLOAD_FOLDER):
             return {"exists": False, "reason": "Carpeta no existe"}
-        
+            
         archivos = os.listdir(UPLOAD_FOLDER)
         if not archivos:
             return {"exists": False, "reason": "No hay archivos"}
-        
+            
         imagen_path = os.path.join(UPLOAD_FOLDER, archivos[0])
         if not os.path.isfile(imagen_path):
             return {"exists": False, "reason": "Archivo no válido"}
-        
+            
         return {
             "exists": True, 
             "filename": archivos[0],
@@ -1814,24 +1815,31 @@ def check_logo_exists():
         }
     except Exception as e:
         return {"exists": False, "reason": f"Error: {str(e)}"}
-
+    
 # Soporte para HEAD requests
 @router.head("/public-logo/")
 def head_public_logo():
     """HEAD request para verificar existencia sin descargar"""
     if not os.path.exists(UPLOAD_FOLDER):
         raise HTTPException(status_code=404, detail="No se encontró la carpeta de logo.")
-    
+        
     archivos = os.listdir(UPLOAD_FOLDER)
     if not archivos:
         raise HTTPException(status_code=404, detail="No hay imagen guardada.")
-    
+        
     imagen_path = os.path.join(UPLOAD_FOLDER, archivos[0])
     if not os.path.isfile(imagen_path):
         raise HTTPException(status_code=404, detail="Archivo de logo no encontrado.")
     
-    # ESTA ES LA CORRECCIÓN - Response correcto para FastAPI
-    return Response(status_code=200)
+    # SOLUCIÓN 1: Usar Response de FastAPI/Starlette (recomendado)
+    from fastapi import Response
+    return Response(status_code=200, headers={
+        "Cache-Control": "public, max-age=300",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "*"
+    })
+
 
 # Endpoints para categorías de formularios
 
@@ -1943,3 +1951,97 @@ def get_form_category_with_forms(
         raise HTTPException(status_code=404, detail="Categoría no encontrada")
     
     return category
+
+@router.get("/api/forms/{form_id}/response/{response_id}/details")
+async def get_response_details_json(
+    form_id: int,
+    response_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Endpoint API que devuelve los detalles de una respuesta en formato JSON.
+    Para ser consumido por el frontend Astro.
+    No requiere autenticación.
+    """
+    try:
+        # Obtener la respuesta específica
+        stmt = (
+            select(Response)
+            .where(
+                Response.id == response_id,
+                Response.form_id == form_id
+            )
+            .options(
+                joinedload(Response.answers).joinedload(Answer.question),
+                joinedload(Response.approvals).joinedload(ResponseApproval.user),
+                joinedload(Response.form)
+            )
+        )
+        
+        response = db.execute(stmt).unique().scalar_one_or_none()
+        
+        if not response:
+            raise HTTPException(status_code=404, detail="Respuesta no encontrada")
+        
+        # Obtener el estado de aprobación
+        approval_result = get_response_approval_status(response.approvals)
+        
+        # Procesar las aprobaciones
+        processed_approvals = []
+        for approval in response.approvals:
+            user_info = approval.user
+            processed_approvals.append({
+                'approval_id': approval.id,
+                'sequence_number': approval.sequence_number,
+                'is_mandatory': approval.is_mandatory,
+                'reconsideration_requested': approval.reconsideration_requested,
+                'status': approval.status.value,
+                'reviewed_at': approval.reviewed_at.isoformat() if approval.reviewed_at else None,
+                'message': approval.message,
+                'user': {
+                    'name': user_info.name,
+                    'email': user_info.email,
+                    'nickname': user_info.nickname,
+                    'num_document': user_info.num_document
+                }
+            })
+                
+        # Ordenar aprobaciones por sequence_number
+        processed_approvals.sort(key=lambda x: x.get('sequence_number', 0))
+        
+        # Procesar respuestas del formulario
+        form_answers = []
+        for answer in response.answers:
+            form_answers.append({
+                'question_text': answer.question.question_text,
+                'answer_text': answer.answer_text,
+                'question_type': answer.question.question_type,
+                'file_path': answer.file_path
+            })
+        
+        # Preparar respuesta JSON
+        response_data = {
+            'response_id': response.id,
+            'repeated_id': response.repeated_id,
+            'submitted_at': response.submitted_at.isoformat() if response.submitted_at else None,
+            'approval_status': approval_result["status"],
+            'message': approval_result["message"],
+            'form': {
+                'id': response.form.id,
+                'title': response.form.title,
+                'description': response.form.description
+            },
+            'approvals': processed_approvals,
+            'answers': form_answers
+        }
+        
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error al obtener detalles de respuesta: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Error interno del servidor"
+        )

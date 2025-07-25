@@ -90,7 +90,6 @@ def get_response_approval_status(approvals: List[ResponseApproval]) -> Dict[str,
         "status": latest_approval.status.value,
         "message": latest_approval.message or "Sin mensaje"
     }
-
 async def generate_pdf_from_form_id(
     form_id: int,
     db: Session,
@@ -99,7 +98,7 @@ async def generate_pdf_from_form_id(
 ) -> bytes:
     """
     Función para generar un PDF a partir de un form_id con procesamiento de ubicación.
-    MODIFICADO: Ahora procesa TODAS las respuestas del formulario.
+    MODIFICADO: Ahora incluye códigos QR para detalles de respuesta.
     """
     logging.info(f"Generating PDF for form_id: {form_id}, user: {current_user.id}")
     
@@ -259,21 +258,26 @@ async def generate_pdf_from_form_id(
         else:
             logging.warning(f"⚠️ No logo files found in {ABSOLUTE_UPLOAD_FOLDER}")
         
-        # Obtener el servicio de PDF con la carpeta de uploads absoluta
-        templates_env = request.app.state.templates_env
+        # ✅ NUEVO: Obtener la URL base desde el request
+        base_url = f"{request.url.scheme}://{request.url.netloc}"
+        logging.info(f"Using base URL for QR codes: {base_url}")
         
+        # Obtener el servicio de PDF con la carpeta de uploads absoluta y URL base
+        templates_env = request.app.state.templates_env
+        frontend_url = "http://localhost:4321" 
         pdf_service = PdfGeneratorService(
             templates_env=templates_env,
-            upload_folder=ABSOLUTE_UPLOAD_FOLDER
+            upload_folder=ABSOLUTE_UPLOAD_FOLDER,
+            base_url=frontend_url  # ✅ NUEVO: Pasar URL base
         )
         
-        logging.info(f"PDF service initialized with upload folder: {ABSOLUTE_UPLOAD_FOLDER}")
+        logging.info(f"PDF service initialized with upload folder: {ABSOLUTE_UPLOAD_FOLDER} and base URL: {base_url}")
         
-        # ✅ MODIFICADO: Generar el PDF con todas las respuestas
+        # ✅ MODIFICADO: Generar el PDF con todas las respuestas y QR codes
         pdf_bytes = pdf_service.generate_pdf_multi_responses(form_data=form_data_complete)
         
         if not pdf_bytes:
-            logging.error("PdfGeneratorService returned empty bytes.")
+            logging.error("PdfGeneratorService returned empty PDF bytes.")
             raise HTTPException(
                 status_code=500, 
                 detail="La generación del PDF resultó en un archivo vacío. Por favor, revisa los logs del servidor para más detalles."

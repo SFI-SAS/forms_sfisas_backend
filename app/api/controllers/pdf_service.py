@@ -5,9 +5,10 @@ import os
 import base64
 import logging
 from jinja2 import Environment
+import qrcode
 from weasyprint import HTML, CSS
 from typing import List, Dict, Any, Optional, Union
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 import requests
 from pathlib import Path
 
@@ -17,17 +18,58 @@ from app.api.schemas.form_data import FormData
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class PdfGeneratorService:
-    def __init__(self, templates_env: Environment, upload_folder: str):
-        """
-        Inicializa el servicio con el entorno de plantillas de Jinja2 y la carpeta de uploads.
-        
-        Args:
-            templates_env: Entorno de plantillas de Jinja2
-            upload_folder: Carpeta donde se almacenan los logos
-        """
+    def __init__(self, templates_env, upload_folder: str, base_url: str = "http://localhost:4321"):
         self.templates_env = templates_env
         self.upload_folder = upload_folder
+        self.base_url = base_url  # Base URL de tu aplicación
 
+    def _generate_qr_code(self, url: str) -> str:
+        """
+        Genera un código QR para la URL dada y lo retorna como base64 string.
+        """
+        try:
+            # Crear el código QR
+            qr = qrcode.QRCode(
+                version=1,
+                error_correction=qrcode.constants.ERROR_CORRECT_L,
+                box_size=10,
+                border=4,
+            )
+            qr.add_data(url)
+            qr.make(fit=True)
+
+            # Crear imagen del QR
+            qr_image = qr.make_image(fill_color="black", back_color="white")
+            
+            # Convertir a base64
+            buffered = io.BytesIO()
+            qr_image.save(buffered, format="PNG")
+            qr_base64 = base64.b64encode(buffered.getvalue()).decode()
+            
+            return f"data:image/png;base64,{qr_base64}"
+            
+        except Exception as e:
+            logging.error(f"Error generating QR code: {e}")
+            return None
+
+
+    def _should_show_qr_for_response(self, response: dict) -> bool:
+        """
+        Determina si debe mostrar QR en lugar de la información detallada.
+        Retorna True si hay información de aprobaciones o datos generales significativos.
+        """
+        # Verificar si hay aprobaciones
+        has_approvals = response.get('approvals') and len(response.get('approvals', [])) > 0
+        
+        # Verificar si hay información general significativa
+        has_general_info = (
+            response.get('response_id') or 
+            response.get('submitted_at') or 
+            response.get('approval_status') or 
+            response.get('message')
+        )
+        
+        return has_approvals or has_general_info
     def _convert_image_to_base64(self, image_path: str) -> Optional[str]:
         """
         Convierte una imagen local a base64 para uso en WeasyPrint.
@@ -611,12 +653,12 @@ class PdfGeneratorService:
                 logging.error("HTML content was not generated before the error occurred.")
             raise
 
-# Agregar este método a la clase PdfGeneratorService existente
+
 
     def generate_pdf_multi_responses(self, form_data: Dict[str, Any]) -> bytes:
         """
         Genera un documento PDF a partir de múltiples respuestas del formulario.
-        ✅ NUEVO MÉTODO para manejar múltiples respuestas.
+        MODIFICADO: Incluye generación de códigos QR para detalles de respuesta.
         """
         logging.info(f"Received request to generate PDF for multiple responses.")
         
@@ -634,13 +676,14 @@ class PdfGeneratorService:
 
         try:
             # 1. Cargar la plantilla Jinja2
-            template = self.templates_env.get_template('form_document_multi.html')
-            logging.info(f"Jinja2 template 'form_document_multi.html' loaded.")
+            template = self.templates_env.get_template('form_document_multi_with_qr.html')
+            logging.info(f"Jinja2 template 'form_document_multi_with_qr.html' loaded.")
 
             # Preparar datos para la plantilla
             form_title = form_info.get('title', '')
             form_description = form_info.get('description', '')
             form_design = form_info.get('form_design', [])
+            form_id = form_data.get('form_id')
 
             # Debug del form_design
             self._debug_form_design(form_design)
@@ -724,7 +767,7 @@ class PdfGeneratorService:
                                 logging.info(f"Footer text found: '{footer_text}'")
                         break
 
-            # ✅ MODIFICADO: Procesar todas las respuestas
+            # ✅ MODIFICADO: Procesar todas las respuestas con QR codes
             processed_responses = []
             for response in responses:
                 # Procesar respuestas de cada formulario
@@ -752,13 +795,30 @@ class PdfGeneratorService:
                         'user': {
                             'name': user_info.get('name', ''),
                             'email': user_info.get('email', ''),
-                            'nickname': user_info.get('nickname', ''),
                             'num_document': user_info.get('num_document', ''),
                         }
                     })
                 
                 # Ordenar aprobaciones por sequence_number
                 processed_approvals.sort(key=lambda x: x.get('sequence_number', 0))
+
+                # ✅ NUEVO: Determinar si mostrar QR y generar URL
+                show_qr = self._should_show_qr_for_response(response)
+                qr_code_data = None
+                details_url = None
+                            
+                if show_qr:
+                    # Generar URL para el frontend Astro
+                    response_id = response.get('response_id')
+                    details_url = urljoin(
+                        self.base_url, 
+                        f"/forms/{form_id}/response/{response_id}/details"  # ← Esta será tu página de Astro
+                    )
+                    
+                    # Generar código QR
+                    qr_code_data = self._generate_qr_code(details_url)
+                    logging.info(f"✅ QR code generated for response {response_id}: {details_url}")
+                
 
                 # Agregar respuesta procesada
                 processed_responses.append({
@@ -768,22 +828,25 @@ class PdfGeneratorService:
                     'approval_status': response.get('approval_status'),
                     'message': response.get('message'),
                     'answers': processed_answers,
-                    'approvals': processed_approvals
+                    'approvals': processed_approvals,
+                    'show_qr': show_qr,  # ✅ NUEVO
+                    'qr_code_data': qr_code_data,  # ✅ NUEVO
+                    'details_url': details_url  # ✅ NUEVO
                 })
 
-            logging.info(f"Processed {len(processed_responses)} responses with answers and approvals.")
+            logging.info(f"Processed {len(processed_responses)} responses with QR codes.")
 
-            # ✅ MODIFICADO: Template data para múltiples respuestas
+            # ✅ MODIFICADO: Template data para múltiples respuestas con QR
             template_data = {
                 'form_title': form_title,
                 'form_description': form_description,
                 'header_html': header_html,
                 'footer_text': footer_text,
-                'responses': processed_responses,  # ✅ TODAS las respuestas
+                'responses': processed_responses,  # ✅ TODAS las respuestas con QR
                 'total_responses': total_responses,
                 'form_id': form_data.get('form_id'),
             }
-            logging.info(f"Template data prepared for {len(processed_responses)} responses.")
+            logging.info(f"Template data prepared for {len(processed_responses)} responses with QR codes.")
 
             # 3. Renderizar la plantilla con los datos
             html_content = template.render(template_data)
