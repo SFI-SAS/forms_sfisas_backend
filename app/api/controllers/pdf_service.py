@@ -18,7 +18,7 @@ from app.api.schemas.form_data import FormData
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class PdfGeneratorService:
-    def __init__(self, templates_env, upload_folder: str, base_url: str = "http://localhost:4321"):
+    def __init__(self, templates_env, upload_folder: str, base_url: str = "https://forms.sfisas.com.co/"):
         self.templates_env = templates_env
         self.upload_folder = upload_folder
         self.base_url = base_url  # Base URL de tu aplicación
