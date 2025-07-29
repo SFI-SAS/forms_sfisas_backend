@@ -4,7 +4,7 @@ from jinja2 import Environment, FileSystemLoader
 from app.crud import  get_response_details_logic, get_schedules_by_frequency
 from app.database import SessionLocal, engine
 from app.models import Base
-from app.api.endpoints import list_form, pdf_router, projects, responses, users, forms, auth, questions
+from app.api.endpoints import list_form, pdf_router, projects, responses, responsibilitytransfer, users, forms, auth, questions
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -52,6 +52,7 @@ app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(projects.router,prefix="/projects", tags=["projects"] )
 app.include_router(responses.router,prefix="/responses", tags=["responses"] )
 app.include_router(list_form.router, prefix="/list_form", tags=["list_form"] )
+app.include_router(responsibilitytransfer.router, prefix="/responsibilitytransfer", tags=["responsibility_transfer"])
 # Crear todas las tablas definidas en models.py
 Base.metadata.create_all(bind=engine)
 

@@ -1135,3 +1135,23 @@ async def delete_response(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error deleting response: {str(e)}"
         )
+        
+        
+
+@router.put("/approvals/{response_id}/reset-reconsideration")
+def reset_reconsideration_requested(
+    response_id: int,  # Cambiar de approval_id a response_id
+    db: Session = Depends(get_db)
+):
+    # Buscar la aprobación por response_id
+    approval = db.query(ResponseApproval).filter(
+        ResponseApproval.response_id == response_id
+    ).first()
+    
+    if not approval:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    
+    approval.reconsideration_requested = None
+    db.commit()
+    
+    return {"message": "Reconsideration field set to null", "id": approval.id}

@@ -2380,6 +2380,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
     Esta función consulta las aprobaciones asignadas al usuario, valida que sea su turno 
     (es decir, que los aprobadores anteriores obligatorios ya hayan aprobado) 
     y construye una estructura de datos con toda la información relevante de las respuestas y sus aprobadores.
+    Incluye el historial de cambios en las respuestas para trazabilidad.
 
     Parámetros:
     ----------
@@ -2397,6 +2398,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
         - Respuestas por pregunta (texto, archivo si aplica).
         - Estado de aprobación del usuario actual.
         - Estado de todos los aprobadores del flujo.
+        - Historial de cambios en respuestas.
     """
     results = []
 
@@ -2410,7 +2412,6 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
         form = form_approval.form
 
         # 📌 Mostrar plantilla de aprobadores para este formulario
-
         approval_template = db.query(FormApproval).filter(FormApproval.form_id == form.id).order_by(FormApproval.sequence_number).all()
 
         for approver in approval_template:
@@ -2419,7 +2420,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
         responses = db.query(Response).filter(Response.form_id == form.id).all()
 
         for response in responses:
-# Filtramos todas las aprobaciones del usuario para esta respuesta
+            # Filtramos todas las aprobaciones del usuario para esta respuesta
             response_approvals = db.query(ResponseApproval).filter(
                 ResponseApproval.response_id == response.id,
                 ResponseApproval.user_id == user_id
@@ -2430,7 +2431,6 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 (ra for ra in response_approvals if ra.status != ApprovalStatus.aprobado),
                 response_approvals[-1] if response_approvals else None
             )
-
 
             if not response_approval:
                 continue  # Este usuario no debe aprobar esta respuesta
@@ -2449,27 +2449,85 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
             if not all_prev_approved:
                 continue  # Todavía no es el turno de este aprobador
 
-            # 📌 Mostrar estado de cada aprobador de esta respuesta
+            # 📌 NUEVO: Obtener historial de respuestas para esta response
+            histories = db.query(AnswerHistory).filter(AnswerHistory.response_id == response.id).all()
+            
+            # Obtener todos los IDs de respuestas (previous y current) del historial
+            all_answer_ids = set()
+            for history in histories:
+                if history.previous_answer_id:
+                    all_answer_ids.add(history.previous_answer_id)
+                all_answer_ids.add(history.current_answer_id)
+            
+            # Obtener todas las respuestas del historial con sus preguntas
+            historical_answers = {}
+            if all_answer_ids:
+                historical_answer_list = (
+                    db.query(Answer)
+                    .options(joinedload(Answer.question))
+                    .filter(Answer.id.in_(all_answer_ids))
+                    .all()
+                )
+                
+                # Crear mapeo de answer_id -> Answer
+                for answer in historical_answer_list:
+                    historical_answers[answer.id] = answer
+            
+            # Crear mapeo de current_answer_id -> history
+            history_map = {}
+            # Crear conjunto de previous_answer_ids para saber cuáles no mostrar individualmente
+            previous_answer_ids = set()
+            
+            for history in histories:
+                history_map[history.current_answer_id] = history
+                if history.previous_answer_id:
+                    previous_answer_ids.add(history.previous_answer_id)
 
-            response_approvals = db.query(ResponseApproval).filter(
+            # 📌 Mostrar estado de cada aprobador de esta respuesta
+            response_approvals_all = db.query(ResponseApproval).filter(
                 ResponseApproval.response_id == response.id
             ).order_by(ResponseApproval.sequence_number).all()
 
-            for ra in response_approvals:
+            for ra in response_approvals_all:
                 user_ra = ra.user
 
-
+            # 📌 MODIFICADO: Obtener respuestas actuales (excluyendo las que son previous_answer_ids)
             answers = db.query(Answer, Question).join(Question).filter(
-                Answer.response_id == response.id
+                Answer.response_id == response.id,
+                ~Answer.id.in_(previous_answer_ids) if previous_answer_ids else True
             ).all()
 
-            answers_data = [{
-                "question_id": q.id,
-                "question_text": q.question_text,
-                "question_type": q.question_type,
-                "answer_text": a.answer_text,
-                "file_path": a.file_path
-            } for a, q in answers]
+            answers_data = []
+            for a, q in answers:
+                answer_data = {
+                    "question_id": q.id,
+                    "question_text": q.question_text,
+                    "question_type": q.question_type,
+                    "answer_text": a.answer_text,
+                    "file_path": a.file_path,
+                    "answer_id": a.id,
+                    "has_history": a.id in history_map
+                }
+                
+                # 📌 NUEVO: Agregar información del historial si existe
+                if a.id in history_map:
+                    history = history_map[a.id]
+                    previous_answer = historical_answers.get(history.previous_answer_id) if history.previous_answer_id else None
+                    
+                    answer_data["history"] = {
+                        "previous_answer": {
+                            "answer_text": previous_answer.answer_text if previous_answer else None,
+                            "file_path": previous_answer.file_path if previous_answer else None,
+                        } if previous_answer else None,
+                        "was_modified": True
+                    }
+                else:
+                    answer_data["history"] = {
+                        "previous_answer": None,
+                        "was_modified": False
+                    }
+                
+                answers_data.append(answer_data)
 
             all_approvals = [{
                 "user_id": ra.user_id,
@@ -2484,17 +2542,17 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                     "email": ra.user.email,
                     "num_document": ra.user.num_document
                 }
-            } for ra in response_approvals]
-
+            } for ra in response_approvals_all]
 
             user_response = db.query(User).filter(User.id == response.user_id).first()
 
-            results.append({
+            # 📌 NUEVO: Agregar información del historial a nivel de respuesta
+            response_data = {
                 "deadline_days": form_approval.deadline_days,
                 "form_id": form.id,
                 "form_title": form.title,
                 "form_description": form.description,
-                "form_design":form.form_design,
+                "form_design": form.form_design,
                 "submitted_by": {
                     "user_id": user_response.id,
                     "name": user_response.name,
@@ -2510,12 +2568,17 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                     "message": response_approval.message,
                     "sequence_number": response_approval.sequence_number
                 },
-                "all_approvers": all_approvals
-            })
+                "all_approvers": all_approvals,
+                "response_history": {
+                    "has_modifications": len(histories) > 0,
+                    "total_changes": len(histories),
+                    "modified_answers_count": len([a for a in answers_data if a["has_history"]])
+                }
+            }
+
+            results.append(response_data)
 
     return results
-
-
 def get_bogota_time() -> datetime:
     """Retorna la hora actual con la zona horaria de Bogotá."""
     return datetime.now(pytz.timezone("America/Bogota"))
@@ -2738,6 +2801,7 @@ def build_email_html_approvers(aprobacion_info: dict) -> str:
     </html>
     """
     return html
+
 
 
 def send_mails_to_next_supporters(response_id: int, db: Session):
