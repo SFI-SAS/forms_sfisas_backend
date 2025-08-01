@@ -10,7 +10,7 @@ from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, ResponseApproval, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
 from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
@@ -603,80 +603,92 @@ def delete_question_from_db(db: Session, question_id: int):
     db.query(Question).filter(Question.id == question_id).delete()
 
     db.commit()
-def post_create_response(db: Session, form_id: int, user_id: int, mode: str = "online", repeated_id: Optional[str] = None):
 
-    """Crea una nueva respuesta en la base de datos y sus aprobaciones correspondientes."""
 
+def post_create_response(
+    db: Session, 
+    form_id: int, 
+    user_id: int, 
+    mode: str = "online", 
+    repeated_id: Optional[str] = None, 
+    create_approvals: bool = True,
+    status: ResponseStatus = ResponseStatus.draft  # NUEVO PARÁMETRO
+):
+    """Función modificada para incluir el estado"""
+    
     form = db.query(Form).filter(Form.id == form_id).first()
     user = db.query(User).filter(User.id == user_id).first()
 
     if not form:
-        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+        raise HTTPException(status_code=404, detail="Form not found")
     if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        raise HTTPException(status_code=404, detail="User not found")
 
-    # Contador por modo
-    last_mode_response = (
-        db.query(Response)
-        .filter(Response.mode == mode)
-        .order_by(Response.mode_sequence.desc())
-        .first()
-    )
-
+    # Crear response con estado
+    last_mode_response = db.query(Response).filter(Response.mode == mode).order_by(Response.mode_sequence.desc()).first()
     new_mode_sequence = last_mode_response.mode_sequence + 1 if last_mode_response else 1
 
-    # Crear nueva respuesta
     response = Response(
         form_id=form_id,
         user_id=user_id,
         mode=mode,
         mode_sequence=new_mode_sequence,
         submitted_at=func.now(),
-        repeated_id=repeated_id  # Aquí se asigna
+        repeated_id=repeated_id,
+        status=status  # NUEVO CAMPO
     )
-
-
     db.add(response)
     db.commit()
     db.refresh(response)
 
-        # Obtener aprobadores desde FormApproval
-    form_approvals = db.query(FormApproval).filter(FormApproval.form_id == form_id, FormApproval.is_active == True).all()
-
-    # Crear entradas en ResponseApproval
-    for approver in form_approvals:
-        response_approval = ResponseApproval(
-            response_id=response.id,
-            user_id=approver.user_id,
-            sequence_number=approver.sequence_number,
-            is_mandatory=approver.is_mandatory,
-            status=ApprovalStatus.pendiente,  # estado inicial
-        )
-        db.add(response_approval)
-
-    db.commit()
+    approvers_created = 0
     
-    send_mails_to_next_supporters(response.id , db)
+    if create_approvals:
+        form_approvals = db.query(FormApproval).filter(
+            FormApproval.form_id == form_id, 
+            FormApproval.is_active == True
+        ).all()
+
+        for approver in form_approvals:
+            response_approval = ResponseApproval(
+                response_id=response.id,
+                user_id=approver.user_id,
+                sequence_number=approver.sequence_number,
+                is_mandatory=approver.is_mandatory,
+                status=ApprovalStatus.pendiente,
+            )
+            db.add(response_approval)
+            approvers_created += 1
+
+        db.commit()
+        
+        if approvers_created > 0:
+            send_mails_to_next_supporters(response.id, db)
 
     return {
-        "message": "Nueva respuesta guardada exitosamente",
+        "message": "Response saved successfully",
         "response_id": response.id,
+        "status": status.value,
         "mode": mode,
         "mode_sequence": new_mode_sequence,
-        "approvers_created": len(form_approvals)
+        "approvers_created": approvers_created
     }
-async def create_answer_in_db(answer, db: Session, current_user: User, request):
-    created_answers = []
+
+
+async def create_answer_in_db(answer, db: Session, current_user: User, request, send_emails: bool = True):
+    """Modificada para recibir parámetro send_emails"""
     
+    created_answers = []
+
+    # Lógica de guardado existente (sin cambios)
     if isinstance(answer.question_id, str):
         try:
             parsed_answer = json.loads(answer.answer_text)
             if not isinstance(parsed_answer, dict):
-                raise ValueError("answer_text debe ser un JSON de tipo dict para respuestas múltiples")
-                         
+                raise ValueError("answer_text must be JSON dict for multiple answers")
+
             for question_id_str, text in parsed_answer.items():
                 question_id = int(question_id_str)
-                 
                 new_answer = Answer(
                     response_id=answer.response_id,
                     question_id=question_id,
@@ -686,62 +698,47 @@ async def create_answer_in_db(answer, db: Session, current_user: User, request):
                 db.add(new_answer)
                 db.flush()
                 created_answers.append(new_answer)
-             
+
             db.commit()
             for ans in created_answers:
                 db.refresh(ans)
-             
+
         except Exception as e:
             db.rollback()
-            raise HTTPException(status_code=400, detail=f"Error procesando respuestas múltiples: {str(e)}")
-    
-    # Caso de una sola respuesta (question_id como int)
+            raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
+
     elif isinstance(answer.question_id, int):
         single_answer_result = save_single_answer(answer, db)
         created_answers = [single_answer_result] if single_answer_result else []
-    
-    # Tipo de question_id no reconocido
     else:
-        raise HTTPException(status_code=400, detail="Tipo de question_id no válido. Debe ser int o str.")
-    
-    # NUEVA LÓGICA: Verificar aprobaciones y enviar emails si es necesario
-    if created_answers:
+        raise HTTPException(status_code=400, detail="Invalid question_id type")
+
+    # Solo enviar emails si send_emails=True
+    if created_answers and send_emails:
         try:
-            # Obtener el form_id desde la respuesta
             response = db.query(Response).filter(Response.id == answer.response_id).first()
-            if not response:
-                raise HTTPException(status_code=404, detail="Response no encontrada")
-            
-            form_id = response.form_id
-            
-            # Verificar si el form_id existe en FormApproval y está activo
-            form_approval_exists = db.query(FormApproval).filter(
-                FormApproval.form_id == form_id,
-                FormApproval.is_active == True
-            ).first()
-            
-            # Si NO existe en FormApproval, enviar emails
-            if not form_approval_exists:
-                # Obtener el form completo para enviarlo a la función de emails
-                form = db.query(Form).filter(Form.id == form_id).first()
-                if form:
-                    await send_form_action_emails(form.id, db, current_user, request)
-        
+            if response:
+                form_approval_exists = db.query(FormApproval).filter(
+                    FormApproval.form_id == response.form_id,
+                    FormApproval.is_active == True
+                ).first()
+
+                if not form_approval_exists:
+                    form = db.query(Form).filter(Form.id == response.form_id).first()
+                    if form:
+                        await send_form_action_emails(form.id, db, current_user, request)
         except Exception as e:
-            # Log del error pero no interrumpir el proceso de guardado
-            print(f"Error en verificación de aprobaciones: {str(e)}")
-            # Opcionalmente podrías usar logging en lugar de print
-            # logger.error(f"Error en verificación de aprobaciones: {str(e)}")
-    
-    # Retornar resultado según el tipo de respuesta
+            print(f"Email error: {str(e)}")
+
+    # Retornar resultado
     if isinstance(answer.question_id, str):
         return {
-            "message": "Respuestas múltiples guardadas exitosamente",
+            "message": "Multiple answers saved",
             "answers": [{"id": a.id, "question_id": a.question_id} for a in created_answers]
         }
     else:
         return created_answers[0] if created_answers else None
-    
+ 
     
 def save_single_answer(answer, db: Session):
     existing_answer = db.query(Answer).filter(
@@ -3384,10 +3381,12 @@ def get_form_with_full_responses(form_id: int, db: Session):
     if not form:
         return None
 
+
     results = {
         "form_id": form.id,
         "title": form.title,
         "description": form.description,
+ 
         "questions": [
             {
                 "id": q.id,
@@ -3439,6 +3438,7 @@ def get_form_with_full_responses(form_id: int, db: Session):
     for response in form.responses:
         response_data = {
             "response_id": response.id,
+            "status": response.status,
             "user": {
                 "id": response.user.id,
                 "name": response.user.name,

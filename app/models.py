@@ -161,6 +161,13 @@ class Option(Base):
     question = relationship('Question', back_populates='options')
 
 # Modelo Responses
+
+class ResponseStatus(enum.Enum):
+    draft = "draft"                    # Guardado pero no enviado para aprobación
+    submitted = "submitted"            # Enviado para aprobación
+    approved = "approved"              # Aprobado completamente
+    rejected = "rejected"  
+    
 class Response(Base):
     __tablename__ = 'responses'
 
@@ -171,6 +178,9 @@ class Response(Base):
     mode_sequence = Column(Integer, nullable=False)  
     repeated_id = Column(String(80), nullable=True)
     submitted_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    
+    status = Column(Enum(ResponseStatus), default=ResponseStatus.draft, nullable=False)
+
 
     form = relationship('Form', back_populates='responses')
     user = relationship('User', back_populates='responses')

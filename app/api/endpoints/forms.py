@@ -294,6 +294,7 @@ def get_responses_with_answers(
 
         result.append({
             "response_id": r.id,
+            "status": r.status,
             "submitted_at": r.submitted_at,
             "approval_status": approval_result["status"],
             "message": approval_result["message"],

@@ -9,10 +9,10 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from app.api.controllers.mail import send_reconsideration_email
-from app.crud import create_answer_in_db, generate_unique_serial, post_create_response, process_responses_with_history
+from app.crud import create_answer_in_db, generate_unique_serial, post_create_response, process_responses_with_history, send_form_action_emails, send_mails_to_next_supporters
 from app.database import get_db
 from app.schemas import AnswerHistoryChangeSchema, AnswerHistoryCreate, FileSerialCreate, FilteredAnswersResponse, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
-from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, Form, FormApproval, FormQuestion, Question, QuestionFilterCondition, QuestionTableRelation, Response, ResponseApproval, User, UserType
+from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, Form, FormApproval, FormQuestion, FormatType, Question, QuestionFilterCondition, QuestionTableRelation, Response, ResponseApproval, ResponseStatus, User, UserType
 from app.core.security import get_current_user
 from typing import Dict
 from sqlalchemy import delete
@@ -36,112 +36,132 @@ def save_response(
     form_id: int,
     responses: List[ResponseItem] = Body(...),
     mode: str = Query("online", enum=["online", "offline"]),
+    action: str = Query("send", enum=["send", "send_and_close"]),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Guarda una nueva respuesta para un formulario específico.
-
-    Este endpoint permite guardar una respuesta al formulario identificado por `form_id`.
-    También se generan aprobaciones automáticas basadas en las reglas configuradas para el formulario.
-
-    Parámetros:
-    -----------
-    form_id : int
-        ID del formulario al cual pertenece la respuesta.
-
-    responses : List[ResponseItem]
-        Lista de respuestas proporcionadas por el usuario, que pueden incluir
-        datos como `question_id`, `answer_text`, `file_path`, `repeated_id`, etc.
-
-    mode : str
-        Modo de envío: `"online"` (por defecto) o `"offline"`.
-
-    current_user : User
-        Usuario autenticado que está enviando la respuesta.
-
-    db : Session
-        Sesión de base de datos inyectada por FastAPI.
-
-    Retorna:
-    --------
-    dict:
-        - `message`: Mensaje de confirmación.
-        - `response_id`: ID de la respuesta creada.
-        - `mode`: Modo en que fue registrada la respuesta.
-        - `mode_sequence`: Número de secuencia para ese modo.
-        - `approvers_created`: Número de aprobadores registrados para esta respuesta.
-
-    Lanza:
-    ------
-    HTTPException:
-        - 403: Si el usuario no tiene permisos para responder.
-        - 404: Si el formulario o el usuario no existen.
-    """
     if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to respond"
-        )
-    
-    # Imprimir para debug el repeated_id recibido en cada respuesta
-    for r in responses:
-        logging.info(f"Repeated_id recibido: '{r.repeated_id}' (length: {len(r.repeated_id) if r.repeated_id else 0})")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No permission")
+
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Form not found")
+
+    # Determinar estado y si crear aprobaciones
+    if form.format_type == FormatType.cerrado:
+        # Formato cerrado siempre se envía para aprobación
+        status = ResponseStatus.submitted
+        create_approvals = True
+    else:
+        # Formato abierto/semi_abierto depende de la acción
+        if action == "send_and_close":
+            status = ResponseStatus.submitted
+            create_approvals = True
+        else:  # action == "send"
+            status = ResponseStatus.draft
+            create_approvals = False
 
     repeated_id = extract_repeated_id(responses)
-    
-    logging.info(f"Repeated_id extraído para guardar: '{repeated_id}' (length: {len(repeated_id) if repeated_id else 0})")
+    return post_create_response(db, form_id, current_user.id, mode, repeated_id, create_approvals, status)
 
-    return post_create_response(db, form_id, current_user.id, mode, repeated_id)
 
-@router.post("/save-answers/")  
+@router.post("/save-answers/")
 async def create_answer(
-    answer: PostCreate, 
-    request: Request,
-    db: Session = Depends(get_db), 
+        request: Request,
+    answer: PostCreate,
+    action: str = Query("send", enum=["send", "send_and_close"]),  # NUEVO
+
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Crea una o múltiples respuestas para una respuesta (`response_id`) existente.
-
-    Este endpoint permite guardar una o varias respuestas relacionadas a una misma respuesta
-    de formulario. Si `question_id` es un `int`, se guarda una sola respuesta. Si es `str` con
-    formato JSON, se procesan múltiples respuestas al mismo tiempo.
-
-    Parámetros:
-    -----------
-    answer : PostCreate
-        Objeto con los datos necesarios para registrar una respuesta. Puede representar una
-        sola respuesta o un conjunto de respuestas.
-
-    request : Request
-        Objeto de solicitud para pasar al sistema de notificación por correo.
-
-    db : Session
-        Sesión activa de base de datos proporcionada por FastAPI.
-
-    current_user : User
-        Usuario autenticado que realiza la operación.
-
-    Retorna:
-    --------
-    - Si es una sola respuesta: dict con la respuesta creada.
-    - Si son múltiples respuestas: dict con lista de respuestas creadas.
-
-    Errores:
-    --------
-    - 403: Si el usuario no tiene permisos.
-    - 400: Si `question_id` no es válido o el JSON de múltiples respuestas no es correcto.
-    - 404: Si no se encuentra la respuesta (`response_id`) para asociar.
+    LÓGICA SIMPLE:
+    - action="send": Guarda respuestas SIN enviar emails
+    - action="send_and_close": Guarda respuestas Y envía emails si corresponde
+    - Para formato cerrado: IGNORA action, siempre envía emails
     """
     if current_user == None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No permission")
+
+    # Obtener formato del formulario
+    response = db.query(Response).filter(Response.id == answer.response_id).first()
+    if not response:
+        raise HTTPException(status_code=404, detail="Response not found")
+    
+    form = db.query(Form).filter(Form.id == response.form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Form not found")
+
+    # REGLA SIMPLE:
+    # - Cerrado = siempre enviar emails
+    # - Abierto/Semi_abierto = enviar solo si action="send_and_close"
+    send_emails = (form.format_type == FormatType.cerrado) or (action == "send_and_close")
+
+    new_answer = await create_answer_in_db(answer, db, current_user, request, send_emails)
+    return {"message": "Answer created", "answer": new_answer}
+
+
+@router.post("/close-response/{response_id}")
+async def close_response(
+    response_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No permission")
+
+    # Verificar que la respuesta existe, es del usuario Y está en draft
+    response = db.query(Response).filter(
+        Response.id == response_id, 
+        Response.user_id == current_user.id,
+        Response.status == ResponseStatus.draft  # NUEVA VALIDACIÓN
+    ).first()
+    
+    if not response:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get all questions"
+            status_code=404, 
+            detail="Response not found or already submitted"
         )
-    else: 
-        new_answer = await create_answer_in_db(answer, db, current_user, request)
-        return {"message": "Answer created", "answer": new_answer}
+
+    # Verificar el formato
+    form = db.query(Form).filter(Form.id == response.form_id).first()
+    if form.format_type == FormatType.cerrado:
+        raise HTTPException(
+            status_code=400, 
+            detail="Closed formats are automatically submitted"
+        )
+
+    # Cambiar estado a submitted
+    response.status = ResponseStatus.submitted
+    
+    # Crear aprobaciones
+    form_approvals = db.query(FormApproval).filter(
+        FormApproval.form_id == form.id, 
+        FormApproval.is_active == True
+    ).all()
+
+    for approver in form_approvals:
+        response_approval = ResponseApproval(
+            response_id=response_id,
+            user_id=approver.user_id,
+            sequence_number=approver.sequence_number,
+            is_mandatory=approver.is_mandatory,
+            status=ApprovalStatus.pendiente,
+        )
+        db.add(response_approval)
+
+    db.commit()
+
+    # Enviar notificaciones
+    send_mails_to_next_supporters(response_id, db)
+    await send_form_action_emails(form.id, db, current_user, request)
+
+    return {
+        "message": "Response submitted for approval successfully", 
+        "response_id": response_id,
+        "new_status": "submitted"
+    }
 
 UPLOAD_FOLDER = "./documents"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
