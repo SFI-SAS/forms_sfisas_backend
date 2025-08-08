@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field
 from typing import Any, Literal, Optional, List, Dict, Union
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 
 from app.models import ApprovalStatus
@@ -665,3 +665,22 @@ class FormResponse(BaseModel):
     
     class Config:
         from_attributes = True
+ 
+ 
+ 
+ 
+class FilterCondition(BaseModel):
+    field_id: int
+    operator: str  # "=", "!=", "contains", "starts_with", "ends_with", ">", "<", ">=", "<="
+    value: str
+    
+class DateFilter(BaseModel):
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+
+class DownloadRequest(BaseModel):
+    form_ids: List[int]
+    selected_fields: List[int]  # IDs de las preguntas que quiere incluir
+    conditions: List[FilterCondition] = []
+    date_filter: Optional[DateFilter] = None
+    limit: Optional[int] = 100  # Para preview
