@@ -2,11 +2,11 @@ import csv
 from enum import Enum
 from io import BytesIO
 import io
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.responses import StreamingResponse
 import pandas as pd
 from sqlalchemy.orm import Session, joinedload, selectinload
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, or_, select
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 from datetime import datetime
@@ -514,7 +514,8 @@ async def get_form_fields(form_id: int, db: Session = Depends(get_db)):
                          .filter(Response.form_id == form_id).scalar()
         }
     }
-    
+# REEMPLAZAR COMPLETAMENTE la función preview_download_data:
+
 @router.post("/download/preview")
 async def preview_download_data(
     request: DownloadRequest, 
@@ -532,58 +533,183 @@ async def preview_download_data(
         if request.date_filter.end_date:
             query = query.filter(Response.submitted_at <= request.date_filter.end_date)
     
-    # Aplicar condiciones personalizadas
-    for condition in request.conditions:
-        subquery = db.query(Answer.response_id).filter(
-            Answer.question_id == condition.field_id
-        )
-        
-        if condition.operator == "=":
-            subquery = subquery.filter(Answer.answer_text == condition.value)
-        elif condition.operator == "!=":
-            subquery = subquery.filter(Answer.answer_text != condition.value)
-        elif condition.operator == "contains":
-            subquery = subquery.filter(Answer.answer_text.contains(condition.value))
-        # ... más operadores
-        
-        query = query.filter(Response.id.in_(subquery))
+    # Aplicar condiciones personalizadas de forma inteligente
+    query = apply_smart_conditions(query, request.conditions, request.form_ids, db)
     
     # Obtener respuestas
     responses = query.limit(request.limit).all()
     
-    # Formatear datos para preview
+    # Obtener SOLO las preguntas seleccionadas
+    questions = db.query(Question).filter(Question.id.in_(request.selected_fields)).all()
+    question_dict = {q.id: q.question_text for q in questions}
+    
+    # Formatear datos SOLO con campos seleccionados y en orden
     preview_data = []
     for response in responses:
-        row = {
-            "response_id": response.id,
-            "user_id": response.user_id,
-            "submitted_at": response.submitted_at,
-            "form_title": response.form.title
-        }
+        # Crear objeto ordenado comenzando con campos base
+        row_data = []
         
-        # Agregar respuestas de campos seleccionados
-        for answer in response.answers:
-            if answer.question_id in request.selected_fields:
-                row[f"question_{answer.question_id}"] = answer.answer_text
+        # 1. Fecha Envío (siempre primera)
+        row_data.append(response.submitted_at.strftime("%Y-%m-%d %H:%M:%S"))
         
-        preview_data.append(row)
+        # 2. Formulario (siempre segunda)  
+        row_data.append(response.form.title)
+        
+        # 3. Solo las preguntas seleccionadas EN SU ORDEN
+        for field_id in request.selected_fields:
+            # Buscar la respuesta específica para este field_id
+            field_value = "Sin respuesta"
+            for answer in response.answers:
+                if answer.question_id == field_id:
+                    field_value = answer.answer_text or answer.file_path or "Sin respuesta"
+                    break
+            row_data.append(field_value)
+        
+        preview_data.append(row_data)
+    
+    # Crear headers en el orden correcto
+    headers = ["Fecha Envío", "Formulario"]
+    for field_id in request.selected_fields:
+        headers.append(question_dict.get(field_id, f"Pregunta_{field_id}"))
+    
+    # Convertir row_data arrays a objects para mantener compatibilidad
+    formatted_preview_data = []
+    for row_array in preview_data:
+        row_obj = {}
+        for i, header in enumerate(headers):
+            if i < len(row_array):
+                if i == 0:
+                    row_obj["submitted_at"] = row_array[i]
+                elif i == 1:
+                    row_obj["form_title"] = row_array[i]
+                else:
+                    # Para las preguntas, usar el field_id correspondiente
+                    field_index = i - 2
+                    if field_index < len(request.selected_fields):
+                        field_id = request.selected_fields[field_index]
+                        row_obj[f"question_{field_id}"] = row_array[i]
+        formatted_preview_data.append(row_obj)
     
     return {
         "total_records": query.count(),
-        "preview_records": len(preview_data),
-        "data": preview_data,
-        "columns": get_column_headers(request.selected_fields, db)
+        "preview_records": len(formatted_preview_data),
+        "data": formatted_preview_data,
+        "columns": headers,
+        "applied_conditions_summary": get_conditions_summary(request.conditions, request.form_ids, db)
     }
+    
+def get_conditions_summary(conditions: List[FilterCondition], form_ids: List[int], db: Session):
+    """
+    Retorna un resumen de qué condiciones se aplicaron a qué formularios
+    """
+    summary = []
+    
+    for condition in conditions:
+        # Obtener nombre de la pregunta
+        question = db.query(Question).filter(Question.id == condition.field_id).first()
+        question_text = question.question_text if question else f"Pregunta ID {condition.field_id}"
+        
+        # Determinar formularios afectados
+        if condition.target_form_ids:
+            affected_forms = condition.target_form_ids
+        else:
+            affected_forms = db.query(FormQuestion.form_id).filter(
+                FormQuestion.question_id == condition.field_id,
+                FormQuestion.form_id.in_(form_ids)
+            ).all()
+            affected_forms = [f.form_id for f in affected_forms]
+        
+        # Obtener nombres de formularios
+        if affected_forms:
+            form_names = db.query(Form.title).filter(Form.id.in_(affected_forms)).all()
+            form_names = [f.title for f in form_names]
+        else:
+            form_names = []
+        
+        summary.append({
+            "condition": f"{question_text} {condition.operator} '{condition.value}'",
+            "applied_to_forms": form_names,
+            "affected_form_count": len(form_names)
+        })
+    
+    return summary
 
+
+@router.get("/forms/fields-analysis")
+async def analyze_form_fields(
+    form_ids: List[int] = Query(...), 
+    db: Session = Depends(get_db)
+):
+    """
+    Analiza qué campos están disponibles en qué formularios.
+    Útil para el frontend para mostrar qué condiciones se pueden aplicar.
+    """
+    if not form_ids:
+        # Si no se proporcionan form_ids, obtener todos
+        all_forms = db.query(Form.id).all()
+        form_ids = [f.id for f in all_forms]
+    
+    # Obtener todas las preguntas usadas en los formularios seleccionados
+    questions_in_forms = db.query(
+        FormQuestion.form_id,
+        FormQuestion.question_id,
+        Question.question_text,
+        Question.question_type,
+        Form.title
+    ).join(
+        Question, FormQuestion.question_id == Question.id
+    ).join(
+        Form, FormQuestion.form_id == Form.id
+    ).filter(
+        FormQuestion.form_id.in_(form_ids)
+    ).all()
+    
+    # Organizar datos por pregunta
+    fields_analysis = {}
+    for fq in questions_in_forms:
+        if fq.question_id not in fields_analysis:
+            fields_analysis[fq.question_id] = {
+                "question_id": fq.question_id,
+                "question_text": fq.question_text,
+                "question_type": fq.question_type.value,
+                "available_in_forms": [],
+                "form_count": 0
+            }
+        
+        fields_analysis[fq.question_id]["available_in_forms"].append({
+            "form_id": fq.form_id,
+            "form_title": fq.title
+        })
+        fields_analysis[fq.question_id]["form_count"] += 1
+    
+    # Convertir a lista y ordenar por uso más común
+    result = list(fields_analysis.values())
+    result.sort(key=lambda x: x["form_count"], reverse=True)
+    
+    return {
+        "total_forms_selected": len(form_ids),
+        "fields_analysis": result,
+        "common_fields": [f for f in result if f["form_count"] == len(form_ids)],
+        "partial_fields": [f for f in result if f["form_count"] < len(form_ids)]
+    }
 def get_column_headers(field_ids: List[int], db: Session):
-    """Obtiene los headers de las columnas"""
-    questions = db.query(Question).filter(Question.id.in_(field_ids)).all()
-    headers = [
-         "Fecha Envío", "Formulario"
-    ]
-    headers.extend([q.question_text for q in questions])
+    """Obtiene los headers de las columnas EN EL ORDEN CORRECTO"""
+    # Headers base fijos
+    headers = ["Fecha Envío", "Formulario"]
+    
+    # Obtener preguntas y crear diccionario
+    if field_ids:
+        questions = db.query(Question).filter(Question.id.in_(field_ids)).all()
+        question_dict = {q.id: q.question_text for q in questions}
+        
+        # Agregar headers EN EL ORDEN de field_ids
+        for field_id in field_ids:
+            if field_id in question_dict:
+                headers.append(question_dict[field_id])
+            else:
+                headers.append(f"Pregunta_{field_id}")
+    
     return headers
-
 
 class DownloadFormat(str, Enum):
     excel = "excel"
@@ -612,9 +738,12 @@ async def generate_download(
         return generate_pdf_response(data)
     elif request.format == DownloadFormat.word:
         return generate_word_response(data)
+# REEMPLAZAR la función get_filtered_data en tu archivo backend:
+
+# REEMPLAZAR COMPLETAMENTE la función get_filtered_data:
 
 async def get_filtered_data(request: FinalDownloadRequest, db: Session, limit: Optional[int] = None):
-    """Función auxiliar que obtiene los datos filtrados"""
+    """Función auxiliar que obtiene los datos filtrados con lógica inteligente"""
     # Construir query base
     query = db.query(Response).filter(Response.form_id.in_(request.form_ids))
     
@@ -625,12 +754,132 @@ async def get_filtered_data(request: FinalDownloadRequest, db: Session, limit: O
         if request.date_filter.end_date:
             query = query.filter(Response.submitted_at <= request.date_filter.end_date)
     
-    # Aplicar condiciones personalizadas
-    for condition in request.conditions:
+    # Aplicar condiciones personalizadas de forma inteligente
+    query = apply_smart_conditions(query, request.conditions, request.form_ids, db)
+    
+    # Aplicar límite si se especifica
+    if limit:
+        responses = query.limit(limit).all()
+    else:
+        responses = query.all()
+    
+    # Obtener SOLO las preguntas seleccionadas
+    questions = db.query(Question).filter(Question.id.in_(request.selected_fields)).all()
+    question_dict = {q.id: q.question_text for q in questions}
+    
+    # Formatear datos SOLO con campos seleccionados
+    formatted_data = []
+    for response in responses:
+        row = {
+            "submitted_at": response.submitted_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "form_title": response.form.title
+        }
+        
+        # Agregar SOLO las preguntas seleccionadas EN SU ORDEN
+        for field_id in request.selected_fields:
+            column_name = question_dict.get(field_id, f"Pregunta_{field_id}")
+            field_value = "Sin respuesta"
+            for answer in response.answers:
+                if answer.question_id == field_id:
+                    field_value = answer.answer_text or answer.file_path or "Sin respuesta"
+                    break
+            row[column_name] = field_value
+        
+        formatted_data.append(row)
+    
+    # Crear lista de columnas en el orden correcto
+    ordered_columns = ["submitted_at", "form_title"]
+    for field_id in request.selected_fields:
+        column_name = question_dict.get(field_id, f"Pregunta_{field_id}")
+        ordered_columns.append(column_name)
+    
+    return {
+        "data": formatted_data,
+        "total_records": len(formatted_data),
+        "columns": ordered_columns
+    }
+    
+# def apply_smart_conditions(query, conditions: List[FilterCondition], form_ids: List[int], db: Session):
+#     for condition in conditions:
+#         # Formularios objetivo
+#         if condition.target_form_ids:
+#             target_forms = [fid for fid in condition.target_form_ids if fid in form_ids]
+#         else:
+#             target_forms = db.scalars(
+#                 select(FormQuestion.form_id)
+#                 .filter(
+#                     FormQuestion.question_id == condition.field_id,
+#                     FormQuestion.form_id.in_(form_ids)
+#                 )
+#                 .distinct()
+#             ).all()
+
+#         if not target_forms:
+#             continue
+
+#         # Subquery con respuestas que cumplen la condición
+#         subquery = select(Answer.response_id).filter(
+#             Answer.question_id == condition.field_id
+#         )
+
+#         if condition.operator == "=":
+#             subquery = subquery.filter(Answer.answer_text == condition.value)
+#         elif condition.operator == "!=":
+#             subquery = subquery.filter(Answer.answer_text != condition.value)
+#         elif condition.operator == "contains":
+#             subquery = subquery.filter(Answer.answer_text.contains(condition.value))
+#         elif condition.operator == "starts_with":
+#             subquery = subquery.filter(Answer.answer_text.startswith(condition.value))
+#         elif condition.operator == "ends_with":
+#             subquery = subquery.filter(Answer.answer_text.endswith(condition.value))
+#         elif condition.operator == ">":
+#             subquery = subquery.filter(Answer.answer_text > condition.value)
+#         elif condition.operator == "<":
+#             subquery = subquery.filter(Answer.answer_text < condition.value)
+#         elif condition.operator == ">=":
+#             subquery = subquery.filter(Answer.answer_text >= condition.value)
+#         elif condition.operator == "<=":
+#             subquery = subquery.filter(Answer.answer_text <= condition.value)
+
+#         query = query.filter(
+#             or_(
+#                 and_(
+#                     Response.form_id.in_(target_forms),
+#                     Response.id.in_(subquery)
+#                 ),
+#                 Response.form_id.notin_(target_forms)
+#             )
+#         )
+
+#     return query
+def apply_smart_conditions(query, conditions: List[FilterCondition], form_ids: List[int], db: Session):
+    """
+    Aplica condiciones de filtrado de forma inteligente.
+    Solo aplica cada condición a los formularios que tienen el campo específico.
+    """
+    for condition in conditions:
+        # Determinar a qué formularios aplicar esta condición
+        if condition.target_form_ids:
+            # Si se especificaron formularios específicos, usar esos
+            target_forms = [fid for fid in condition.target_form_ids if fid in form_ids]
+        else:
+            # Si no se especificaron, encontrar automáticamente qué formularios tienen esta pregunta
+            target_forms_query = db.query(FormQuestion.form_id).filter(
+                FormQuestion.question_id == condition.field_id,
+                FormQuestion.form_id.in_(form_ids)
+            ).all()
+            target_forms = [f.form_id for f in target_forms_query]
+        
+        if not target_forms:
+            # Si ningún formulario tiene esta pregunta, saltar la condición
+            continue
+        
+        # Crear subquery para respuestas que cumplen la condición
         subquery = db.query(Answer.response_id).filter(
             Answer.question_id == condition.field_id
         )
         
+        # Aplicar el operador específico
         if condition.operator == "=":
             subquery = subquery.filter(Answer.answer_text == condition.value)
         elif condition.operator == "!=":
@@ -650,42 +899,22 @@ async def get_filtered_data(request: FinalDownloadRequest, db: Session, limit: O
         elif condition.operator == "<=":
             subquery = subquery.filter(Answer.answer_text <= condition.value)
         
-        query = query.filter(Response.id.in_(subquery))
+        # Aplicar filtro inteligente:
+        # - Si la respuesta es de un formulario que tiene la pregunta, debe cumplir la condición
+        # - Si la respuesta es de un formulario que NO tiene la pregunta, se incluye sin filtro
+        query = query.filter(
+            or_(
+                # Respuestas de formularios que tienen el campo y cumplen la condición
+                and_(
+                    Response.form_id.in_(target_forms),
+                    Response.id.in_(subquery)
+                ),
+                # Respuestas de formularios que NO tienen el campo (se incluyen sin condición)
+                ~Response.form_id.in_(target_forms)
+            )
+        )
     
-    # Aplicar límite si se especifica
-    if limit:
-        responses = query.limit(limit).all()
-    else:
-        responses = query.all()
-    
-    # Obtener preguntas seleccionadas para headers
-    questions = db.query(Question).filter(Question.id.in_(request.selected_fields)).all()
-    question_dict = {q.id: q.question_text for q in questions}
-    
-    # Formatear datos
-    formatted_data = []
-    for response in responses:
-        row = {
-            "response_id": response.id,
-            "user_id": response.user_id,
-            "user_name": response.user.name if response.user else "N/A",
-            "submitted_at": response.submitted_at.strftime("%Y-%m-%d %H:%M:%S"),
-            "form_title": response.form.title
-        }
-        
-        # Agregar respuestas de campos seleccionados
-        for answer in response.answers:
-            if answer.question_id in request.selected_fields:
-                column_name = question_dict.get(answer.question_id, f"Pregunta_{answer.question_id}")
-                row[column_name] = answer.answer_text or answer.file_path or "Sin respuesta"
-        
-        formatted_data.append(row)
-    
-    return {
-        "data": formatted_data,
-        "total_records": len(formatted_data),
-        "columns": list(formatted_data[0].keys()) if formatted_data else []
-    }
+    return query
 
 def generate_excel_response(data: Dict):
     """Genera archivo Excel"""

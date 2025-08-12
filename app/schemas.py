@@ -673,6 +673,8 @@ class FilterCondition(BaseModel):
     field_id: int
     operator: str  # "=", "!=", "contains", "starts_with", "ends_with", ">", "<", ">=", "<="
     value: str
+    # Nuevo campo opcional para especificar formularios (Opción B)
+    target_form_ids: Optional[List[int]] = None  # Si es None, se aplica a todos los formularios que tengan el campo
     
 class DateFilter(BaseModel):
     start_date: Optional[datetime] = None
