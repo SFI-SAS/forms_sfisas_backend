@@ -558,10 +558,10 @@ async def preview_download_data(
         # 3. Solo las preguntas seleccionadas EN SU ORDEN
         for field_id in request.selected_fields:
             # Buscar la respuesta específica para este field_id
-            field_value = "Sin respuesta"
+            field_value = "-"
             for answer in response.answers:
                 if answer.question_id == field_id:
-                    field_value = answer.answer_text or answer.file_path or "Sin respuesta"
+                    field_value = answer.answer_text or answer.file_path or "-"
                     break
             row_data.append(field_value)
         
@@ -778,10 +778,10 @@ async def get_filtered_data(request: FinalDownloadRequest, db: Session, limit: O
         # Agregar SOLO las preguntas seleccionadas EN SU ORDEN
         for field_id in request.selected_fields:
             column_name = question_dict.get(field_id, f"Pregunta_{field_id}")
-            field_value = "Sin respuesta"
+            field_value = "-"
             for answer in response.answers:
                 if answer.question_id == field_id:
-                    field_value = answer.answer_text or answer.file_path or "Sin respuesta"
+                    field_value = answer.answer_text or answer.file_path or "-"
                     break
             row[column_name] = field_value
         
@@ -799,59 +799,7 @@ async def get_filtered_data(request: FinalDownloadRequest, db: Session, limit: O
         "columns": ordered_columns
     }
     
-# def apply_smart_conditions(query, conditions: List[FilterCondition], form_ids: List[int], db: Session):
-#     for condition in conditions:
-#         # Formularios objetivo
-#         if condition.target_form_ids:
-#             target_forms = [fid for fid in condition.target_form_ids if fid in form_ids]
-#         else:
-#             target_forms = db.scalars(
-#                 select(FormQuestion.form_id)
-#                 .filter(
-#                     FormQuestion.question_id == condition.field_id,
-#                     FormQuestion.form_id.in_(form_ids)
-#                 )
-#                 .distinct()
-#             ).all()
 
-#         if not target_forms:
-#             continue
-
-#         # Subquery con respuestas que cumplen la condición
-#         subquery = select(Answer.response_id).filter(
-#             Answer.question_id == condition.field_id
-#         )
-
-#         if condition.operator == "=":
-#             subquery = subquery.filter(Answer.answer_text == condition.value)
-#         elif condition.operator == "!=":
-#             subquery = subquery.filter(Answer.answer_text != condition.value)
-#         elif condition.operator == "contains":
-#             subquery = subquery.filter(Answer.answer_text.contains(condition.value))
-#         elif condition.operator == "starts_with":
-#             subquery = subquery.filter(Answer.answer_text.startswith(condition.value))
-#         elif condition.operator == "ends_with":
-#             subquery = subquery.filter(Answer.answer_text.endswith(condition.value))
-#         elif condition.operator == ">":
-#             subquery = subquery.filter(Answer.answer_text > condition.value)
-#         elif condition.operator == "<":
-#             subquery = subquery.filter(Answer.answer_text < condition.value)
-#         elif condition.operator == ">=":
-#             subquery = subquery.filter(Answer.answer_text >= condition.value)
-#         elif condition.operator == "<=":
-#             subquery = subquery.filter(Answer.answer_text <= condition.value)
-
-#         query = query.filter(
-#             or_(
-#                 and_(
-#                     Response.form_id.in_(target_forms),
-#                     Response.id.in_(subquery)
-#                 ),
-#                 Response.form_id.notin_(target_forms)
-#             )
-#         )
-
-#     return query
 def apply_smart_conditions(query, conditions: List[FilterCondition], form_ids: List[int], db: Session):
     """
     Aplica condiciones de filtrado de forma inteligente.
@@ -971,66 +919,347 @@ def generate_csv_response(data: Dict):
     )
 
 def generate_pdf_response(data: Dict):
-    """Genera archivo PDF"""
+    """Genera archivo PDF con campos optimizados y contenido bien ajustado"""
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import letter, A4
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.pagesizes import letter, A4, landscape
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, KeepTogether
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import inch
+    from reportlab.lib.units import inch, cm
+    import math
+    import textwrap
     
     output = io.BytesIO()
     
-    # Crear documento PDF
-    doc = SimpleDocTemplate(output, pagesize=A4)
+    # Usar landscape para máximo espacio
+    pagesize = landscape(A4)
+    page_width = landscape(A4)[0] - 3*cm
+    page_height = landscape(A4)[1] - 3*cm
+    
+    doc = SimpleDocTemplate(
+        output, 
+        pagesize=pagesize,
+        leftMargin=1.5*cm,
+        rightMargin=1.5*cm,
+        topMargin=2*cm,
+        bottomMargin=2*cm
+    )
+    
     styles = getSampleStyleSheet()
     story = []
     
-    # Título
+    # Título principal
     title_style = ParagraphStyle(
         'CustomTitle',
         parent=styles['Heading1'],
         fontSize=16,
         textColor=colors.darkblue,
-        spaceAfter=30
+        spaceAfter=20,
+        alignment=1,
+        spaceBefore=0
     )
-    story.append(Paragraph("Reporte de Datos de Formularios", title_style))
-    story.append(Spacer(1, 20))
+    story.append(Paragraph("Reporte Completo de Datos de Formularios", title_style))
     
     # Información del reporte
-    info_text = f"Fecha de generación: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br/>"
-    info_text += f"Total de registros: {data['total_records']}"
-    story.append(Paragraph(info_text, styles['Normal']))
-    story.append(Spacer(1, 20))
-    
-    # Preparar datos para la tabla
+    info_style = ParagraphStyle(
+        'InfoStyle',
+        parent=styles['Normal'],
+        fontSize=10,
+        alignment=1,
+        spaceAfter=15
+    )
+    info_text = f"Generado el {datetime.now().strftime('%d/%m/%Y a las %H:%M:%S')}<br/>"
+    info_text += f"Total de registros: <b>{data['total_records']}</b>"
     if data['data']:
-        # Headers
+        info_text += f" | Total de campos: <b>{len(data['data'][0].keys())}</b>"
+    
+    story.append(Paragraph(info_text, info_style))
+    story.append(Spacer(1, 15))
+    
+    if data['data']:
         headers = list(data['data'][0].keys())
-        table_data = [headers]
+        total_fields = len(headers)
         
-        # Datos (limitar a primeras 50 filas para PDF)
-        for row in data['data'][:50]:
-            table_data.append([str(row.get(header, '')) for header in headers])
+        # Función mejorada para analizar contenido y ajustar texto
+        def analyze_content_length(data, headers):
+            """Analiza el contenido para determinar anchos óptimos de columna"""
+            col_max_lengths = {}
+            
+            for header in headers:
+                # Longitud del header
+                header_length = len(str(header))
+                max_content_length = 0
+                
+                # Analizar contenido de cada registro
+                for record in data:
+                    content = str(record.get(header, ''))
+                    # Considerar saltos de línea
+                    lines = content.split('\n')
+                    max_line_length = max([len(line) for line in lines]) if lines else 0
+                    max_content_length = max(max_content_length, max_line_length)
+                
+                # El ancho mínimo será el mayor entre header y contenido, con límites
+                col_max_lengths[header] = max(header_length, min(max_content_length, 50))
+            
+            return col_max_lengths
         
-        # Crear tabla
-        table = Table(table_data)
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 10),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('FONTSIZE', (0, 1), (-1, -1), 8),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black)
-        ]))
+        def smart_text_wrap(text, max_width=None, max_lines=3):
+            """Envuelve texto inteligentemente preservando información importante"""
+            if text is None:
+                return ''
+            
+            text = str(text).strip()
+            if not text:
+                return ''
+            
+            # Reemplazar saltos de línea múltiples por espacios
+            text = ' '.join(text.split())
+            
+            if max_width is None:
+                max_width = 40
+                
+            # Si el texto es corto, devolverlo tal como está
+            if len(text) <= max_width:
+                return text
+            
+            # Usar textwrap para dividir en líneas
+            lines = textwrap.wrap(text, width=max_width, max_lines=max_lines)
+            
+            if len(lines) <= max_lines:
+                return '\n'.join(lines)
+            else:
+                # Si se excede las líneas, truncar la última línea
+                result_lines = lines[:max_lines-1]
+                last_line = lines[max_lines-1]
+                if len(last_line) > max_width - 3:
+                    last_line = last_line[:max_width-3] + '...'
+                else:
+                    last_line = last_line + '...'
+                result_lines.append(last_line)
+                return '\n'.join(result_lines)
         
-        story.append(table)
+        def format_header(header, max_width=20):
+            """Formatea headers para que sean legibles"""
+            if len(header) <= max_width:
+                return header
+            
+            # Intentar dividir por separadores comunes
+            for separator in ['_', '-', ' ', '.']:
+                if separator in header:
+                    parts = header.split(separator)
+                    if len(parts) > 1:
+                        # Tomar las primeras palabras que quepan
+                        result = parts[0]
+                        for part in parts[1:]:
+                            if len(result + separator + part) <= max_width - 3:
+                                result += separator + part
+                            else:
+                                result += '...'
+                                break
+                        return result
+            
+            # Si no hay separadores, truncar directamente
+            return header[:max_width-3] + '...'
         
-        if len(data['data']) > 50:
-            story.append(Spacer(1, 20))
-            story.append(Paragraph(f"Nota: Se muestran los primeros 50 registros de {data['total_records']} totales.", styles['Italic']))
+        # Analizar contenido para optimizar anchos
+        col_lengths = analyze_content_length(data['data'], headers)
+        
+        # Configuración mejorada de columnas
+        MIN_COL_WIDTH = 2.5 * cm  # Ancho mínimo aumentado
+        OPTIMAL_COL_WIDTH = 4 * cm  # Ancho óptimo
+        MAX_COL_WIDTH = 6 * cm  # Ancho máximo
+        
+        # Calcular anchos de columna basados en contenido
+        def calculate_column_widths(headers, col_lengths, available_width):
+            """Calcula anchos óptimos de columna basados en contenido"""
+            total_chars = sum(col_lengths.values())
+            widths = {}
+            
+            for header in headers:
+                # Proporción basada en contenido
+                content_ratio = col_lengths[header] / total_chars if total_chars > 0 else 1/len(headers)
+                proposed_width = available_width * content_ratio
+                
+                # Aplicar límites
+                if proposed_width < MIN_COL_WIDTH:
+                    widths[header] = MIN_COL_WIDTH
+                elif proposed_width > MAX_COL_WIDTH:
+                    widths[header] = MAX_COL_WIDTH
+                else:
+                    widths[header] = proposed_width
+            
+            # Ajustar si el total excede el ancho disponible
+            total_width = sum(widths.values())
+            if total_width > available_width:
+                scale_factor = available_width / total_width
+                for header in headers:
+                    widths[header] *= scale_factor
+                    # Respetar ancho mínimo después del escalado
+                    widths[header] = max(widths[header], MIN_COL_WIDTH * 0.8)
+            
+            return [widths[header] for header in headers]
+        
+        # Calcular número máximo de columnas que caben
+        min_total_width = len(headers) * MIN_COL_WIDTH
+        
+        if min_total_width > page_width:
+            # ESTRATEGIA 1: Dividir por campos (demasiadas columnas)
+            chars_per_page = page_width / (MIN_COL_WIDTH / 15)  # Aproximación de caracteres por página
+            
+            # Agrupar campos por longitud de contenido
+            field_chunks = []
+            current_chunk = []
+            current_width = 0
+            
+            for header in headers:
+                expected_width = min(col_lengths[header] * 0.15 * cm, MAX_COL_WIDTH)
+                expected_width = max(expected_width, MIN_COL_WIDTH)
+                
+                if current_width + expected_width <= page_width and current_chunk:
+                    current_chunk.append(header)
+                    current_width += expected_width
+                else:
+                    if current_chunk:
+                        field_chunks.append(current_chunk)
+                    current_chunk = [header]
+                    current_width = expected_width
+            
+            if current_chunk:
+                field_chunks.append(current_chunk)
+            
+            # Procesar cada chunk de campos
+            chunk_number = 1
+            for field_chunk in field_chunks:
+                section_style = ParagraphStyle(
+                    'SectionTitle',
+                    parent=styles['Heading2'],
+                    fontSize=12,
+                    textColor=colors.darkgreen,
+                    spaceAfter=10,
+                    spaceBefore=10
+                )
+                
+                section_title = f"Sección {chunk_number}/{len(field_chunks)} - "
+                section_title += f"Campos {headers.index(field_chunk[0])+1} al {headers.index(field_chunk[-1])+1}"
+                section_title += f" ({len(field_chunk)} columnas)"
+                
+                story.append(Paragraph(section_title, section_style))
+                
+                # Calcular anchos optimizados para este chunk
+                chunk_col_lengths = {h: col_lengths[h] for h in field_chunk}
+                col_widths = calculate_column_widths(field_chunk, chunk_col_lengths, page_width)
+                
+                # Crear tabla para este chunk
+                table_data = []
+                
+                # Headers
+                header_row = []
+                for header in field_chunk:
+                    formatted_header = format_header(header, 25)
+                    header_row.append(formatted_header)
+                table_data.append(header_row)
+                
+                # Datos
+                for record in data['data']:
+                    row_data = []
+                    for i, header in enumerate(field_chunk):
+                        value = record.get(header, '')
+                        # Calcular ancho máximo de caracteres para esta columna
+                        char_width = int(col_widths[i] / (0.15 * cm))
+                        wrapped_value = smart_text_wrap(value, char_width, 4)
+                        row_data.append(wrapped_value)
+                    table_data.append(row_data)
+                
+                # Crear y estilizar tabla
+                table = Table(table_data, colWidths=col_widths, repeatRows=1)
+                
+                table.setStyle(TableStyle([
+                    # Headers
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 8),
+                    ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+                    
+                    # Data rows
+                    ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                    ('FONTSIZE', (0, 1), (-1, -1), 7),
+                    ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
+                    
+                    # Padding optimizado
+                    ('TOPPADDING', (0, 0), (-1, -1), 6),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                    
+                    # Bordes y colores
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey]),
+                    
+                    # CRÍTICO: Permitir que el texto se ajuste dentro de las celdas
+                    ('WORDWRAP', (0, 0), (-1, -1), 'CJK'),
+                    ('LEADING', (0, 1), (-1, -1), 10),  # Espaciado entre líneas
+                ]))
+                
+                story.append(KeepTogether(table))
+                
+                if chunk_number < len(field_chunks):
+                    story.append(PageBreak())
+                
+                chunk_number += 1
+        
+        else:
+            # ESTRATEGIA 2: Todas las columnas caben en una página
+            col_widths = calculate_column_widths(headers, col_lengths, page_width)
+            
+            # Preparar datos de la tabla
+            table_data = []
+            
+            # Headers
+            header_row = []
+            for header in headers:
+                formatted_header = format_header(header, 20)
+                header_row.append(formatted_header)
+            table_data.append(header_row)
+            
+            # Datos con ajuste inteligente
+            for record in data['data']:
+                row_data = []
+                for i, header in enumerate(headers):
+                    value = record.get(header, '')
+                    # Calcular ancho de caracteres disponible
+                    char_width = int(col_widths[i] / (0.15 * cm))
+                    wrapped_value = smart_text_wrap(value, char_width, 3)
+                    row_data.append(wrapped_value)
+                table_data.append(row_data)
+            
+            # Crear tabla
+            table = Table(table_data, colWidths=col_widths)
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 8),
+                ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 7),
+                ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
+                ('TOPPADDING', (0, 0), (-1, -1), 6),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey]),
+                ('WORDWRAP', (0, 0), (-1, -1), 'CJK'),
+                ('LEADING', (0, 1), (-1, -1), 10),
+            ]))
+            
+            story.append(table)
+        
+    
+    else:
+        story.append(Paragraph("⚠️ No hay datos disponibles para mostrar.", styles['Normal']))
     
     # Generar PDF
     doc.build(story)
@@ -1039,66 +1268,295 @@ def generate_pdf_response(data: Dict):
     return StreamingResponse(
         io.BytesIO(output.read()),
         media_type="application/pdf",
-        headers={"Content-Disposition": "attachment; filename=datos_formularios.pdf"}
+        headers={"Content-Disposition": "attachment; filename=reporte_optimizado_formularios.pdf"}
     )
 
 def generate_word_response(data: Dict):
-    """Genera archivo Word"""
+    """
+    Genera archivo Word profesional con formato mejorado y manejo inteligente de datos
+    """
     from docx import Document
-    from docx.shared import Inches
+    from docx.shared import Inches, Pt, RGBColor
     from docx.enum.table import WD_TABLE_ALIGNMENT
-    
-    output = io.BytesIO()
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    from datetime import datetime
+    import io
     
     # Crear documento Word
     doc = Document()
     
-    # Título
-    title = doc.add_heading('Reporte de Datos de Formularios', 0)
-    title.alignment = WD_TABLE_ALIGNMENT.CENTER
+    # Configurar márgenes del documento
+    sections = doc.sections
+    for section in sections:
+        section.top_margin = Inches(1)
+        section.bottom_margin = Inches(1)
+        section.left_margin = Inches(0.75)
+        section.right_margin = Inches(0.75)
+    
+    # Título principal
+    title = doc.add_heading('REPORTE CONSOLIDADO DE FORMULARIOS', 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title_run = title.runs[0]
+    title_run.font.size = Pt(18)
+    title_run.font.color.rgb = RGBColor(47, 85, 151)  # Azul profesional
+    
+    # Subtítulo
+    subtitle = doc.add_heading('Vista Integral de Datos', level=2)
+    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    subtitle_run = subtitle.runs[0]
+    subtitle_run.font.size = Pt(14)
+    subtitle_run.font.color.rgb = RGBColor(102, 102, 102)
+    
+    # Línea separadora
+    doc.add_paragraph('_' * 80).alignment = WD_ALIGN_PARAGRAPH.CENTER
     
     # Información del reporte
+    current_date = datetime.now()
     info_paragraph = doc.add_paragraph()
-    info_paragraph.add_run('Fecha de generación: ').bold = True
-    info_paragraph.add_run(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-    info_paragraph.add_run('\nTotal de registros: ').bold = True
-    info_paragraph.add_run(str(data['total_records']))
+    info_paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
     
-    # Agregar tabla con datos
-    if data['data']:
-        doc.add_paragraph()  # Espacio
-        
+    # Formatear información con estilos
+    info_paragraph.add_run('📊 INFORMACIÓN DEL REPORTE\n').bold = True
+    info_paragraph.add_run(f'Fecha de generación: ').bold = True
+    info_paragraph.add_run(f'{current_date.strftime("%d/%m/%Y %H:%M:%S")}\n')
+    info_paragraph.add_run(f'Total de registros: ').bold = True
+    info_paragraph.add_run(f'{data.get("total_records", len(data.get("data", []))):,}\n')
+    
+    if data.get('data') and len(data['data']) > 0:
+        # Obtener información de columnas
         headers = list(data['data'][0].keys())
-        table = doc.add_table(rows=1, cols=len(headers))
-        table.style = 'Table Grid'
+        num_columns = len(headers)
         
-        # Headers
-        hdr_cells = table.rows[0].cells
-        for i, header in enumerate(headers):
-            hdr_cells[i].text = header
-            # Hacer el header en negrita
-            for paragraph in hdr_cells[i].paragraphs:
-                for run in paragraph.runs:
-                    run.font.bold = True
+        info_paragraph.add_run(f'Campos disponibles: ').bold = True
+        info_paragraph.add_run(f'{num_columns}\n')
+        info_paragraph.add_run(f'Formato: ').bold = True
         
-        # Datos (limitar a primeras 100 filas para Word)
-        for row_data in data['data'][:100]:
-            row_cells = table.add_row().cells
+        # Determinar estrategia según número de columnas
+        if num_columns <= 8:
+            strategy = "Tabla única con todas las columnas"
+            max_records_show = 50
+        elif num_columns <= 15:
+            strategy = "Tabla única con formato compacto"
+            max_records_show = 30
+        else:
+            strategy = "Tablas divididas por secciones"
+            max_records_show = 25
+        
+        info_paragraph.add_run(f'{strategy}\n')
+        
+        # Espacio
+        doc.add_paragraph()
+        
+        # Limpiar nombres de headers
+        def clean_header_name(header):
+            return str(header).replace('_', ' ').title()
+        
+        clean_headers = [clean_header_name(h) for h in headers]
+        
+        if num_columns <= 15:
+            # TABLA ÚNICA
+            doc.add_heading('📋 DATOS CONSOLIDADOS', level=2)
+            
+            # Crear tabla
+            table = doc.add_table(rows=1, cols=num_columns)
+            table.style = 'Table Grid'
+            table.alignment = WD_TABLE_ALIGNMENT.CENTER
+            
+            # Headers
+            hdr_cells = table.rows[0].cells
+            for i, header in enumerate(clean_headers):
+                hdr_cells[i].text = header
+                
+                # Estilo del header
+                for paragraph in hdr_cells[i].paragraphs:
+                    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    for run in paragraph.runs:
+                        run.font.bold = True
+                        run.font.size = Pt(10)
+                        run.font.color.rgb = RGBColor(255, 255, 255)
+                
+                # Color de fondo del header
+                shading_elm = OxmlElement('w:shd')
+                shading_elm.set(qn('w:fill'), '2F5597')  # Azul
+                hdr_cells[i]._tc.get_or_add_tcPr().append(shading_elm)
+            
+            # Datos (limitar registros para Word)
+            records_to_show = min(len(data['data']), max_records_show)
+            
+            for idx, row_data in enumerate(data['data'][:records_to_show]):
+                row_cells = table.add_row().cells
+                for i, header in enumerate(headers):
+                    cell_value = row_data.get(header, '')
+                    
+                    # Formatear valor
+                    if not cell_value or str(cell_value).strip() == '':
+                        display_value = '-'
+                    else:
+                        display_value = str(cell_value)
+                        
+                        # Formateo especial para algunos campos
+                        if 'precio' in header.lower():
+                            try:
+                                if display_value.replace(',', '').isdigit():
+                                    display_value = f"${int(display_value):,}"
+                            except:
+                                pass
+                    
+                    row_cells[i].text = display_value
+                    
+                    # Estilo de celda de datos
+                    for paragraph in row_cells[i].paragraphs:
+                        paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                        for run in paragraph.runs:
+                            run.font.size = Pt(9)
+                    
+                    # Color alternado para filas
+                    if idx % 2 == 1:
+                        shading_elm = OxmlElement('w:shd')
+                        shading_elm.set(qn('w:fill'), 'F8F9FA')  # Gris muy claro
+                        row_cells[i]._tc.get_or_add_tcPr().append(shading_elm)
+            
+            # Ajustar ancho de columnas
             for i, header in enumerate(headers):
-                row_cells[i].text = str(row_data.get(header, ''))
+                # Ancho basado en contenido del header
+                header_len = len(clean_headers[i])
+                if header_len <= 8:
+                    width = Inches(1.0)
+                elif header_len <= 15:
+                    width = Inches(1.5)
+                else:
+                    width = Inches(2.0)
+                
+                table.columns[i].width = width
+            
+            # Nota si hay más registros
+            if len(data['data']) > records_to_show:
+                doc.add_paragraph()
+                note_paragraph = doc.add_paragraph()
+                note_paragraph.add_run('📝 Nota: ').bold = True
+                note_paragraph.add_run(f'Se muestran los primeros {records_to_show:,} registros de {len(data["data"]):,} totales. ')
+                note_paragraph.add_run('Para ver todos los datos, utilice la exportación a Excel o CSV.')
         
-        if len(data['data']) > 100:
-            doc.add_paragraph()
-            note_paragraph = doc.add_paragraph()
-            note_paragraph.add_run('Nota: ').bold = True
-            note_paragraph.add_run(f'Se muestran los primeros 100 registros de {data["total_records"]} totales.')
+        else:
+            # TABLAS DIVIDIDAS - Para más de 15 columnas
+            doc.add_heading('📋 DATOS DIVIDIDOS EN SECCIONES', level=2)
+            
+            # Dividir columnas en grupos
+            group_size = 6
+            
+            # Identificar columnas clave
+            key_headers = []
+            other_headers = []
+            
+            for header in headers:
+                if any(word in header.lower() for word in ['fecha', 'id', 'numero', 'formato']):
+                    key_headers.append(header)
+                else:
+                    other_headers.append(header)
+            
+            # Crear grupos
+            header_groups = []
+            base_group = key_headers[:2]  # Máximo 2 identificadores
+            
+            remaining_space = group_size - len(base_group)
+            for i in range(0, len(other_headers), remaining_space):
+                group = base_group + other_headers[i:i + remaining_space]
+                header_groups.append(group)
+            
+            # Crear tabla para cada grupo
+            for group_idx, header_group in enumerate(header_groups):
+                if group_idx > 0:
+                    doc.add_page_break()
+                
+                # Título de la sección
+                section_title = f"SECCIÓN {group_idx + 1}: {', '.join([clean_header_name(h) for h in header_group])}"
+                doc.add_heading(section_title, level=3)
+                
+                clean_group_headers = [clean_header_name(h) for h in header_group]
+                
+                # Crear tabla para este grupo
+                group_table = doc.add_table(rows=1, cols=len(header_group))
+                group_table.style = 'Table Grid'
+                group_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+                
+                # Headers del grupo
+                hdr_cells = group_table.rows[0].cells
+                for i, header in enumerate(clean_group_headers):
+                    hdr_cells[i].text = header
+                    
+                    for paragraph in hdr_cells[i].paragraphs:
+                        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        for run in paragraph.runs:
+                            run.font.bold = True
+                            run.font.size = Pt(10)
+                            run.font.color.rgb = RGBColor(255, 255, 255)
+                    
+                    # Color verde para diferenciar secciones
+                    shading_elm = OxmlElement('w:shd')
+                    shading_elm.set(qn('w:fill'), '1A472A')  # Verde oscuro
+                    hdr_cells[i]._tc.get_or_add_tcPr().append(shading_elm)
+                
+                # Datos del grupo
+                for idx, row_data in enumerate(data['data'][:max_records_show]):
+                    row_cells = group_table.add_row().cells
+                    for i, header in enumerate(header_group):
+                        cell_value = row_data.get(header, '')
+                        display_value = str(cell_value) if cell_value and str(cell_value).strip() else '-'
+                        
+                        row_cells[i].text = display_value
+                        
+                        for paragraph in row_cells[i].paragraphs:
+                            paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                            for run in paragraph.runs:
+                                run.font.size = Pt(9)
+                        
+                        # Color alternado
+                        if idx % 2 == 1:
+                            shading_elm = OxmlElement('w:shd')
+                            shading_elm.set(qn('w:fill'), 'F0FDF4')  # Verde muy claro
+                            row_cells[i]._tc.get_or_add_tcPr().append(shading_elm)
+                
+                # Ajustar anchos
+                for i, header in enumerate(clean_group_headers):
+                    group_table.columns[i].width = Inches(1.8)
+                
+                doc.add_paragraph()
+        
+    else:
+        # Sin datos
+        doc.add_paragraph()
+        no_data_paragraph = doc.add_paragraph()
+        no_data_paragraph.add_run('❌ No se encontraron datos para generar el reporte.').bold = True
+        no_data_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
-    # Guardar documento
+    # Footer
+    doc.add_paragraph()
+    footer_paragraph = doc.add_paragraph()
+    footer_paragraph.add_run('📄 Documento generado por Sistema Empresarial - Reporte automático optimizado')
+    footer_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for run in footer_paragraph.runs:
+        run.font.size = Pt(8)
+        run.font.color.rgb = RGBColor(128, 128, 128)
+    
+    # CORRECCIÓN PRINCIPAL: Manejo correcto del BytesIO
+    output = io.BytesIO()
     doc.save(output)
     output.seek(0)
     
+    # Leer el contenido del buffer
+    content = output.read()
+    output.close()
+    
+    # Crear un nuevo BytesIO con el contenido
+    final_output = io.BytesIO(content)
+    
     return StreamingResponse(
-        io.BytesIO(output.read()),
+        final_output,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": "attachment; filename=datos_formularios.docx"}
+        headers={
+            "Content-Disposition": "attachment; filename=reporte_consolidado.docx",
+            "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
     )
