@@ -436,47 +436,37 @@ def create_question_table_relation(
     }
 
     
+
+# Endpoint actualizado
 @router.get("/question-table-relation/answers/{question_id}")
 def get_related_answers(question_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Obtiene respuestas dinámicas relacionadas o filtradas para una pregunta específica.
-
-    Este endpoint verifica si una pregunta tiene una condición de filtro (`QuestionFilterCondition`)
-    o una relación con otra pregunta o una tabla externa (`QuestionTableRelation`).
-    Dependiendo de eso, retorna las respuestas correspondientes.
+    
+    Ahora incluye información completa de los formularios donde aparecen las preguntas relacionadas,
+    permitiendo el auto-completado inteligente basado en respuestas previas.
 
     Parámetros:
     -----------
     question_id : int
         ID de la pregunta para la que se buscan respuestas relacionadas o filtradas.
 
-    db : Session
-        Sesión activa de base de datos proporcionada por `get_db`.
-
-    current_user : User
-        Usuario autenticado requerido para acceder al recurso.
-
     Retorna:
     --------
     dict:
         Diccionario con los campos:
-        - `source` (str): origen de los datos (`condicion_filtrada`, `pregunta_relacionada`, `usuarios`, etc.).
-        - `data` (List[dict]): lista de respuestas con el campo `name`.
-
-    Lanza:
-    ------
-    HTTPException:
-        - 403: Si el usuario no está autenticado.
-        - 404: Si no se encuentra relación para la pregunta.
-        - 400: Si la tabla o campo especificado no es válido.
+        - `source` (str): origen de los datos
+        - `data` (List[dict]): lista de respuestas únicas con el campo `name`
+        - `forms` (List[dict]): lista de formularios completos con sus respuestas (solo para preguntas relacionadas)
+        - `related_question` (dict): información de la pregunta relacionada (si aplica)
     """
-    if current_user == None:
-        raise HTTPException(   
+    if current_user is None:
+        raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get all questions"
-            )
-    else: 
-        return get_related_or_filtered_answers(db, question_id)
+        )
+    
+    return get_related_or_filtered_answers_with_forms(db, question_id)
 
 
 @router.post("/location-relation", status_code=201)
