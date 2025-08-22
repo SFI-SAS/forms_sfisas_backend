@@ -1611,6 +1611,11 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
     """
     Obtiene respuestas dinámicas relacionadas o filtradas para una pregunta,
     incluyendo información completa de los formularios donde aparecen.
+    
+    NUEVA FUNCIONALIDAD:
+    -------------------
+    - Agrega un campo `correlations` que mapea cada respuesta con todas las otras respuestas
+      del mismo response_id, facilitando el autocompletado entre selects relacionados.
 
     Lógica:
     -------
@@ -1620,11 +1625,12 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
     3. Si no hay `related_question_id`, obtiene los datos de una tabla externa (`name_table`)
        usando un campo específico (`field_name`).
     4. Para casos de preguntas relacionadas, incluye información completa de formularios.
+    5. NUEVO: Agrega correlaciones entre respuestas del mismo response_id.
 
     Retorna:
     --------
     dict:
-        Diccionario con información completa incluyendo formularios y respuestas.
+        Diccionario con información completa incluyendo formularios, respuestas y correlaciones.
     """
     # Verificar si existe una condición de filtro
     condition = db.query(QuestionFilterCondition).filter_by(filtered_question_id=question_id).first()
@@ -1671,7 +1677,8 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
         filtered = list(filter(None, set(valid_answers)))
         return {
             "source": "condicion_filtrada",
-            "data": [{"name": val} for val in filtered]
+            "data": [{"name": val} for val in filtered],
+            "correlations": {}  # Las condiciones filtradas no tienen correlaciones
         }
 
     # Si no hay condición, usar relación de tabla
@@ -1692,11 +1699,14 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
             return {
                 "source": "pregunta_relacionada",
                 "data": [],
-                "forms": []
+                "forms": [],
+                "correlations": {}
             }
 
         forms_data = []
         all_unique_answers = set()
+        # NUEVO: Diccionario para mapear correlaciones entre respuestas
+        correlations_map = {}
 
         for fq in form_questions:
             # Obtener información del formulario
@@ -1731,6 +1741,8 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
                 
                 # Variable para almacenar la respuesta de la pregunta relacionada
                 related_answer_text = None
+                # NUEVO: Diccionario para almacenar todas las respuestas de este response_id
+                response_answers_map = {}
                 
                 for answer in answers:
                     question = db.query(Question).filter_by(id=answer.question_id).first()
@@ -1742,6 +1754,10 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
                     }
                     answers_data.append(answer_data)
                     
+                    # Agregar al mapa de respuestas de este response_id
+                    if answer.answer_text:
+                        response_answers_map[answer.question_id] = answer.answer_text
+                    
                     # Si esta es la respuesta de la pregunta relacionada, guardarla
                     if answer.question_id == relation.related_question_id:
                         related_answer_text = answer.answer_text
@@ -1749,6 +1765,16 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
                 # Agregar la respuesta única para el conjunto global
                 if related_answer_text:
                     all_unique_answers.add(related_answer_text)
+                    
+                    # NUEVO: Crear correlación para esta respuesta
+                    if related_answer_text not in correlations_map:
+                        correlations_map[related_answer_text] = {}
+                    
+                    # Agregar todas las otras respuestas como correlaciones
+                    for q_id, answer_text in response_answers_map.items():
+                        if q_id != relation.related_question_id:  # No incluir la misma pregunta
+                            if q_id not in correlations_map[related_answer_text]:
+                                correlations_map[related_answer_text][q_id] = answer_text
 
                 # Obtener estado de aprobación
                 latest_approval = db.query(ResponseApproval)\
@@ -1793,7 +1819,9 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
                 "type": related_question.question_type.value
             },
             "data": [{"name": answer} for answer in sorted(all_unique_answers) if answer],
-            "forms": forms_data
+            "forms": forms_data,
+            # NUEVO: Mapa de correlaciones
+            "correlations": correlations_map
         }
 
     # Si no hay pregunta relacionada, usar tabla externa
@@ -1829,7 +1857,8 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
     return {
         "source": table_translations.get(name_table, name_table),
         "data": [serialize(r) for r in results if getattr(r, field_name, None)],
-        "forms": []
+        "forms": [],
+        "correlations": {}  # Las tablas externas no tienen correlaciones
     }
 
 def get_related_or_filtered_answers(db: Session, question_id: int):
