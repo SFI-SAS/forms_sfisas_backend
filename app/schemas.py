@@ -329,15 +329,42 @@ class FormatType(str, Enum):
 
 class ApproverSchema(BaseModel):
     user_id: int
-    sequence_number: int
-    is_mandatory: bool = True
-    deadline_days: int | None = None
-    is_active: Optional[bool] = None  # Campo opcional, no obligatorio
+    sequence_number: int = Field(default=1)
+    is_mandatory: bool = Field(default=True)
+    deadline_days: Optional[int] = None
+    is_active: Optional[bool] = Field(default=True)
+    # Nuevos campos
+    required_forms_ids: Optional[List[int]] = Field(default=None, description="IDs de formularios que debe diligenciar antes de aprobar")
+    follows_approval_sequence: bool = Field(default=True, description="Si debe seguir la secuencia de aprobación")
+
 
 class FormApprovalCreateSchema(BaseModel):
     form_id: int
     approvers: List[ApproverSchema]
+
+    class Config:
+        from_attributes = True
+
+
+class UpdateRecognitionId(BaseModel):
+    num_document: str
+    recognition_id: str
     
+    
+class FormApprovalResponseSchema(BaseModel):
+    id: int
+    form_id: int
+    user_id: int
+    sequence_number: int
+    is_mandatory: bool
+    deadline_days: Optional[int] = None
+    is_active: bool
+    required_forms_ids: Optional[List[int]] = None
+    follows_approval_sequence: bool
+
+    class Config:
+        from_attributes = True
+        
 class ResponseApprovalCreate(BaseModel):
     response_id: int
     user_id: int

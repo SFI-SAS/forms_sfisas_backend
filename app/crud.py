@@ -1,9 +1,10 @@
+import base64
 from collections import defaultdict
 from io import BytesIO
 import json
 import os
 import pytz
-from sqlalchemy import exists, func, not_, select
+from sqlalchemy import and_, exists, func, not_, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from app import models
@@ -16,12 +17,124 @@ from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 from app.models import ApprovalStatus  # Asegúrate de importar esto
+from cryptography.fernet import Fernet
 
 import os
 import secrets
 import string
 
 import random
+
+
+ENCRYPTION_KEY = 'OugiYqGaXdQElq1G5UtKD/jVwk4r/J041p9J7dHOFGo='
+# ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY')
+cipher_suite = Fernet(ENCRYPTION_KEY)
+
+def encrypt_object(data: Any) -> str:
+    """
+    Encripta cualquier objeto serializable (dict, list, etc.) y retorna un string.
+    
+    Proceso paso a paso:
+    1. Convierte el objeto a JSON string
+    2. Convierte el string a bytes
+    3. Encripta los bytes usando Fernet
+    4. Codifica el resultado en base64 para almacenamiento
+    
+    Parámetros:
+    -----------
+    data : Any
+        Cualquier objeto serializable de Python:
+        - dict: {"nombre": "Juan", "edad": 30}
+        - list: [1, 2, 3, "texto"]
+        - str: "texto simple"
+        - int, float, bool: números y booleanos
+        - Combinaciones: {"usuarios": [{"id": 1}, {"id": 2}]}
+        
+    Retorna:
+    --------
+    str
+        String encriptado en base64, listo para guardar en base de datos
+
+    """
+    try:
+        # PASO 1: Convertir el objeto Python a JSON string
+        # ensure_ascii=False permite caracteres especiales como tildes
+        json_string = json.dumps(data, ensure_ascii=False)
+        
+        # PASO 2: Convertir el string a bytes (Fernet solo acepta bytes)
+        json_bytes = json_string.encode('utf-8')
+        
+        # PASO 3: Encriptar usando Fernet
+        encrypted_data = cipher_suite.encrypt(json_bytes)
+        
+        # PASO 4: Convertir a base64 para almacenamiento como string
+        # Esto es necesario porque las bases de datos manejan mejor strings que bytes
+        encrypted_string = base64.b64encode(encrypted_data).decode('utf-8')
+        
+        return encrypted_string
+        
+    except json.JSONEncodeError as e:
+        # Error al serializar el objeto a JSON
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Error: Los datos no se pueden serializar a JSON - {str(e)}"
+        )
+    except Exception as e:
+        # Cualquier otro error de encriptación
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error encriptando datos: {str(e)}"
+        )
+        
+def decrypt_object(encrypted_string: str) -> Any:
+    """
+    Desencripta un string y retorna el objeto original.
+    
+    Proceso paso a paso (inverso a la encriptación):
+    1. Decodifica el string base64 a bytes
+    2. Desencripta los bytes usando Fernet
+    3. Convierte los bytes a string JSON
+    4. Deserializa el JSON al objeto Python original
+    
+    Parámetros:
+    -----------
+    encrypted_string : str
+        String encriptado en base64 (resultado de encrypt_object)
+        
+    Retorna:
+    --------
+    Any
+        El objeto Python original exactamente como era antes de encriptar
+        
+
+    """
+    try:
+        # PASO 1: Decodificar base64 a bytes
+        encrypted_data = base64.b64decode(encrypted_string.encode('utf-8'))
+        
+        # PASO 2: Desencriptar usando Fernet
+        decrypted_bytes = cipher_suite.decrypt(encrypted_data)
+        
+        # PASO 3: Convertir bytes a string JSON
+        json_string = decrypted_bytes.decode('utf-8')
+        
+        # PASO 4: Deserializar JSON al objeto Python original
+        original_data = json.loads(json_string)
+        
+        return original_data
+        
+    except base64.binascii.Error as e:
+        # Error al decodificar base64
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Error: Datos base64 inválidos - {str(e)}"
+        )
+    except Exception as e:
+        # Error de desencriptación (clave incorrecta, datos corruptos, etc.)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error desencriptando datos: {str(e)}"
+        )
 
 def generate_nickname(name: str) -> str:
     parts = name.split()
@@ -957,6 +1070,89 @@ def get_forms_by_user(db: Session, user_id: int):
     )
     return forms
 
+def get_forms_by_approver(db: Session, user_id: int):
+    """
+    Obtiene TODOS los formularios, incluyendo TODOS los aprobadores activos de cada formulario
+    e indicando si el usuario autenticado es uno de ellos.
+    
+    :param db: Sesión de base de datos activa.
+    :param user_id: ID del usuario autenticado.
+    :return: Lista de todos los formularios con lista completa de aprobadores.
+    """
+    
+    # Primero obtenemos todos los formularios
+    forms = (
+        db.query(Form)
+        .options(joinedload(Form.category))
+        .order_by(Form.title)
+        .all()
+    )
+    
+    # Luego obtenemos todos los aprobadores activos por formulario
+    approvals_query = (
+        db.query(
+            FormApproval.form_id,
+            FormApproval.sequence_number,
+            FormApproval.is_mandatory,
+            FormApproval.deadline_days,
+            FormApproval.is_active,
+            FormApproval.user_id,
+            User.name.label('approver_name'),
+            User.email.label('approver_email')
+        )
+        .join(User, FormApproval.user_id == User.id)
+        .filter(FormApproval.is_active == True)
+        .order_by(FormApproval.form_id, FormApproval.sequence_number)
+        .all()
+    )
+    
+    # Organizamos los aprobadores por form_id
+    approvals_by_form = {}
+    for approval in approvals_query:
+        form_id = approval.form_id
+        if form_id not in approvals_by_form:
+            approvals_by_form[form_id] = []
+        
+        approvals_by_form[form_id].append({
+            "sequence_number": approval.sequence_number,
+            "is_mandatory": approval.is_mandatory,
+            "deadline_days": approval.deadline_days,
+            "is_active": approval.is_active,
+            "user_id": approval.user_id,
+            "approver_name": approval.approver_name,
+            "approver_email": approval.approver_email,
+            "is_current_user": approval.user_id == user_id
+        })
+    
+    # Construimos la respuesta final
+    result = []
+    for form in forms:
+        # Verificamos si el usuario actual es aprobador de este formulario
+        form_approvals = approvals_by_form.get(form.id, [])
+        user_is_approver = any(approval["is_current_user"] for approval in form_approvals)
+        
+        form_dict = {
+            "id": form.id,
+            "user_id": form.user_id,
+            "title": form.title,
+            "description": form.description,
+            "format_type": form.format_type,
+            "created_at": form.created_at,
+            "id_category": form.id_category,
+            "category": {
+                "id": form.category.id,
+                "name": form.category.name,
+                "description": form.category.description
+            } if form.category else None,
+            "approval_info": {
+                "has_approvers": len(form_approvals) > 0,
+                "user_is_approver": user_is_approver,
+                "approvers": form_approvals  # Lista completa de aprobadores
+            }
+        }
+        result.append(form_dict)
+    
+    return result
 def get_answers_by_question(db: Session, question_id: int):
     # Consulta todas las respuestas asociadas al question_id
     answers = db.query(Answer).filter(Answer.question_id == question_id).all()
@@ -2535,16 +2731,17 @@ def get_unanswered_forms_by_user(db: Session, user_id: int):
 def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
     """
     Guarda las aprobaciones asociadas a un formulario.
-
+    
     - Verifica si el formulario existe.
     - Revisa si ya existen aprobaciones activas para los usuarios.
     - Crea nuevas aprobaciones si no hay duplicados o si el `sequence_number` es diferente.
+    - Incluye los nuevos campos: required_forms_ids y follows_approval_sequence.
     - Retorna una lista de IDs de usuarios cuyas aprobaciones fueron creadas.
-
+    
     Args:
         data (FormApprovalCreateSchema): Datos del formulario y aprobadores a guardar.
         db (Session): Sesión de la base de datos.
-
+    
     Returns:
         List[int]: Lista de IDs de usuarios aprobadores que fueron agregados.
     """
@@ -2552,45 +2749,53 @@ def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
     form = db.query(Form).filter(Form.id == data.form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Formulario no encontrado.")
-
+    
     # Obtiene las aprobaciones existentes para este formulario
     existing_approvals = db.query(FormApproval).filter(FormApproval.form_id == data.form_id).all()
-
+    
     # Lista para guardar los nuevos IDs insertados
     newly_created_user_ids = []
-
+    
     # Solo agrega nuevos aprobadores (no duplicados) o crea un nuevo registro si el sequence_number es diferente
     for approver in data.approvers:
         # Filtra aprobaciones activas con el mismo user_id y form_id
         existing_active_approval = next(
             (fa for fa in existing_approvals if fa.user_id == approver.user_id and fa.is_active), None
         )
-
+        
         if existing_active_approval:
             # Si ya existe un aprobador activo con el mismo user_id y form_id y el sequence_number es diferente
             if existing_active_approval.sequence_number != approver.sequence_number:
                 # Crea una nueva entrada
-                db.add(FormApproval(
+                new_approval = FormApproval(
                     form_id=data.form_id,
                     user_id=approver.user_id,
                     sequence_number=approver.sequence_number,
                     is_mandatory=approver.is_mandatory,
                     deadline_days=approver.deadline_days,
-                    is_active=approver.is_active if approver.is_active is not None else True  # Si no se pasa, se asume True
-                ))
+                    is_active=approver.is_active if approver.is_active is not None else True,
+                    # Nuevos campos
+                    required_forms_ids=approver.required_forms_ids if hasattr(approver, 'required_forms_ids') else None,
+                    follows_approval_sequence=approver.follows_approval_sequence if hasattr(approver, 'follows_approval_sequence') else True
+                )
+                db.add(new_approval)
                 newly_created_user_ids.append(approver.user_id)
         else:
             # Si no existe un aprobador activo con el mismo user_id y form_id, se puede agregar el nuevo aprobador
-            db.add(FormApproval(
+            new_approval = FormApproval(
                 form_id=data.form_id,
                 user_id=approver.user_id,
                 sequence_number=approver.sequence_number,
                 is_mandatory=approver.is_mandatory,
                 deadline_days=approver.deadline_days,
-                is_active=approver.is_active if approver.is_active is not None else True  # Si no se pasa, se asume True
-            ))
+                is_active=approver.is_active if approver.is_active is not None else True,
+                # Nuevos campos
+                required_forms_ids=approver.required_forms_ids if hasattr(approver, 'required_forms_ids') else None,
+                follows_approval_sequence=approver.follows_approval_sequence if hasattr(approver, 'follows_approval_sequence') else True
+            )
+            db.add(new_approval)
             newly_created_user_ids.append(approver.user_id)
-
+    
     db.commit()
     return newly_created_user_ids
 

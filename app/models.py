@@ -25,7 +25,9 @@ class QuestionType(str, enum.Enum):
     date = "date"
     number = "number"
     time = "time"  
-    location = "location" 
+    location = "location"
+    firm = "firm"   # Nuevo tipo agregado
+
     
 class ApprovalStatus(enum.Enum):
     pendiente = "pendiente"
@@ -44,7 +46,7 @@ class Models(Base):
 # Modelo Users
 class User(Base):
     __tablename__ = 'users'
-
+    
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     num_document = Column(String(50), nullable=False)
     name = Column(String(255), nullable=False)
@@ -53,10 +55,11 @@ class User(Base):
     user_type = Column(Enum(UserType), default=UserType.user, nullable=False)
     nickname = Column(String(100), nullable=True)
     password = Column(Text, nullable=False)
-
-    id_category = Column(BigInteger, ForeignKey('user_categories.id'), nullable=True)  # <-- nuevo campo
-    category = relationship("UserCategory", back_populates="users")  # <-- relación
-
+    recognition_id = Column(String(100), nullable=True, unique=True)  # <-- nuevo campo
+    
+    id_category = Column(BigInteger, ForeignKey('user_categories.id'), nullable=True)
+    category = relationship("UserCategory", back_populates="users")
+    
     # Relaciones existentes
     form_moderators = relationship('FormModerators', back_populates='user')
     forms = relationship('Form', back_populates='user')
@@ -290,10 +293,12 @@ class FormApproval(Base):
     deadline_days = Column(Integer, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     
+    # Nuevos campos
+    required_forms_ids = Column(JSON, nullable=True)  # Lista de IDs de formularios requeridos
+    follows_approval_sequence = Column(Boolean, default=True, nullable=False)  # Si sigue la secuencia de aprobación
+    
     form = relationship("Form", backref="approval_template")
     user = relationship("User", backref="forms_to_approve")
-
-
 class ResponseApproval(Base):
     __tablename__ = 'response_approvals'
 
