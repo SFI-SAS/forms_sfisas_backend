@@ -24,10 +24,10 @@ class QuestionType(str, enum.Enum):
     table = "table"
     date = "date"
     number = "number"
-    time = "time"  
+    time = "time"
     location = "location"
-    firm = "firm"   # Nuevo tipo agregado
-
+    firm = "firm"
+    regisfacial = "regisfacial"
     
 class ApprovalStatus(enum.Enum):
     pendiente = "pendiente"
