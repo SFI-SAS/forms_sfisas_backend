@@ -9,10 +9,10 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from app.api.controllers.mail import send_reconsideration_email
-from app.crud import create_answer_in_db, generate_unique_serial, post_create_response, process_responses_with_history, send_form_action_emails, send_mails_to_next_supporters
+from app.crud import create_answer_in_db, encrypt_object, generate_unique_serial, post_create_response, process_responses_with_history, send_form_action_emails, send_mails_to_next_supporters
 from app.database import get_db
-from app.schemas import AnswerHistoryChangeSchema, AnswerHistoryCreate, FileSerialCreate, FilteredAnswersResponse, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
-from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, Form, FormApproval, FormQuestion, FormatType, Question, QuestionFilterCondition, QuestionTableRelation, Response, ResponseApproval, ResponseStatus, User, UserType
+from app.schemas import AnswerHistoryChangeSchema, AnswerHistoryCreate, FileSerialCreate, FilteredAnswersResponse, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, RegisfacialAnswerResponse, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
+from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, Form, FormApproval, FormQuestion, FormatType, Question, QuestionFilterCondition, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, User, UserType
 from app.core.security import get_current_user
 from typing import Dict
 from sqlalchemy import delete
@@ -1175,3 +1175,77 @@ def reset_reconsideration_requested(
     db.commit()
     
     return {"message": "Reconsideration field set to null", "id": approval.id}
+
+
+@router.get("/answers/regisfacial", response_model=List[RegisfacialAnswerResponse])
+async def get_regisfacial_answers(db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
+    """
+    Obtiene todas las respuestas de preguntas tipo 'regisfacial' sin duplicar person_id
+    y genera un hash encriptado con la información específica
+    """
+    try:
+        # Obtener todas las respuestas de preguntas tipo regisfacial
+        if current_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User does not have permission to get categories"
+            )
+        results = (
+            db.query(
+                Answer.id,
+                Answer.response_id,
+                Answer.question_id,
+                Question.question_text,
+                Answer.answer_text,
+                Response.user_id,
+                User.name.label('user_name'),
+                User.email.label('user_email'),
+                Response.submitted_at
+            )
+            .join(Question, Answer.question_id == Question.id)
+            .join(Response, Answer.response_id == Response.id)
+            .join(User, Response.user_id == User.id)
+            .filter(Question.question_type == QuestionType.regisfacial)
+            .filter(Answer.answer_text.isnot(None))
+            .order_by(Answer.id)
+            .all()
+        )
+        
+        # Filtrar por person_id único
+        seen_person_ids = set()
+        unique_results = []
+        
+        for result in results:
+            try:
+                face_data = json.loads(result.answer_text)
+                person_id = face_data.get('faceData', {}).get('person_id')
+                
+                if person_id and person_id not in seen_person_ids:
+                    seen_person_ids.add(person_id)
+                    
+                    # Crear el objeto con los datos específicos para encriptar
+                    data_to_encrypt = {
+                        "id": result.id,
+                        "question_id": result.question_id,
+                        "user_name": result.user_name,
+                        "user_email": result.user_email,
+                        "submitted_at": result.submitted_at.isoformat() if result.submitted_at else ""
+                    }
+                    
+                    # Encriptar los datos
+                    encrypted_hash = encrypt_object(data_to_encrypt)
+                    
+                    unique_results.append(RegisfacialAnswerResponse(
+                        answer_text=result.answer_text,
+                        encrypted_hash=encrypted_hash
+                    ))
+            except (json.JSONDecodeError, KeyError):
+                continue
+                
+        return unique_results
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error al obtener las respuestas: {str(e)}"
+        )

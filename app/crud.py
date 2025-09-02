@@ -33,58 +33,25 @@ cipher_suite = Fernet(ENCRYPTION_KEY)
 def encrypt_object(data: Any) -> str:
     """
     Encripta cualquier objeto serializable (dict, list, etc.) y retorna un string.
-    
-    Proceso paso a paso:
-    1. Convierte el objeto a JSON string
-    2. Convierte el string a bytes
-    3. Encripta los bytes usando Fernet
-    4. Codifica el resultado en base64 para almacenamiento
-    
-    Parámetros:
-    -----------
-    data : Any
-        Cualquier objeto serializable de Python:
-        - dict: {"nombre": "Juan", "edad": 30}
-        - list: [1, 2, 3, "texto"]
-        - str: "texto simple"
-        - int, float, bool: números y booleanos
-        - Combinaciones: {"usuarios": [{"id": 1}, {"id": 2}]}
-        
-    Retorna:
-    --------
-    str
-        String encriptado en base64, listo para guardar en base de datos
-
     """
     try:
-        # PASO 1: Convertir el objeto Python a JSON string
-        # ensure_ascii=False permite caracteres especiales como tildes
         json_string = json.dumps(data, ensure_ascii=False)
-        
-        # PASO 2: Convertir el string a bytes (Fernet solo acepta bytes)
         json_bytes = json_string.encode('utf-8')
-        
-        # PASO 3: Encriptar usando Fernet
         encrypted_data = cipher_suite.encrypt(json_bytes)
-        
-        # PASO 4: Convertir a base64 para almacenamiento como string
-        # Esto es necesario porque las bases de datos manejan mejor strings que bytes
         encrypted_string = base64.b64encode(encrypted_data).decode('utf-8')
-        
         return encrypted_string
         
     except json.JSONEncodeError as e:
-        # Error al serializar el objeto a JSON
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Error: Los datos no se pueden serializar a JSON - {str(e)}"
         )
     except Exception as e:
-        # Cualquier otro error de encriptación
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error encriptando datos: {str(e)}"
         )
+
         
 def decrypt_object(encrypted_string: str) -> Any:
     """
@@ -271,7 +238,7 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             detail=f"Error interno del servidor: {str(e)}"
         )
 
-        
+
 def get_form(db: Session, form_id: int, user_id: int):
     # Cargar el formulario con preguntas y respuestas
     form = db.query(Form).options(
@@ -362,22 +329,85 @@ def get_form(db: Session, form_id: int, user_id: int):
 
         questions_data.append(question_dict)
 
+    # Función auxiliar para procesar respuestas de reconocimiento facial
+    def process_regisfacial_answer(answer_text, question_type):
+        """
+        Procesa las respuestas de tipo regisfacial para mostrar un texto descriptivo
+        del registro facial guardado en lugar del JSON completo de faceData
+        """
+        if question_type != "regisfacial" or not answer_text:
+            return answer_text
+        
+        try:
+            # Debug: imprimir el contenido original
+            print(f"DEBUG - Processing regisfacial answer: {answer_text}")
+            print(f"DEBUG - Question type: {question_type}")
+            
+            # Intentar parsear el JSON
+            face_data = json.loads(answer_text)
+            print(f"DEBUG - Parsed JSON: {face_data}")
+            
+            # Buscar en diferentes estructuras posibles
+            person_name = "Usuario"
+            success = False
+            
+            # Estructura 1: {"faceData": {"success": true, "personName": "..."}}
+            if isinstance(face_data, dict) and "faceData" in face_data:
+                face_info = face_data["faceData"]
+                if isinstance(face_info, dict):
+                    success = face_info.get("success", False)
+                    person_name = face_info.get("personName", "Usuario")
+            
+            # Estructura 2: directamente {"success": true, "personName": "..."}
+            elif isinstance(face_data, dict):
+                success = face_data.get("success", False)
+                person_name = face_data.get("personName", face_data.get("person_name", "Usuario"))
+            
+            # Buscar también otras variantes de nombres
+            if person_name == "Usuario":
+                person_name = face_data.get("name", face_data.get("user_name", "Usuario"))
+            
+            print(f"DEBUG - Extracted - success: {success}, person_name: {person_name}")
+            
+            if success:
+                result = f"Datos biométricos de {person_name} registrados"
+            else:
+                result = f"Error en el registro de datos biométricos de {person_name}"
+            
+            print(f"DEBUG - Final result: {result}")
+            return result
+            
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            print(f"DEBUG - Exception: {e}")
+            # Si hay error al parsear JSON, devolver un mensaje genérico
+            return "Datos biométricos procesados"
+
+    # Crear un diccionario de tipos de pregunta por question_id para referencia rápida
+    question_types_map = {q.id: q.question_type for q in form.questions}
+
     # Respuestas del usuario (si corresponde)
-    responses_data = [
-        {
+    responses_data = []
+    for response in form.responses:
+        response_dict = {
             "id": response.id,
             "user_id": response.user_id,
-            "answers": [
-                {
-                    "id": answer.id,
-                    "question_id": answer.question_id,
-                    "answer_text": answer.answer_text
-                }
-                for answer in response.answers
-            ]
+            "answers": []
         }
-        for response in form.responses
-    ]
+        
+        for answer in response.answers:
+            # Obtener el tipo de pregunta para esta respuesta
+            question_type = question_types_map.get(answer.question_id, "text")
+            
+            # Procesar la respuesta según el tipo de pregunta
+            processed_answer_text = process_regisfacial_answer(answer.answer_text, question_type)
+            
+            response_dict["answers"].append({
+                "id": answer.id,
+                "question_id": answer.question_id,
+                "answer_text": processed_answer_text
+            })
+        
+        responses_data.append(response_dict)
 
     return {
         "id": form.id,
@@ -390,7 +420,6 @@ def get_form(db: Session, form_id: int, user_id: int):
         "questions": questions_data,
         "responses": responses_data
     }
-
 def get_forms(db: Session, skip: int = 0, limit: int = 10):
     return db.query(Form).offset(skip).limit(limit).all()
 
@@ -3801,6 +3830,7 @@ def get_response_approval_status(response_approvals: list) -> dict:
         "message": " | ".join(filter(None, messages))
     }
 
+
 def get_form_with_full_responses(form_id: int, db: Session):
     """
     Recupera todos los detalles de un formulario con sus preguntas, respuestas, historial de respuestas
@@ -3832,6 +3862,49 @@ def get_form_with_full_responses(form_id: int, db: Session):
     - Se excluyen respuestas históricas (`previous_answer_id`) para evitar duplicidad.
     - Se utiliza `joinedload` para mejorar eficiencia en la carga de datos relacionados.
     """
+    
+    # Función auxiliar para procesar respuestas de reconocimiento facial
+    def process_regisfacial_answer(answer_text, question_type):
+        """
+        Procesa las respuestas de tipo regisfacial para mostrar un texto descriptivo
+        del registro facial guardado en lugar del JSON completo de faceData
+        """
+        if question_type != "regisfacial" or not answer_text:
+            return answer_text
+        
+        try:
+            # Intentar parsear el JSON
+            face_data = json.loads(answer_text)
+            
+            # Buscar en diferentes estructuras posibles
+            person_name = "Usuario"
+            success = False
+            
+            # Estructura 1: {"faceData": {"success": true, "personName": "..."}}
+            if isinstance(face_data, dict) and "faceData" in face_data:
+                face_info = face_data["faceData"]
+                if isinstance(face_info, dict):
+                    success = face_info.get("success", False)
+                    person_name = face_info.get("personName", "Usuario")
+            
+            # Estructura 2: directamente {"success": true, "personName": "..."}
+            elif isinstance(face_data, dict):
+                success = face_data.get("success", False)
+                person_name = face_data.get("personName", face_data.get("person_name", "Usuario"))
+            
+            # Buscar también otras variantes de nombres
+            if person_name == "Usuario":
+                person_name = face_data.get("name", face_data.get("user_name", "Usuario"))
+            
+            if success:
+                return f"Datos biométricos de {person_name} registrados"
+            else:
+                return f"Error en el registro de datos biométricos de {person_name}"
+            
+        except (json.JSONDecodeError, KeyError, TypeError):
+            # Si hay error al parsear JSON, devolver un mensaje genérico
+            return "Datos biométricos procesados"
+    
     form = db.query(Form).options(
         joinedload(Form.questions),
         joinedload(Form.responses).joinedload(Response.user),
@@ -3839,7 +3912,6 @@ def get_form_with_full_responses(form_id: int, db: Session):
 
     if not form:
         return None
-
 
     results = {
         "form_id": form.id,
@@ -3921,10 +3993,13 @@ def get_form_with_full_responses(form_id: int, db: Session):
         )
 
         for ans in answers:
+            # Procesar la respuesta según el tipo de pregunta
+            processed_answer_text = process_regisfacial_answer(ans.answer_text, ans.question.question_type)
+            
             response_data["answers"].append({
                 "question_id": ans.question.id,
                 "question_text": ans.question.question_text,
-                "answer_text": ans.answer_text,
+                "answer_text": processed_answer_text,
                 "file_path": ans.file_path,
             })
 
@@ -3936,7 +4011,6 @@ def get_form_with_full_responses(form_id: int, db: Session):
         results["responses"].append(response_data)
 
     return results
-
 
 def update_form_design_service(db: Session, form_id: int, design_data: List[Dict[str, Any]]):
     """

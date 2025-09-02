@@ -201,6 +201,9 @@ def register_form_schedule(schedule_data: FormScheduleCreate, db: Session = Depe
         specific_date=schedule_data.specific_date,
         status=schedule_data.status
     )
+
+import json
+
 @router.get("/responses/")
 def get_responses_with_answers(
     form_id: int,
@@ -243,6 +246,48 @@ def get_responses_with_answers(
 
     if not responses:
         raise HTTPException(status_code=404, detail="No se encontraron respuestas")
+
+    # Función auxiliar para procesar respuestas de reconocimiento facial
+    def process_regisfacial_answer(answer_text, question_type):
+        """
+        Procesa las respuestas de tipo regisfacial para mostrar un texto descriptivo
+        del registro facial guardado en lugar del JSON completo de faceData
+        """
+        if question_type != "regisfacial" or not answer_text:
+            return answer_text
+        
+        try:
+            # Intentar parsear el JSON
+            face_data = json.loads(answer_text)
+            
+            # Buscar en diferentes estructuras posibles
+            person_name = "Usuario"
+            success = False
+            
+            # Estructura 1: {"faceData": {"success": true, "personName": "..."}}
+            if isinstance(face_data, dict) and "faceData" in face_data:
+                face_info = face_data["faceData"]
+                if isinstance(face_info, dict):
+                    success = face_info.get("success", False)
+                    person_name = face_info.get("personName", "Usuario")
+            
+            # Estructura 2: directamente {"success": true, "personName": "..."}
+            elif isinstance(face_data, dict):
+                success = face_data.get("success", False)
+                person_name = face_data.get("personName", face_data.get("person_name", "Usuario"))
+            
+            # Buscar también otras variantes de nombres
+            if person_name == "Usuario":
+                person_name = face_data.get("name", face_data.get("user_name", "Usuario"))
+            
+            if success:
+                return f"Datos biométricos de {person_name} registrados"
+            else:
+                return f"Error en el registro de datos biométricos de {person_name}"
+            
+        except (json.JSONDecodeError, KeyError, TypeError):
+            # Si hay error al parsear JSON, devolver un mensaje genérico
+            return "Datos biométricos procesados"
 
     # Obtener todos los response_ids para buscar el historial
     response_ids = [response.id for response in responses]
@@ -312,7 +357,7 @@ def get_responses_with_answers(
                     "question_id": a.question.id,
                     "question_text": a.question.question_text,
                     "question_type": a.question.question_type,
-                    "answer_text": a.answer_text,
+                    "answer_text": process_regisfacial_answer(a.answer_text, a.question.question_type),
                     "file_path": a.file_path
                 }
                 for a in current_answers
@@ -338,9 +383,7 @@ def get_responses_with_answers(
             ]
         })
 
-
     return result
-
 
 @router.get("/all/list", response_model=List[dict])
 def get_forms_endpoint(db: Session = Depends(get_db)):

@@ -713,3 +713,11 @@ class DownloadRequest(BaseModel):
     conditions: List[FilterCondition] = []
     date_filter: Optional[DateFilter] = None
     limit: Optional[int] = 100  # Para preview
+
+
+class RegisfacialAnswerResponse(BaseModel):
+    answer_text: str
+    encrypted_hash: str
+
+    class Config:
+        from_attributes = True
