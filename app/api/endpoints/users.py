@@ -9,8 +9,8 @@ from app.api.controllers.mail import send_welcome_email
 from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.database import get_db
 from app.models import EmailConfig, User, UserCategory, UserType
-from app.crud import create_email_config, create_user, create_user_category, create_user_with_random_password, delete_user_category_by_id, fetch_all_users, get_all_email_configs, get_all_user_categories, get_response_details_logic, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
-from app.schemas import EmailConfigCreate, EmailConfigResponse, EmailConfigUpdate, EmailStatusUpdate, UpdateUserCategory, UserBaseCreate, UserCategoryCreate, UserCategoryResponse, UserCreate, UserResponse, UserUpdate, UserUpdateInfo
+from app.crud import create_email_config, create_user, create_user_category, create_user_with_random_password, decrypt_object, delete_user_category_by_id, encrypt_object, fetch_all_users, get_all_email_configs, get_all_user_categories, get_response_details_logic, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
+from app.schemas import EmailConfigCreate, EmailConfigResponse, EmailConfigUpdate, EmailStatusUpdate, UpdateRecognitionId, UpdateUserCategory, UserBaseCreate, UserCategoryCreate, UserCategoryResponse, UserCreate, UserResponse, UserUpdate, UserUpdateInfo
 from app.core.security import get_current_user, hash_password
 
 router = APIRouter()
@@ -321,7 +321,7 @@ def get_all_users(db: Session = Depends(get_db), current_user: User = Depends(ge
         )
 
     """Endpoint que llama a la función fetch_all_users."""
-    return fetch_all_users(db)  # No necesita `await`
+    return fetch_all_users(db)  
 
 @router.post("/send-file-emails")
 async def send_file_to_emails(
@@ -805,4 +805,77 @@ def update_user_category(
         "message": "Categoría actualizada correctamente",
         "user_id": user.id,
         "new_category_id": user.id_category
+    }
+    
+@router.patch("/update-recognition-id", response_model=UserResponse, status_code=status.HTTP_200_OK)
+def update_user_recognition_id(
+    data: UpdateRecognitionId,
+    db: Session = Depends(get_db),
+):
+    """
+    Endpoint para actualizar el recognition_id de un usuario basado en su número de documento.
+    
+    Esta función busca un usuario por su número de documento y actualiza su recognition_id.
+    Si el usuario no existe, retorna un error 404.
+    Si el recognition_id ya existe para otro usuario, retorna un error 409.
+    
+    Parámetros:
+    -----------
+    data : UpdateRecognitionId
+        Objeto con el número de documento y el nuevo recognition_id.
+    
+    db : Session
+        Sesión activa de la base de datos proporcionada por FastAPI.
+    
+    Retorna:
+    --------
+    UserResponse
+        Objeto del usuario actualizado (excluyendo la contraseña).
+    """
+    
+    # Buscar el usuario por número de documento usando consulta directa
+    user = db.query(User).filter(User.num_document == data.num_document).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Usuario con número de documento {data.num_document} no encontrado"
+        )
+    
+    # Verificar si el recognition_id ya existe para otro usuario
+    existing_user_with_recognition = db.query(User).filter(
+        User.recognition_id == data.recognition_id,
+        User.id != user.id
+    ).first()
+    
+    if existing_user_with_recognition:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"El recognition_id {data.recognition_id} ya está asignado a otro usuario"
+        )
+    
+    # Actualizar el recognition_id
+    user.recognition_id = data.recognition_id
+    db.commit()
+    db.refresh(user)
+    
+    return user
+
+
+@router.post("/encrypt-test")
+async def encrypt_test():
+    """Endpoint simple para probar encriptación"""
+    data = {"mensaje": "MANUEL GOMEZ MACEA", "numero": 50, "activo": True}
+    encrypted = encrypt_object(data)
+    return {
+        "original": data,
+        "encrypted": encrypted
+    }
+
+@router.post("/decrypt-test/{encrypted_data}")
+async def decrypt_test(encrypted_data: str):
+    """Endpoint simple para probar desencriptación"""
+    decrypted = decrypt_object(encrypted_data)
+    return {
+        "decrypted": decrypted,
+        "encrypted_was": encrypted_data
     }

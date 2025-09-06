@@ -1,27 +1,107 @@
+import base64
 from collections import defaultdict
 from io import BytesIO
 import json
 import os
 import pytz
-from sqlalchemy import exists, func, not_, select
+from sqlalchemy import and_, exists, func, not_, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, ResponseApproval, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, ResponseApproval, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
 from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 from app.models import ApprovalStatus  # Asegúrate de importar esto
+from cryptography.fernet import Fernet
 
 import os
 import secrets
 import string
 
 import random
+
+
+ENCRYPTION_KEY = 'OugiYqGaXdQElq1G5UtKD/jVwk4r/J041p9J7dHOFGo='
+# ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY')
+cipher_suite = Fernet(ENCRYPTION_KEY)
+
+def encrypt_object(data: Any) -> str:
+    """
+    Encripta cualquier objeto serializable (dict, list, etc.) y retorna un string.
+    """
+    try:
+        json_string = json.dumps(data, ensure_ascii=False)
+        json_bytes = json_string.encode('utf-8')
+        encrypted_data = cipher_suite.encrypt(json_bytes)
+        encrypted_string = base64.b64encode(encrypted_data).decode('utf-8')
+        return encrypted_string
+        
+    except json.JSONEncodeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Error: Los datos no se pueden serializar a JSON - {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error encriptando datos: {str(e)}"
+        )
+
+        
+def decrypt_object(encrypted_string: str) -> Any:
+    """
+    Desencripta un string y retorna el objeto original.
+    
+    Proceso paso a paso (inverso a la encriptación):
+    1. Decodifica el string base64 a bytes
+    2. Desencripta los bytes usando Fernet
+    3. Convierte los bytes a string JSON
+    4. Deserializa el JSON al objeto Python original
+    
+    Parámetros:
+    -----------
+    encrypted_string : str
+        String encriptado en base64 (resultado de encrypt_object)
+        
+    Retorna:
+    --------
+    Any
+        El objeto Python original exactamente como era antes de encriptar
+        
+
+    """
+    try:
+        # PASO 1: Decodificar base64 a bytes
+        encrypted_data = base64.b64decode(encrypted_string.encode('utf-8'))
+        
+        # PASO 2: Desencriptar usando Fernet
+        decrypted_bytes = cipher_suite.decrypt(encrypted_data)
+        
+        # PASO 3: Convertir bytes a string JSON
+        json_string = decrypted_bytes.decode('utf-8')
+        
+        # PASO 4: Deserializar JSON al objeto Python original
+        original_data = json.loads(json_string)
+        
+        return original_data
+        
+    except base64.binascii.Error as e:
+        # Error al decodificar base64
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Error: Datos base64 inválidos - {str(e)}"
+        )
+    except Exception as e:
+        # Error de desencriptación (clave incorrecta, datos corruptos, etc.)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error desencriptando datos: {str(e)}"
+        )
 
 def generate_nickname(name: str) -> str:
     parts = name.split()
@@ -158,7 +238,7 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             detail=f"Error interno del servidor: {str(e)}"
         )
 
-        
+
 def get_form(db: Session, form_id: int, user_id: int):
     # Cargar el formulario con preguntas y respuestas
     form = db.query(Form).options(
@@ -249,22 +329,85 @@ def get_form(db: Session, form_id: int, user_id: int):
 
         questions_data.append(question_dict)
 
+    # Función auxiliar para procesar respuestas de reconocimiento facial
+    def process_regisfacial_answer(answer_text, question_type):
+        """
+        Procesa las respuestas de tipo regisfacial para mostrar un texto descriptivo
+        del registro facial guardado en lugar del JSON completo de faceData
+        """
+        if question_type != "regisfacial" or not answer_text:
+            return answer_text
+        
+        try:
+            # Debug: imprimir el contenido original
+            print(f"DEBUG - Processing regisfacial answer: {answer_text}")
+            print(f"DEBUG - Question type: {question_type}")
+            
+            # Intentar parsear el JSON
+            face_data = json.loads(answer_text)
+            print(f"DEBUG - Parsed JSON: {face_data}")
+            
+            # Buscar en diferentes estructuras posibles
+            person_name = "Usuario"
+            success = False
+            
+            # Estructura 1: {"faceData": {"success": true, "personName": "..."}}
+            if isinstance(face_data, dict) and "faceData" in face_data:
+                face_info = face_data["faceData"]
+                if isinstance(face_info, dict):
+                    success = face_info.get("success", False)
+                    person_name = face_info.get("personName", "Usuario")
+            
+            # Estructura 2: directamente {"success": true, "personName": "..."}
+            elif isinstance(face_data, dict):
+                success = face_data.get("success", False)
+                person_name = face_data.get("personName", face_data.get("person_name", "Usuario"))
+            
+            # Buscar también otras variantes de nombres
+            if person_name == "Usuario":
+                person_name = face_data.get("name", face_data.get("user_name", "Usuario"))
+            
+            print(f"DEBUG - Extracted - success: {success}, person_name: {person_name}")
+            
+            if success:
+                result = f"Datos biométricos de {person_name} registrados"
+            else:
+                result = f"Error en el registro de datos biométricos de {person_name}"
+            
+            print(f"DEBUG - Final result: {result}")
+            return result
+            
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            print(f"DEBUG - Exception: {e}")
+            # Si hay error al parsear JSON, devolver un mensaje genérico
+            return "Datos biométricos procesados"
+
+    # Crear un diccionario de tipos de pregunta por question_id para referencia rápida
+    question_types_map = {q.id: q.question_type for q in form.questions}
+
     # Respuestas del usuario (si corresponde)
-    responses_data = [
-        {
+    responses_data = []
+    for response in form.responses:
+        response_dict = {
             "id": response.id,
             "user_id": response.user_id,
-            "answers": [
-                {
-                    "id": answer.id,
-                    "question_id": answer.question_id,
-                    "answer_text": answer.answer_text
-                }
-                for answer in response.answers
-            ]
+            "answers": []
         }
-        for response in form.responses
-    ]
+        
+        for answer in response.answers:
+            # Obtener el tipo de pregunta para esta respuesta
+            question_type = question_types_map.get(answer.question_id, "text")
+            
+            # Procesar la respuesta según el tipo de pregunta
+            processed_answer_text = process_regisfacial_answer(answer.answer_text, question_type)
+            
+            response_dict["answers"].append({
+                "id": answer.id,
+                "question_id": answer.question_id,
+                "answer_text": processed_answer_text
+            })
+        
+        responses_data.append(response_dict)
 
     return {
         "id": form.id,
@@ -277,7 +420,6 @@ def get_form(db: Session, form_id: int, user_id: int):
         "questions": questions_data,
         "responses": responses_data
     }
-
 def get_forms(db: Session, skip: int = 0, limit: int = 10):
     return db.query(Form).offset(skip).limit(limit).all()
 
@@ -603,80 +745,92 @@ def delete_question_from_db(db: Session, question_id: int):
     db.query(Question).filter(Question.id == question_id).delete()
 
     db.commit()
-def post_create_response(db: Session, form_id: int, user_id: int, mode: str = "online", repeated_id: Optional[str] = None):
 
-    """Crea una nueva respuesta en la base de datos y sus aprobaciones correspondientes."""
 
+def post_create_response(
+    db: Session, 
+    form_id: int, 
+    user_id: int, 
+    mode: str = "online", 
+    repeated_id: Optional[str] = None, 
+    create_approvals: bool = True,
+    status: ResponseStatus = ResponseStatus.draft  # NUEVO PARÁMETRO
+):
+    """Función modificada para incluir el estado"""
+    
     form = db.query(Form).filter(Form.id == form_id).first()
     user = db.query(User).filter(User.id == user_id).first()
 
     if not form:
-        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+        raise HTTPException(status_code=404, detail="Form not found")
     if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        raise HTTPException(status_code=404, detail="User not found")
 
-    # Contador por modo
-    last_mode_response = (
-        db.query(Response)
-        .filter(Response.mode == mode)
-        .order_by(Response.mode_sequence.desc())
-        .first()
-    )
-
+    # Crear response con estado
+    last_mode_response = db.query(Response).filter(Response.mode == mode).order_by(Response.mode_sequence.desc()).first()
     new_mode_sequence = last_mode_response.mode_sequence + 1 if last_mode_response else 1
 
-    # Crear nueva respuesta
     response = Response(
         form_id=form_id,
         user_id=user_id,
         mode=mode,
         mode_sequence=new_mode_sequence,
         submitted_at=func.now(),
-        repeated_id=repeated_id  # Aquí se asigna
+        repeated_id=repeated_id,
+        status=status  # NUEVO CAMPO
     )
-
-
     db.add(response)
     db.commit()
     db.refresh(response)
 
-        # Obtener aprobadores desde FormApproval
-    form_approvals = db.query(FormApproval).filter(FormApproval.form_id == form_id, FormApproval.is_active == True).all()
-
-    # Crear entradas en ResponseApproval
-    for approver in form_approvals:
-        response_approval = ResponseApproval(
-            response_id=response.id,
-            user_id=approver.user_id,
-            sequence_number=approver.sequence_number,
-            is_mandatory=approver.is_mandatory,
-            status=ApprovalStatus.pendiente,  # estado inicial
-        )
-        db.add(response_approval)
-
-    db.commit()
+    approvers_created = 0
     
-    send_mails_to_next_supporters(response.id , db)
+    if create_approvals:
+        form_approvals = db.query(FormApproval).filter(
+            FormApproval.form_id == form_id, 
+            FormApproval.is_active == True
+        ).all()
+
+        for approver in form_approvals:
+            response_approval = ResponseApproval(
+                response_id=response.id,
+                user_id=approver.user_id,
+                sequence_number=approver.sequence_number,
+                is_mandatory=approver.is_mandatory,
+                status=ApprovalStatus.pendiente,
+            )
+            db.add(response_approval)
+            approvers_created += 1
+
+        db.commit()
+        
+        if approvers_created > 0:
+            send_mails_to_next_supporters(response.id, db)
 
     return {
-        "message": "Nueva respuesta guardada exitosamente",
+        "message": "Response saved successfully",
         "response_id": response.id,
+        "status": status.value,
         "mode": mode,
         "mode_sequence": new_mode_sequence,
-        "approvers_created": len(form_approvals)
+        "approvers_created": approvers_created
     }
-async def create_answer_in_db(answer, db: Session, current_user: User, request):
-    created_answers = []
+
+
+async def create_answer_in_db(answer, db: Session, current_user: User, request, send_emails: bool = True):
+    """Modificada para recibir parámetro send_emails"""
     
+    created_answers = []
+
+    # Lógica de guardado existente (sin cambios)
     if isinstance(answer.question_id, str):
         try:
             parsed_answer = json.loads(answer.answer_text)
             if not isinstance(parsed_answer, dict):
-                raise ValueError("answer_text debe ser un JSON de tipo dict para respuestas múltiples")
-                         
+                raise ValueError("answer_text must be JSON dict for multiple answers")
+
             for question_id_str, text in parsed_answer.items():
                 question_id = int(question_id_str)
-                 
                 new_answer = Answer(
                     response_id=answer.response_id,
                     question_id=question_id,
@@ -686,64 +840,51 @@ async def create_answer_in_db(answer, db: Session, current_user: User, request):
                 db.add(new_answer)
                 db.flush()
                 created_answers.append(new_answer)
-             
+
             db.commit()
             for ans in created_answers:
                 db.refresh(ans)
-             
+
         except Exception as e:
             db.rollback()
-            raise HTTPException(status_code=400, detail=f"Error procesando respuestas múltiples: {str(e)}")
-    
-    # Caso de una sola respuesta (question_id como int)
+            raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
+
     elif isinstance(answer.question_id, int):
         single_answer_result = save_single_answer(answer, db)
         created_answers = [single_answer_result] if single_answer_result else []
-    
-    # Tipo de question_id no reconocido
     else:
-        raise HTTPException(status_code=400, detail="Tipo de question_id no válido. Debe ser int o str.")
-    
-    # NUEVA LÓGICA: Verificar aprobaciones y enviar emails si es necesario
-    if created_answers:
+        raise HTTPException(status_code=400, detail="Invalid question_id type")
+
+    # Solo enviar emails si send_emails=True
+    if created_answers and send_emails:
         try:
-            # Obtener el form_id desde la respuesta
             response = db.query(Response).filter(Response.id == answer.response_id).first()
-            if not response:
-                raise HTTPException(status_code=404, detail="Response no encontrada")
-            
-            form_id = response.form_id
-            
-            # Verificar si el form_id existe en FormApproval y está activo
-            form_approval_exists = db.query(FormApproval).filter(
-                FormApproval.form_id == form_id,
-                FormApproval.is_active == True
-            ).first()
-            
-            # Si NO existe en FormApproval, enviar emails
-            if not form_approval_exists:
-                # Obtener el form completo para enviarlo a la función de emails
-                form = db.query(Form).filter(Form.id == form_id).first()
-                if form:
-                    await send_form_action_emails(form.id, db, current_user, request)
-        
+            if response:
+                form_approval_exists = db.query(FormApproval).filter(
+                    FormApproval.form_id == response.form_id,
+                    FormApproval.is_active == True
+                ).first()
+
+                if not form_approval_exists:
+                    form = db.query(Form).filter(Form.id == response.form_id).first()
+                    if form:
+                        await send_form_action_emails(form.id, db, current_user, request)
         except Exception as e:
-            # Log del error pero no interrumpir el proceso de guardado
-            print(f"Error en verificación de aprobaciones: {str(e)}")
-            # Opcionalmente podrías usar logging en lugar de print
-            # logger.error(f"Error en verificación de aprobaciones: {str(e)}")
-    
-    # Retornar resultado según el tipo de respuesta
+            print(f"Email error: {str(e)}")
+
+    # Retornar resultado
     if isinstance(answer.question_id, str):
         return {
-            "message": "Respuestas múltiples guardadas exitosamente",
+            "message": "Multiple answers saved",
             "answers": [{"id": a.id, "question_id": a.question_id} for a in created_answers]
         }
     else:
         return created_answers[0] if created_answers else None
-    
+ 
     
 def save_single_answer(answer, db: Session):
+    
+    print(answer.question_id)
     existing_answer = db.query(Answer).filter(
         Answer.response_id == answer.response_id,
         Answer.question_id == answer.question_id
@@ -958,6 +1099,89 @@ def get_forms_by_user(db: Session, user_id: int):
     )
     return forms
 
+def get_forms_by_approver(db: Session, user_id: int):
+    """
+    Obtiene TODOS los formularios, incluyendo TODOS los aprobadores activos de cada formulario
+    e indicando si el usuario autenticado es uno de ellos.
+    
+    :param db: Sesión de base de datos activa.
+    :param user_id: ID del usuario autenticado.
+    :return: Lista de todos los formularios con lista completa de aprobadores.
+    """
+    
+    # Primero obtenemos todos los formularios
+    forms = (
+        db.query(Form)
+        .options(joinedload(Form.category))
+        .order_by(Form.title)
+        .all()
+    )
+    
+    # Luego obtenemos todos los aprobadores activos por formulario
+    approvals_query = (
+        db.query(
+            FormApproval.form_id,
+            FormApproval.sequence_number,
+            FormApproval.is_mandatory,
+            FormApproval.deadline_days,
+            FormApproval.is_active,
+            FormApproval.user_id,
+            User.name.label('approver_name'),
+            User.email.label('approver_email')
+        )
+        .join(User, FormApproval.user_id == User.id)
+        .filter(FormApproval.is_active == True)
+        .order_by(FormApproval.form_id, FormApproval.sequence_number)
+        .all()
+    )
+    
+    # Organizamos los aprobadores por form_id
+    approvals_by_form = {}
+    for approval in approvals_query:
+        form_id = approval.form_id
+        if form_id not in approvals_by_form:
+            approvals_by_form[form_id] = []
+        
+        approvals_by_form[form_id].append({
+            "sequence_number": approval.sequence_number,
+            "is_mandatory": approval.is_mandatory,
+            "deadline_days": approval.deadline_days,
+            "is_active": approval.is_active,
+            "user_id": approval.user_id,
+            "approver_name": approval.approver_name,
+            "approver_email": approval.approver_email,
+            "is_current_user": approval.user_id == user_id
+        })
+    
+    # Construimos la respuesta final
+    result = []
+    for form in forms:
+        # Verificamos si el usuario actual es aprobador de este formulario
+        form_approvals = approvals_by_form.get(form.id, [])
+        user_is_approver = any(approval["is_current_user"] for approval in form_approvals)
+        
+        form_dict = {
+            "id": form.id,
+            "user_id": form.user_id,
+            "title": form.title,
+            "description": form.description,
+            "format_type": form.format_type,
+            "created_at": form.created_at,
+            "id_category": form.id_category,
+            "category": {
+                "id": form.category.id,
+                "name": form.category.name,
+                "description": form.category.description
+            } if form.category else None,
+            "approval_info": {
+                "has_approvers": len(form_approvals) > 0,
+                "user_is_approver": user_is_approver,
+                "approvers": form_approvals  # Lista completa de aprobadores
+            }
+        }
+        result.append(form_dict)
+    
+    return result
 def get_answers_by_question(db: Session, question_id: int):
     # Consulta todas las respuestas asociadas al question_id
     answers = db.query(Answer).filter(Answer.question_id == question_id).all()
@@ -1608,7 +1832,259 @@ def create_question_table_relation_logic(
 
     return new_relation
 
+def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
+    """
+    Obtiene respuestas dinámicas relacionadas o filtradas para una pregunta,
+    incluyendo información completa de los formularios donde aparecen.
+    
+    NUEVA FUNCIONALIDAD:
+    -------------------
+    - Agrega un campo `correlations` que mapea cada respuesta con todas las otras respuestas
+      del mismo response_id, facilitando el autocompletado entre selects relacionados.
 
+    Lógica:
+    -------
+    1. Si existe una condición en `QuestionFilterCondition`, evalúa cada respuesta del formulario
+       relacionado y filtra según el operador y valor esperado.
+    2. Si no hay condición, revisa si hay una relación con otra pregunta (`related_question_id`).
+    3. Si no hay `related_question_id`, obtiene los datos de una tabla externa (`name_table`)
+       usando un campo específico (`field_name`).
+    4. Para casos de preguntas relacionadas, incluye información completa de formularios.
+    5. NUEVO: Agrega correlaciones entre respuestas del mismo response_id.
+
+    Retorna:
+    --------
+    dict:
+        Diccionario con información completa incluyendo formularios, respuestas y correlaciones.
+    """
+    # Verificar si existe una condición de filtro
+    condition = db.query(QuestionFilterCondition).filter_by(filtered_question_id=question_id).first()
+
+    if condition:
+        # Obtener todas las respuestas del formulario relacionado
+        responses = db.query(Response).filter_by(form_id=condition.form_id).all()
+        valid_answers = []
+
+        for response in responses:
+            answers_dict = {a.question_id: a.answer_text for a in response.answers}
+            source_val = answers_dict.get(condition.source_question_id)
+            condition_val = answers_dict.get(condition.condition_question_id)
+
+            if source_val is None or condition_val is None:
+                continue
+
+            # Intentar convertir valores a número si es posible
+            try:
+                condition_val = float(condition_val)
+                expected_val = float(condition.expected_value)
+            except ValueError:
+                condition_val = str(condition_val)
+                expected_val = str(condition.expected_value)
+
+            # Evaluar condición según operador
+            condition_met = False
+            if condition.operator == '==':
+                condition_met = condition_val == expected_val
+            elif condition.operator == '!=':
+                condition_met = condition_val != expected_val
+            elif condition.operator == '>':
+                condition_met = condition_val > expected_val
+            elif condition.operator == '<':
+                condition_met = condition_val < expected_val
+            elif condition.operator == '>=':
+                condition_met = condition_val >= expected_val
+            elif condition.operator == '<=':
+                condition_met = condition_val <= expected_val
+
+            if condition_met:
+                valid_answers.append(source_val)
+
+        filtered = list(filter(None, set(valid_answers)))
+        return {
+            "source": "condicion_filtrada",
+            "data": [{"name": val} for val in filtered],
+            "correlations": {}  # Las condiciones filtradas no tienen correlaciones
+        }
+
+    # Si no hay condición, usar relación de tabla
+    relation = db.query(QuestionTableRelation).filter_by(question_id=question_id).first()
+    if not relation:
+        raise HTTPException(status_code=404, detail="No se encontró relación para esta pregunta")
+
+    if relation.related_question_id:
+        # Obtener la pregunta relacionada
+        related_question = db.query(Question).filter_by(id=relation.related_question_id).first()
+        if not related_question:
+            raise HTTPException(status_code=404, detail="Pregunta relacionada no encontrada")
+
+        # Encontrar todos los formularios que contienen esta pregunta relacionada
+        form_questions = db.query(FormQuestion).filter_by(question_id=relation.related_question_id).all()
+        
+        if not form_questions:
+            return {
+                "source": "pregunta_relacionada",
+                "data": [],
+                "forms": [],
+                "correlations": {}
+            }
+
+        forms_data = []
+        all_unique_answers = set()
+        # NUEVO: Diccionario para mapear correlaciones entre respuestas
+        correlations_map = {}
+
+        for fq in form_questions:
+            # Obtener información del formulario
+            form = db.query(Form).filter_by(id=fq.form_id).first()
+            if not form:
+                continue
+
+            # Obtener todas las preguntas del formulario
+            form_question_relations = db.query(FormQuestion).filter_by(form_id=form.id).all()
+            form_questions_data = []
+            
+            for fqr in form_question_relations:
+                question = db.query(Question).filter_by(id=fqr.question_id).first()
+                if question:
+                    form_questions_data.append({
+                        "id": question.id,
+                        "text": question.question_text,
+                        "type": question.question_type.value
+                    })
+
+            # Obtener todas las respuestas del formulario
+            responses = db.query(Response).filter_by(form_id=form.id).all()
+            responses_data = []
+
+            for response in responses:
+                # Obtener usuario
+                user = db.query(User).filter_by(id=response.user_id).first()
+                
+                # Obtener todas las respuestas de esta response
+                answers = db.query(Answer).filter_by(response_id=response.id).all()
+                answers_data = []
+                
+                # Variable para almacenar la respuesta de la pregunta relacionada
+                related_answer_text = None
+                # NUEVO: Diccionario para almacenar todas las respuestas de este response_id
+                response_answers_map = {}
+                
+                for answer in answers:
+                    question = db.query(Question).filter_by(id=answer.question_id).first()
+                    answer_data = {
+                        "question_id": answer.question_id,
+                        "question_text": question.question_text if question else "",
+                        "answer_text": answer.answer_text or "",
+                        "file_path": answer.file_path or ""
+                    }
+                    answers_data.append(answer_data)
+                    
+                    # Agregar al mapa de respuestas de este response_id
+                    if answer.answer_text:
+                        response_answers_map[answer.question_id] = answer.answer_text
+                    
+                    # Si esta es la respuesta de la pregunta relacionada, guardarla
+                    if answer.question_id == relation.related_question_id:
+                        related_answer_text = answer.answer_text
+
+                # Agregar la respuesta única para el conjunto global
+                if related_answer_text:
+                    all_unique_answers.add(related_answer_text)
+                    
+                    # NUEVO: Crear correlación para esta respuesta
+                    if related_answer_text not in correlations_map:
+                        correlations_map[related_answer_text] = {}
+                    
+                    # Agregar todas las otras respuestas como correlaciones
+                    for q_id, answer_text in response_answers_map.items():
+                        if q_id != relation.related_question_id:  # No incluir la misma pregunta
+                            if q_id not in correlations_map[related_answer_text]:
+                                correlations_map[related_answer_text][q_id] = answer_text
+
+                # Obtener estado de aprobación
+                latest_approval = db.query(ResponseApproval)\
+                    .filter_by(response_id=response.id)\
+                    .order_by(ResponseApproval.sequence_number.desc())\
+                    .first()
+                
+                approval_status = {
+                    "status": latest_approval.status.value if latest_approval else "pendiente",
+                    "message": latest_approval.message or "" if latest_approval else ""
+                }
+
+                response_data = {
+                    "response_id": response.id,
+                    "status": response.status.value,
+                    "user": {
+                        "id": user.id,
+                        "name": user.name,
+                        "email": user.email,
+                        "num_document": user.num_document
+                    } if user else None,
+                    "submitted_at": response.submitted_at.isoformat(),
+                    "answers": answers_data,
+                    "approval_status": approval_status
+                }
+                responses_data.append(response_data)
+
+            form_data = {
+                "form_id": form.id,
+                "title": form.title,
+                "description": form.description,
+                "questions": form_questions_data,
+                "responses": responses_data
+            }
+            forms_data.append(form_data)
+
+        return {
+            "source": "pregunta_relacionada",
+            "related_question": {
+                "id": related_question.id,
+                "text": related_question.question_text,
+                "type": related_question.question_type.value
+            },
+            "data": [{"name": answer} for answer in sorted(all_unique_answers) if answer],
+            "forms": forms_data,
+            # NUEVO: Mapa de correlaciones
+            "correlations": correlations_map
+        }
+
+    # Si no hay pregunta relacionada, usar tabla externa
+    name_table = relation.name_table
+    field_name = relation.field_name
+
+    valid_tables = {
+        "answers": Answer,
+        "users": User,
+        "forms": Form,
+        "options": Option,
+    }
+
+    table_translations = {
+        "users": "usuarios",
+        "forms": "formularios",
+        "answers": "respuestas",
+        "options": "opciones"
+    }
+
+    Model = valid_tables.get(name_table)
+    if not Model:
+        raise HTTPException(status_code=400, detail=f"Tabla '{name_table}' no soportada")
+
+    if not hasattr(Model, field_name):
+        raise HTTPException(status_code=400, detail=f"Campo '{field_name}' no existe en el modelo '{name_table}'")
+
+    results = db.query(Model).all()
+
+    def serialize(instance):
+        return {"name": getattr(instance, field_name, None)}
+
+    return {
+        "source": table_translations.get(name_table, name_table),
+        "data": [serialize(r) for r in results if getattr(r, field_name, None)],
+        "forms": [],
+        "correlations": {}  # Las tablas externas no tienen correlaciones
+    }
 
 def get_related_or_filtered_answers(db: Session, question_id: int):
     """
@@ -2284,16 +2760,17 @@ def get_unanswered_forms_by_user(db: Session, user_id: int):
 def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
     """
     Guarda las aprobaciones asociadas a un formulario.
-
+    
     - Verifica si el formulario existe.
     - Revisa si ya existen aprobaciones activas para los usuarios.
     - Crea nuevas aprobaciones si no hay duplicados o si el `sequence_number` es diferente.
+    - Incluye los nuevos campos: required_forms_ids y follows_approval_sequence.
     - Retorna una lista de IDs de usuarios cuyas aprobaciones fueron creadas.
-
+    
     Args:
         data (FormApprovalCreateSchema): Datos del formulario y aprobadores a guardar.
         db (Session): Sesión de la base de datos.
-
+    
     Returns:
         List[int]: Lista de IDs de usuarios aprobadores que fueron agregados.
     """
@@ -2301,45 +2778,53 @@ def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
     form = db.query(Form).filter(Form.id == data.form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Formulario no encontrado.")
-
+    
     # Obtiene las aprobaciones existentes para este formulario
     existing_approvals = db.query(FormApproval).filter(FormApproval.form_id == data.form_id).all()
-
+    
     # Lista para guardar los nuevos IDs insertados
     newly_created_user_ids = []
-
+    
     # Solo agrega nuevos aprobadores (no duplicados) o crea un nuevo registro si el sequence_number es diferente
     for approver in data.approvers:
         # Filtra aprobaciones activas con el mismo user_id y form_id
         existing_active_approval = next(
             (fa for fa in existing_approvals if fa.user_id == approver.user_id and fa.is_active), None
         )
-
+        
         if existing_active_approval:
             # Si ya existe un aprobador activo con el mismo user_id y form_id y el sequence_number es diferente
             if existing_active_approval.sequence_number != approver.sequence_number:
                 # Crea una nueva entrada
-                db.add(FormApproval(
+                new_approval = FormApproval(
                     form_id=data.form_id,
                     user_id=approver.user_id,
                     sequence_number=approver.sequence_number,
                     is_mandatory=approver.is_mandatory,
                     deadline_days=approver.deadline_days,
-                    is_active=approver.is_active if approver.is_active is not None else True  # Si no se pasa, se asume True
-                ))
+                    is_active=approver.is_active if approver.is_active is not None else True,
+                    # Nuevos campos
+                    required_forms_ids=approver.required_forms_ids if hasattr(approver, 'required_forms_ids') else None,
+                    follows_approval_sequence=approver.follows_approval_sequence if hasattr(approver, 'follows_approval_sequence') else True
+                )
+                db.add(new_approval)
                 newly_created_user_ids.append(approver.user_id)
         else:
             # Si no existe un aprobador activo con el mismo user_id y form_id, se puede agregar el nuevo aprobador
-            db.add(FormApproval(
+            new_approval = FormApproval(
                 form_id=data.form_id,
                 user_id=approver.user_id,
                 sequence_number=approver.sequence_number,
                 is_mandatory=approver.is_mandatory,
                 deadline_days=approver.deadline_days,
-                is_active=approver.is_active if approver.is_active is not None else True  # Si no se pasa, se asume True
-            ))
+                is_active=approver.is_active if approver.is_active is not None else True,
+                # Nuevos campos
+                required_forms_ids=approver.required_forms_ids if hasattr(approver, 'required_forms_ids') else None,
+                follows_approval_sequence=approver.follows_approval_sequence if hasattr(approver, 'follows_approval_sequence') else True
+            )
+            db.add(new_approval)
             newly_created_user_ids.append(approver.user_id)
-
+    
     db.commit()
     return newly_created_user_ids
 
@@ -3345,6 +3830,7 @@ def get_response_approval_status(response_approvals: list) -> dict:
         "message": " | ".join(filter(None, messages))
     }
 
+
 def get_form_with_full_responses(form_id: int, db: Session):
     """
     Recupera todos los detalles de un formulario con sus preguntas, respuestas, historial de respuestas
@@ -3376,6 +3862,49 @@ def get_form_with_full_responses(form_id: int, db: Session):
     - Se excluyen respuestas históricas (`previous_answer_id`) para evitar duplicidad.
     - Se utiliza `joinedload` para mejorar eficiencia en la carga de datos relacionados.
     """
+    
+    # Función auxiliar para procesar respuestas de reconocimiento facial
+    def process_regisfacial_answer(answer_text, question_type):
+        """
+        Procesa las respuestas de tipo regisfacial para mostrar un texto descriptivo
+        del registro facial guardado en lugar del JSON completo de faceData
+        """
+        if question_type != "regisfacial" or not answer_text:
+            return answer_text
+        
+        try:
+            # Intentar parsear el JSON
+            face_data = json.loads(answer_text)
+            
+            # Buscar en diferentes estructuras posibles
+            person_name = "Usuario"
+            success = False
+            
+            # Estructura 1: {"faceData": {"success": true, "personName": "..."}}
+            if isinstance(face_data, dict) and "faceData" in face_data:
+                face_info = face_data["faceData"]
+                if isinstance(face_info, dict):
+                    success = face_info.get("success", False)
+                    person_name = face_info.get("personName", "Usuario")
+            
+            # Estructura 2: directamente {"success": true, "personName": "..."}
+            elif isinstance(face_data, dict):
+                success = face_data.get("success", False)
+                person_name = face_data.get("personName", face_data.get("person_name", "Usuario"))
+            
+            # Buscar también otras variantes de nombres
+            if person_name == "Usuario":
+                person_name = face_data.get("name", face_data.get("user_name", "Usuario"))
+            
+            if success:
+                return f"Datos biométricos de {person_name} registrados"
+            else:
+                return f"Error en el registro de datos biométricos de {person_name}"
+            
+        except (json.JSONDecodeError, KeyError, TypeError):
+            # Si hay error al parsear JSON, devolver un mensaje genérico
+            return "Datos biométricos procesados"
+    
     form = db.query(Form).options(
         joinedload(Form.questions),
         joinedload(Form.responses).joinedload(Response.user),
@@ -3388,6 +3917,7 @@ def get_form_with_full_responses(form_id: int, db: Session):
         "form_id": form.id,
         "title": form.title,
         "description": form.description,
+ 
         "questions": [
             {
                 "id": q.id,
@@ -3439,6 +3969,7 @@ def get_form_with_full_responses(form_id: int, db: Session):
     for response in form.responses:
         response_data = {
             "response_id": response.id,
+            "status": response.status,
             "user": {
                 "id": response.user.id,
                 "name": response.user.name,
@@ -3462,10 +3993,13 @@ def get_form_with_full_responses(form_id: int, db: Session):
         )
 
         for ans in answers:
+            # Procesar la respuesta según el tipo de pregunta
+            processed_answer_text = process_regisfacial_answer(ans.answer_text, ans.question.question_type)
+            
             response_data["answers"].append({
                 "question_id": ans.question.id,
                 "question_text": ans.question.question_text,
-                "answer_text": ans.answer_text,
+                "answer_text": processed_answer_text,
                 "file_path": ans.file_path,
             })
 
@@ -3477,7 +4011,6 @@ def get_form_with_full_responses(form_id: int, db: Session):
         results["responses"].append(response_data)
 
     return results
-
 
 def update_form_design_service(db: Session, form_id: int, design_data: List[Dict[str, Any]]):
     """

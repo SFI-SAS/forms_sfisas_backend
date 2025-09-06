@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import Any, List
 from app.database import get_db
 from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormSchedule, Response, ResponseApproval, User, UserType
-from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category_by_id, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_form_categories, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_user, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_approvals, send_rejection_email_to_all, update_form_design_service, update_notification_status, update_response_approval_status
+from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category_by_id, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_form_categories, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_approvals, send_rejection_email_to_all, update_form_design_service, update_notification_status, update_response_approval_status
 from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryResponse, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, ResponseApprovalCreate, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
@@ -201,6 +201,9 @@ def register_form_schedule(schedule_data: FormScheduleCreate, db: Session = Depe
         specific_date=schedule_data.specific_date,
         status=schedule_data.status
     )
+
+import json
+
 @router.get("/responses/")
 def get_responses_with_answers(
     form_id: int,
@@ -243,6 +246,48 @@ def get_responses_with_answers(
 
     if not responses:
         raise HTTPException(status_code=404, detail="No se encontraron respuestas")
+
+    # Función auxiliar para procesar respuestas de reconocimiento facial
+    def process_regisfacial_answer(answer_text, question_type):
+        """
+        Procesa las respuestas de tipo regisfacial para mostrar un texto descriptivo
+        del registro facial guardado en lugar del JSON completo de faceData
+        """
+        if question_type != "regisfacial" or not answer_text:
+            return answer_text
+        
+        try:
+            # Intentar parsear el JSON
+            face_data = json.loads(answer_text)
+            
+            # Buscar en diferentes estructuras posibles
+            person_name = "Usuario"
+            success = False
+            
+            # Estructura 1: {"faceData": {"success": true, "personName": "..."}}
+            if isinstance(face_data, dict) and "faceData" in face_data:
+                face_info = face_data["faceData"]
+                if isinstance(face_info, dict):
+                    success = face_info.get("success", False)
+                    person_name = face_info.get("personName", "Usuario")
+            
+            # Estructura 2: directamente {"success": true, "personName": "..."}
+            elif isinstance(face_data, dict):
+                success = face_data.get("success", False)
+                person_name = face_data.get("personName", face_data.get("person_name", "Usuario"))
+            
+            # Buscar también otras variantes de nombres
+            if person_name == "Usuario":
+                person_name = face_data.get("name", face_data.get("user_name", "Usuario"))
+            
+            if success:
+                return f"Datos biométricos de {person_name} registrados"
+            else:
+                return f"Error en el registro de datos biométricos de {person_name}"
+            
+        except (json.JSONDecodeError, KeyError, TypeError):
+            # Si hay error al parsear JSON, devolver un mensaje genérico
+            return "Datos biométricos procesados"
 
     # Obtener todos los response_ids para buscar el historial
     response_ids = [response.id for response in responses]
@@ -294,6 +339,7 @@ def get_responses_with_answers(
 
         result.append({
             "response_id": r.id,
+            "status": r.status,
             "submitted_at": r.submitted_at,
             "approval_status": approval_result["status"],
             "message": approval_result["message"],
@@ -311,7 +357,7 @@ def get_responses_with_answers(
                     "question_id": a.question.id,
                     "question_text": a.question.question_text,
                     "question_type": a.question.question_type,
-                    "answer_text": a.answer_text,
+                    "answer_text": process_regisfacial_answer(a.answer_text, a.question.question_type),
                     "file_path": a.file_path
                 }
                 for a in current_answers
@@ -337,9 +383,7 @@ def get_responses_with_answers(
             ]
         })
 
-
     return result
-
 
 @router.get("/all/list", response_model=List[dict])
 def get_forms_endpoint(db: Session = Depends(get_db)):
@@ -382,6 +426,41 @@ def get_user_forms( db: Session = Depends(get_db), current_user: User = Depends(
             if not forms:
                 raise HTTPException(status_code=404, detail="No se encontraron formularios para este usuario")
             return forms
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@router.get("/users/forms_by_approver")
+def get_user_forms_by_approver(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Retorna los formularios donde el usuario autenticado es aprobador activo,
+    incluyendo información sobre el proceso de aprobación.
+    
+    - **Requiere autenticación.**
+    - **Código 200**: Lista de formularios con información de aprobación.
+    - **Código 403**: Usuario sin permisos (no autenticado).
+    - **Código 404**: No se encontraron formularios donde sea aprobador.
+    - **Código 500**: Error interno del servidor.
+    """
+    try:
+        if current_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User does not have permission to get approval forms"
+            )
+        
+        forms_approval_info = get_forms_by_approver(db, current_user.id)
+        
+        if not forms_approval_info:
+            raise HTTPException(
+                status_code=404, 
+                detail="No se encontraron formularios donde sea aprobador activo"
+            )
+        
+        return forms_approval_info
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -934,7 +1013,6 @@ def get_responses_by_user_and_form(
 
 
 
-
 @router.post("/form-approvals/create")
 def create_form_approvals(
     data: FormApprovalCreateSchema,
@@ -943,27 +1021,71 @@ def create_form_approvals(
 ):
     """
     Crea aprobaciones para un formulario específico.
-
+    
     - Requiere que el usuario actual esté autenticado.
     - Valida la existencia del formulario.
     - Agrega aprobadores si no existen o si el número de secuencia es diferente.
-    
+    - Permite configurar formularios requeridos y secuencia de aprobación.
+        
     Args:
         data (FormApprovalCreateSchema): Datos del formulario y aprobadores.
+            - form_id: ID del formulario principal
+            - approvers: Lista de aprobadores con:
+                - user_id: ID del usuario aprobador
+                - sequence_number: Orden en la secuencia de aprobación
+                - is_mandatory: Si la aprobación es obligatoria
+                - deadline_days: Días límite para aprobar
+                - is_active: Si el aprobador está activo
+                - required_forms_ids: IDs de formularios que debe diligenciar antes de aprobar
+                - follows_approval_sequence: Si debe seguir la secuencia de aprobación
         db (Session): Sesión de la base de datos inyectada por dependencia.
         current_user (User): Usuario autenticado actual.
-
+        
     Returns:
-        dict: Diccionario con los IDs de los nuevos aprobadores agregados.
+        dict: Diccionario con los IDs de los nuevos aprobadores agregados y resumen de configuración.
     """
     if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission"
         )
-    new_ids = save_form_approvals(data, db)
-    return {"new_user_ids": new_ids}
-
+    
+    try:
+        new_ids = save_form_approvals(data, db)
+        
+        # Información adicional sobre la configuración creada
+        total_approvers = len(data.approvers)
+        approvers_with_required_forms = len([
+            approver for approver in data.approvers 
+            if hasattr(approver, 'required_forms_ids') and approver.required_forms_ids
+        ])
+        approvers_following_sequence = len([
+            approver for approver in data.approvers 
+            if not hasattr(approver, 'follows_approval_sequence') or approver.follows_approval_sequence
+        ])
+        
+        return {
+            "success": True,
+            "message": "Aprobaciones creadas exitosamente",
+            "new_user_ids": new_ids,
+            "summary": {
+                "total_approvers_configured": total_approvers,
+                "new_approvers_added": len(new_ids),
+                "approvers_with_required_forms": approvers_with_required_forms,
+                "approvers_following_sequence": approvers_following_sequence,
+                "form_id": data.form_id
+            }
+        }
+        
+    except HTTPException as e:
+        # Re-raise HTTP exceptions (como formulario no encontrado)
+        raise e
+    except Exception as e:
+        # Manejo de errores inesperados
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error interno del servidor: {str(e)}"
+        )
 
 @router.post("/create/response_approval_endpoint", status_code=status.HTTP_201_CREATED)
 def create_response_approval_endpoint(
