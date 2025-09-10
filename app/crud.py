@@ -11,7 +11,7 @@ from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, ResponseApproval, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, ResponseApproval, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
 from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
@@ -2764,7 +2764,6 @@ def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
     - Verifica si el formulario existe.
     - Revisa si ya existen aprobaciones activas para los usuarios.
     - Crea nuevas aprobaciones si no hay duplicados o si el `sequence_number` es diferente.
-    - Incluye los nuevos campos: required_forms_ids y follows_approval_sequence.
     - Retorna una lista de IDs de usuarios cuyas aprobaciones fueron creadas.
     
     Args:
@@ -2802,10 +2801,7 @@ def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
                     sequence_number=approver.sequence_number,
                     is_mandatory=approver.is_mandatory,
                     deadline_days=approver.deadline_days,
-                    is_active=approver.is_active if approver.is_active is not None else True,
-                    # Nuevos campos
-                    required_forms_ids=approver.required_forms_ids if hasattr(approver, 'required_forms_ids') else None,
-                    follows_approval_sequence=approver.follows_approval_sequence if hasattr(approver, 'follows_approval_sequence') else True
+                    is_active=approver.is_active if approver.is_active is not None else True
                 )
                 db.add(new_approval)
                 newly_created_user_ids.append(approver.user_id)
@@ -2817,10 +2813,7 @@ def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
                 sequence_number=approver.sequence_number,
                 is_mandatory=approver.is_mandatory,
                 deadline_days=approver.deadline_days,
-                is_active=approver.is_active if approver.is_active is not None else True,
-                # Nuevos campos
-                required_forms_ids=approver.required_forms_ids if hasattr(approver, 'required_forms_ids') else None,
-                follows_approval_sequence=approver.follows_approval_sequence if hasattr(approver, 'follows_approval_sequence') else True
+                is_active=approver.is_active if approver.is_active is not None else True
             )
             db.add(new_approval)
             newly_created_user_ids.append(approver.user_id)
@@ -4134,6 +4127,7 @@ def update_notification_status(notification_id: int, notify_on: str, db: Session
     db.refresh(notification)
 
     return notification
+
 def delete_form(db: Session, form_id: int):
     """
     Elimina un formulario y todos sus registros relacionados, incluyendo respuestas si existen.
@@ -4168,6 +4162,13 @@ def delete_form(db: Session, form_id: int):
             db.query(Answer).filter(Answer.response_id.in_(response_ids)).delete(synchronize_session=False)
             db.query(Response).filter(Response.id.in_(response_ids)).delete(synchronize_session=False)
         
+        # AGREGAR: Eliminar approval_requirements ANTES de eliminar el formulario
+        # Eliminar donde form_id es el formulario principal
+        db.query(ApprovalRequirement).filter(ApprovalRequirement.form_id == form_id).delete(synchronize_session=False)
+        # Eliminar donde required_form_id es el formulario que se va a eliminar
+        db.query(ApprovalRequirement).filter(ApprovalRequirement.required_form_id == form_id).delete(synchronize_session=False)
+        
+        # Continuar con las demás eliminaciones
         db.query(QuestionFilterCondition).filter(QuestionFilterCondition.form_id == form_id).delete(synchronize_session=False)
         db.query(FormAnswer).filter(FormAnswer.form_id == form_id).delete(synchronize_session=False)
         db.query(FormApproval).filter(FormApproval.form_id == form_id).delete(synchronize_session=False)
@@ -4177,6 +4178,7 @@ def delete_form(db: Session, form_id: int):
         db.query(FormQuestion).filter(FormQuestion.form_id == form_id).delete(synchronize_session=False)
         db.query(FormCloseConfig).filter(FormCloseConfig.form_id == form_id).delete(synchronize_session=False)
         
+        # Finalmente eliminar el formulario
         db.delete(form)
         db.commit()
         

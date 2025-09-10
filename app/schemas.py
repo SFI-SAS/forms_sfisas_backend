@@ -333,9 +333,6 @@ class ApproverSchema(BaseModel):
     is_mandatory: bool = Field(default=True)
     deadline_days: Optional[int] = None
     is_active: Optional[bool] = Field(default=True)
-    # Nuevos campos
-    required_forms_ids: Optional[List[int]] = Field(default=None, description="IDs de formularios que debe diligenciar antes de aprobar")
-    follows_approval_sequence: bool = Field(default=True, description="Si debe seguir la secuencia de aprobación")
 
 
 class FormApprovalCreateSchema(BaseModel):
@@ -721,3 +718,14 @@ class RegisfacialAnswerResponse(BaseModel):
 
     class Config:
         from_attributes = True
+        
+        
+class ApprovalRequirementCreateSchema(BaseModel):
+    form_id: int
+    approver_id: int
+    required_form_id: int
+    linea_aprobacion: Optional[bool] = True
+    form_diligenciado: Optional[bool] = False
+
+class ApprovalRequirementsCreateSchema(BaseModel):
+    requirements: List[ApprovalRequirementCreateSchema]

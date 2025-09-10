@@ -57,7 +57,7 @@ class User(Base):
     password = Column(Text, nullable=False)
     recognition_id = Column(String(100), nullable=True, unique=True)  # <-- nuevo campo
     
-    id_category = Column(BigInteger, ForeignKey('user_categories.id'), nullable=True)
+    id_category  = Column(BigInteger, ForeignKey('user_categories.id'), nullable=True)
     category = relationship("UserCategory", back_populates="users")
     
     # Relaciones existentes
@@ -282,6 +282,7 @@ class AnswerFileSerial(Base):
 
 
 
+
 class FormApproval(Base):
     __tablename__ = 'form_approvals'
 
@@ -293,12 +294,10 @@ class FormApproval(Base):
     deadline_days = Column(Integer, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     
-    # Nuevos campos
-    required_forms_ids = Column(JSON, nullable=True)  # Lista de IDs de formularios requeridos
-    follows_approval_sequence = Column(Boolean, default=True, nullable=False)  # Si sigue la secuencia de aprobación
-    
     form = relationship("Form", backref="approval_template")
     user = relationship("User", backref="forms_to_approve")
+
+
 class ResponseApproval(Base):
     __tablename__ = 'response_approvals'
 
@@ -412,3 +411,29 @@ class QuestionLocationRelation(Base):
     target_question_id = Column(BigInteger, nullable=False)  
 
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ApprovalRequirement(Base):
+    __tablename__ = "approval_requirements"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    # Formulario principal al que aplica el requisito
+    form_id = Column(BigInteger, ForeignKey("forms.id"), nullable=False)
+
+    # Usuario responsable de aprobar
+    approver_id = Column(BigInteger, ForeignKey("users.id"), nullable=False)
+
+    # Formulario que debe estar diligenciado/aprobado como requisito
+    required_form_id = Column(BigInteger, ForeignKey("forms.id"), nullable=False)
+
+    # Indica si debe seguir una línea de aprobación (secuencia obligatoria)
+    linea_aprobacion = Column(Boolean, default=True, nullable=False)
+
+    # Indica si el formulario requerido ya fue diligenciado
+    form_diligenciado = Column(Boolean, default=False, nullable=False)
+
+    # Relaciones
+    form = relationship("Form", foreign_keys=[form_id], backref="approval_requirements")
+    approver = relationship("User", backref="approval_requirements")
+    required_form = relationship("Form", foreign_keys=[required_form_id])
