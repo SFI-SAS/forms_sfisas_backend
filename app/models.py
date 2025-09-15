@@ -430,10 +430,42 @@ class ApprovalRequirement(Base):
     # Indica si debe seguir una línea de aprobación (secuencia obligatoria)
     linea_aprobacion = Column(Boolean, default=True, nullable=False)
 
-    # Indica si el formulario requerido ya fue diligenciado
-    form_diligenciado = Column(Boolean, default=False, nullable=False)
 
     # Relaciones
     form = relationship("Form", foreign_keys=[form_id], backref="approval_requirements")
     approver = relationship("User", backref="approval_requirements")
     required_form = relationship("Form", foreign_keys=[required_form_id])
+
+
+
+class ResponseApprovalRequirement(Base):
+    """
+    Tabla que controla los requisitos de aprobación específicos para cada respuesta.
+    Permite tener múltiples respuestas del mismo usuario al mismo formulario,
+    cada una con su propio control de requisitos.
+    """
+    __tablename__ = "response_approval_requirements"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    
+    # La respuesta específica que debe cumplir el requisito
+    response_id = Column(BigInteger, ForeignKey("responses.id"), nullable=False)
+    
+    # El requisito base desde la configuración del formulario
+    approval_requirement_id = Column(BigInteger, ForeignKey("approval_requirements.id"), nullable=False)
+    
+    # ID de la respuesta del formulario requerido que cumple este requisito
+    # (NULL significa que aún no se ha cumplido)
+    fulfilling_response_id = Column(BigInteger, ForeignKey("responses.id"), nullable=True)
+    
+    # Estado del requisito para esta respuesta específica
+    is_fulfilled = Column(Boolean, default=False, nullable=False)
+    
+    # Timestamps para auditoría
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    
+    # Relaciones
+    response = relationship("Response", foreign_keys=[response_id], backref="approval_requirements_status")
+    approval_requirement = relationship("ApprovalRequirement", backref="response_requirements")
+    fulfilling_response = relationship("Response", foreign_keys=[fulfilling_response_id])

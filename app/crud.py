@@ -2858,7 +2858,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
     Esta función consulta las aprobaciones asignadas al usuario, valida que sea su turno 
     (es decir, que los aprobadores anteriores obligatorios ya hayan aprobado) 
     y construye una estructura de datos con toda la información relevante de las respuestas y sus aprobadores.
-    Incluye el historial de cambios en las respuestas para trazabilidad.
+    Incluye el historial de cambios en las respuestas para trazabilidad y los requisitos de aprobación.
 
     Parámetros:
     ----------
@@ -2877,6 +2877,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
         - Estado de aprobación del usuario actual.
         - Estado de todos los aprobadores del flujo.
         - Historial de cambios en respuestas.
+        - Requisitos de aprobación para el formulario y usuario.
     """
     results = []
 
@@ -2888,6 +2889,20 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
 
     for form_approval in form_approvals:
         form = form_approval.form
+
+        # 📌 NUEVO: Obtener requisitos de aprobación para este formulario y usuario
+        approval_requirements = (
+            db.query(ApprovalRequirement)
+            .options(
+                joinedload(ApprovalRequirement.required_form),
+                joinedload(ApprovalRequirement.approver)
+            )
+            .filter(
+                ApprovalRequirement.form_id == form.id,
+                ApprovalRequirement.approver_id == user_id
+            )
+            .all()
+        )
 
         # 📌 Mostrar plantilla de aprobadores para este formulario
         approval_template = db.query(FormApproval).filter(FormApproval.form_id == form.id).order_by(FormApproval.sequence_number).all()
@@ -3024,6 +3039,26 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
 
             user_response = db.query(User).filter(User.id == response.user_id).first()
 
+            # 📌 NUEVO: Construir información de requisitos de aprobación
+            requirements_data = []
+            for req in approval_requirements:
+                requirement_info = {
+                    "requirement_id": req.id,
+                    "required_form": {
+                        "form_id": req.required_form_id,
+                        "form_title": req.required_form.title,
+                        "form_description": req.required_form.description
+                    },
+                    "linea_aprobacion": req.linea_aprobacion,
+                    "approver": {
+                        "user_id": req.approver.id,
+                        "name": req.approver.name,
+                        "email": req.approver.email,
+                        "num_document": req.approver.num_document
+                    }
+                }
+                requirements_data.append(requirement_info)
+
             # 📌 NUEVO: Agregar información del historial a nivel de respuesta
             response_data = {
                 "deadline_days": form_approval.deadline_days,
@@ -3051,12 +3086,19 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                     "has_modifications": len(histories) > 0,
                     "total_changes": len(histories),
                     "modified_answers_count": len([a for a in answers_data if a["has_history"]])
+                },
+                "approval_requirements": {
+                    "has_requirements": len(requirements_data) > 0,
+                    "total_requirements": len(requirements_data),
+                    "requirements": requirements_data
                 }
             }
 
             results.append(response_data)
 
     return results
+
+
 def get_bogota_time() -> datetime:
     """Retorna la hora actual con la zona horaria de Bogotá."""
     return datetime.now(pytz.timezone("America/Bogota"))

@@ -725,7 +725,17 @@ class ApprovalRequirementCreateSchema(BaseModel):
     approver_id: int
     required_form_id: int
     linea_aprobacion: Optional[bool] = True
-    form_diligenciado: Optional[bool] = False
 
 class ApprovalRequirementsCreateSchema(BaseModel):
     requirements: List[ApprovalRequirementCreateSchema]
+
+
+
+class ResponseRequirementCreate(BaseModel):
+    response_id: int
+    approval_requirement_id: int
+    fulfilling_response_id: int = None
+    
+class ResponseRequirementUpdate(BaseModel):
+    fulfilling_response_id: int = None
+    is_fulfilled: bool = False

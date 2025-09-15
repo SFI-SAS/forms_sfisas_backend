@@ -1,14 +1,25 @@
+from typing import List, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from pydantic import BaseModel
+from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 from app.crud import get_forms_by_approver, save_form_approvals, update_response_approval_status
 from app.database import get_db
 from app.core.security import get_current_user
 import pandas as pd
-from app.models import ApprovalRequirement, ApprovalStatus, Form, FormApproval, Response, ResponseApproval, User
+from app.models import ApprovalRequirement, ApprovalStatus, Form, FormApproval, Response, ResponseApproval, ResponseApprovalRequirement, User
 from app.schemas import ApprovalRequirementsCreateSchema, BulkUpdateFormApprovals, FormApprovalCreateSchema, FormWithApproversResponse, UpdateResponseApprovalRequest
 
 router = APIRouter()
 
+class ResponseApprovalRequirementCreateItem(BaseModel):
+    response_id: int
+    approval_requirement_id: int
+    fulfilling_response_id: Optional[int] = None
+    is_fulfilled: bool = False
+
+class ResponseApprovalRequirementsCreateSchema(BaseModel):
+    requirements: List[ResponseApprovalRequirementCreateItem]
 
 @router.post("/form-approvals/create")
 def create_form_approvals(
@@ -214,7 +225,6 @@ def create_approval_requirements(
                 - approver_id: ID del usuario aprobador
                 - required_form_id: ID del formulario requerido como prerequisito
                 - linea_aprobacion: Si debe seguir secuencia obligatoria (default: True)
-                - form_diligenciado: Si el formulario ya fue diligenciado (default: False)
         db (Session): Sesión de la base de datos inyectada por dependencia.
         current_user (User): Usuario autenticado actual.
     
@@ -239,9 +249,7 @@ def create_approval_requirements(
                 "requirements_with_approval_line": len([
                     req for req in data.requirements if req.linea_aprobacion
                 ]),
-                "requirements_already_completed": len([
-                    req for req in data.requirements if req.form_diligenciado
-                ])
+           
             }
         }
     
@@ -516,7 +524,6 @@ def save_approval_requirements(data: ApprovalRequirementsCreateSchema, db: Sessi
             approver_id=requirement.approver_id,
             required_form_id=requirement.required_form_id,
             linea_aprobacion=requirement.linea_aprobacion,
-            form_diligenciado=requirement.form_diligenciado
         )
         
         db.add(new_requirement)
@@ -525,3 +532,289 @@ def save_approval_requirements(data: ApprovalRequirementsCreateSchema, db: Sessi
     
     db.commit()
     return created_requirement_ids
+
+
+        
+def save_response_approval_requirements(
+    data: ResponseApprovalRequirementsCreateSchema, 
+    db: Session
+) -> List[int]:
+    """
+    Guarda los requisitos de aprobación específicos para respuestas.
+    
+    Args:
+        data: Schema con la lista de requisitos de respuesta
+        db: Sesión de la base de datos
+        
+    Returns:
+        List[int]: Lista de IDs creados
+        
+    Raises:
+        HTTPException: Si hay errores de validación o guardado
+    """
+    created_ids = []
+    
+    try:
+        for req_data in data.requirements:
+            # Validar que la respuesta existe
+            response = db.query(Response).filter(
+                Response.id == req_data.response_id
+            ).first()
+            if not response:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Response with ID {req_data.response_id} not found"
+                )
+            
+            # Validar que el approval requirement existe
+            approval_req = db.query(ApprovalRequirement).filter(
+                ApprovalRequirement.id == req_data.approval_requirement_id
+            ).first()
+            if not approval_req:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Approval requirement with ID {req_data.approval_requirement_id} not found"
+                )
+            
+            # Validar fulfilling_response_id si se proporciona
+            if req_data.fulfilling_response_id:
+                fulfilling_response = db.query(Response).filter(
+                    Response.id == req_data.fulfilling_response_id
+                ).first()
+                if not fulfilling_response:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Fulfilling response with ID {req_data.fulfilling_response_id} not found"
+                    )
+            
+            # Verificar si ya existe este requisito para esta respuesta
+            existing = db.query(ResponseApprovalRequirement).filter(
+                ResponseApprovalRequirement.response_id == req_data.response_id,
+                ResponseApprovalRequirement.approval_requirement_id == req_data.approval_requirement_id
+            ).first()
+            
+            if existing:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Response approval requirement already exists for response {req_data.response_id} and approval requirement {req_data.approval_requirement_id}"
+                )
+            
+            # Crear el nuevo registro
+            new_requirement = ResponseApprovalRequirement(
+                response_id=req_data.response_id,
+                approval_requirement_id=req_data.approval_requirement_id,
+                fulfilling_response_id=req_data.fulfilling_response_id,
+                is_fulfilled=req_data.is_fulfilled
+            )
+            
+            db.add(new_requirement)
+            db.flush()  # Para obtener el ID
+            created_ids.append(new_requirement.id)
+        
+        db.commit()
+        return created_ids
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error saving response approval requirements: {str(e)}"
+        )
+
+# Endpoint
+@router.post("/response-approval-requirements/create")
+def create_response_approval_requirements(
+    data: ResponseApprovalRequirementsCreateSchema,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Crea requisitos de aprobación específicos para respuestas de formularios.
+    
+    - Requiere que el usuario actual esté autenticado.
+    - Valida la existencia de respuestas y requisitos de aprobación.
+    - Guarda los requisitos específicos para cada respuesta con:
+        - Respuesta específica que debe cumplir el requisito
+        - Requisito de aprobación base desde la configuración del formulario
+        - Respuesta que cumple el requisito (opcional)
+        - Estado de cumplimiento del requisito
+    
+    Args:
+        data (ResponseApprovalRequirementsCreateSchema): Lista de requisitos de respuesta.
+            - requirements: Lista con:
+                - response_id: ID de la respuesta que debe cumplir el requisito
+                - approval_requirement_id: ID del requisito de aprobación base
+                - fulfilling_response_id: ID de la respuesta que cumple el requisito (opcional)
+                - is_fulfilled: Estado del requisito (default: False)
+        db (Session): Sesión de la base de datos inyectada por dependencia.
+        current_user (User): Usuario autenticado actual.
+    
+    Returns:
+        dict: Resultado de la operación con IDs creados y resumen.
+    """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission"
+        )
+    
+    try:
+        created_ids = save_response_approval_requirements(data, db)
+        
+        return {
+            "success": True,
+            "message": "Requisitos de aprobación de respuestas creados exitosamente",
+            "created_requirement_ids": created_ids,
+            "summary": {
+                "total_requirements_created": len(created_ids),
+                "fulfilled_requirements": len([
+                    req for req in data.requirements if req.is_fulfilled
+                ]),
+                "pending_requirements": len([
+                    req for req in data.requirements if not req.is_fulfilled
+                ])
+            }
+        }
+    
+    except HTTPException as e:
+        # Re-raise HTTP exceptions
+        raise e
+    except Exception as e:
+        # Manejo de errores inesperados
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error interno del servidor: {str(e)}"
+        )
+
+# Endpoint adicional para actualizar el estado de cumplimiento
+@router.put("/response-approval-requirements/{requirement_id}/fulfill")
+def fulfill_response_approval_requirement(
+    requirement_id: int,
+    fulfilling_response_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Marca un requisito de aprobación de respuesta como cumplido.
+    
+    Args:
+        requirement_id: ID del requisito de respuesta a actualizar
+        fulfilling_response_id: ID de la respuesta que cumple el requisito
+        db: Sesión de la base de datos
+        current_user: Usuario autenticado actual
+    
+    Returns:
+        dict: Resultado de la operación
+    """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission"
+        )
+    
+    try:
+        # Buscar el requisito
+        requirement = db.query(ResponseApprovalRequirement).filter(
+            ResponseApprovalRequirement.id == requirement_id
+        ).first()
+        
+        if not requirement:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Response approval requirement with ID {requirement_id} not found"
+            )
+        
+        # Validar que la respuesta que cumple el requisito existe
+        fulfilling_response = db.query(Response).filter(
+            Response.id == fulfilling_response_id
+        ).first()
+        
+        if not fulfilling_response:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Fulfilling response with ID {fulfilling_response_id} not found"
+            )
+        
+        # Actualizar el requisito
+        requirement.fulfilling_response_id = fulfilling_response_id
+        requirement.is_fulfilled = True
+        
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Requisito de aprobación marcado como cumplido exitosamente",
+            "requirement_id": requirement_id,
+            "fulfilling_response_id": fulfilling_response_id
+        }
+    
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error interno del servidor: {str(e)}"
+        )
+        
+
+
+def get_approval_requirements_by_response(db: Session, response_id: int):
+    """
+    Obtiene los requisitos de aprobación específicos para una respuesta,
+    incluyendo si ya están cumplidos o no.
+    """
+    response = db.query(Response).filter(Response.id == response_id).first()
+    if not response:
+        return []
+
+    # Obtener los requisitos base del formulario
+    base_requirements = db.query(ApprovalRequirement).filter(
+        ApprovalRequirement.form_id == response.form_id
+    ).all()
+
+    result = []
+    for base_req in base_requirements:
+        # Buscar si ya existe un registro específico para esta respuesta
+        response_req = db.query(ResponseApprovalRequirement).filter(
+            ResponseApprovalRequirement.response_id == response_id,
+            ResponseApprovalRequirement.approval_requirement_id == base_req.id
+        ).first()
+
+        # Si no existe, crearlo automáticamente
+        if not response_req:
+            response_req = ResponseApprovalRequirement(
+                response_id=response_id,
+                approval_requirement_id=base_req.id,
+                fulfilling_response_id=None,
+                is_fulfilled=False
+            )
+            db.add(response_req)
+            db.flush()
+
+        # Construir la respuesta
+        requirement_data = {
+            "requirement_id": base_req.id,
+            "response_requirement_id": response_req.id,
+            "required_form": {
+                "form_id": base_req.required_form_id,
+                "form_title": base_req.required_form.title,
+                "form_description": base_req.required_form.description
+            },
+            "linea_aprobacion": base_req.linea_aprobacion,
+            "form_diligenciado": response_req.is_fulfilled,
+            "fulfilling_response_id": response_req.fulfilling_response_id,
+            "approver": {
+                "user_id": base_req.approver_id,
+                "name": base_req.approver.name,
+                "email": base_req.approver.email,
+                "num_document": base_req.approver.num_document
+            }
+        }
+        result.append(requirement_data)
+
+    db.commit()
+    return result
