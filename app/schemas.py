@@ -739,3 +739,32 @@ class ResponseRequirementCreate(BaseModel):
 class ResponseRequirementUpdate(BaseModel):
     fulfilling_response_id: int = None
     is_fulfilled: bool = False
+   
+class ApprovalRequirementInfo(BaseModel):
+    requirement_id: int
+    required_form: dict
+    linea_aprobacion: bool
+    approver: dict
+    fulfillment_status: dict
+
+class ApproverInfo(BaseModel):
+    user_id: int
+    sequence_number: int
+    is_mandatory: bool
+    status: str
+    reconsideration_requested: bool
+    reviewed_at: Optional[datetime]
+    message: Optional[str]
+    attachment_files: Optional[Any] = None 
+    user: dict
+
+class ResponseDetailInfo(BaseModel):
+    response_id: int
+    form_id: int
+    form_title: str
+    form_description: str
+    submitted_by: dict
+    submitted_at: datetime
+    your_approval_status: Optional[dict]
+    all_approvers: List[ApproverInfo]
+    approval_requirements: dict

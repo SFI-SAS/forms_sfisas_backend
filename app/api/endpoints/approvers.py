@@ -1,15 +1,19 @@
 from datetime import datetime
+import json
+import os
 from typing import List, Optional
+import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import and_, func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.crud import get_forms_by_approver, save_form_approvals, update_response_approval_status
 from app.database import get_db
 from app.core.security import get_current_user
 import pandas as pd
 from app.models import ApprovalRequirement, ApprovalStatus, Form, FormApproval, Response, ResponseApproval, ResponseApprovalRequirement, User
-from app.schemas import ApprovalRequirementsCreateSchema, BulkUpdateFormApprovals, FormApprovalCreateSchema, FormWithApproversResponse, UpdateResponseApprovalRequest
+from app.schemas import ApprovalRequirementsCreateSchema, BulkUpdateFormApprovals, FormApprovalCreateSchema, FormWithApproversResponse, ResponseDetailInfo, UpdateResponseApprovalRequest
+from fastapi import Form as FastAPIForm 
 
 router = APIRouter()
 
@@ -85,75 +89,135 @@ def create_form_approvals(
         )
         
 
+APPROVAL_ATTACHMENTS_FOLDER = "./approval_attachments"
+os.makedirs(APPROVAL_ATTACHMENTS_FOLDER, exist_ok=True)
+
 
 @router.put("/update-response-approval/{response_id}")
 async def update_response_approval(
     request: Request,
     response_id: int,
-    update_data: UpdateResponseApprovalRequest,
-    db: Session = Depends(get_db), 
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-
+    # Cambiar estos parámetros para que funcionen con FormData
+    update_data_json: str = FastAPIForm(...),
+    files: List[UploadFile] = File(default=[], description="Archivos adjuntos opcionales")
 ):
     """
     Actualiza el estado de una aprobación de respuesta asignada a un usuario.
-
-    Este endpoint permite que un usuario apruebe o rechace una respuesta específica. 
-    Si la aprobación es válida, se envían correos según la configuración del formulario y se 
-    ejecutan validaciones adicionales para verificar si el flujo de aprobación se ha completado.
-
-    Parámetros:
-    ----------
-    request : Request
-        Objeto de solicitud HTTP para contexto adicional (como host, headers, etc.).
-
-    response_id : int
-        ID de la respuesta que se desea aprobar/rechazar.
-
-    update_data : UpdateResponseApprovalRequest
-        Datos enviados por el usuario para actualizar el estado de la aprobación:
-        - `status`: "aprobado" o "rechazado".
-        - `message`: mensaje opcional del aprobador.
-        - `reviewed_at`: fecha de revisión.
-        - `selectedSequence`: número de secuencia de la aprobación.
-
-    db : Session
-        Sesión activa de la base de datos.
-
-    current_user : User
-        Usuario autenticado que realiza la aprobación.
-
-    Retorna:
-    -------
-    dict
-        Mensaje de éxito junto con los datos de la aprobación actualizada.
-
-    Errores:
-    -------
-    - 403 FORBIDDEN: Si el usuario no está autenticado.
-    - 404 NOT FOUND: Si no se encuentra el registro `ResponseApproval` correspondiente.
-    - 400 BAD REQUEST: Si los datos son inválidos o hay conflictos.
+    Ahora con soporte para archivos adjuntos opcionales.
     """
     try:
-        print("Datos recibidos:", update_data)
         if current_user is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="User does not have permission to get options"
+                detail="User does not have permission to update approvals"
             )
+
+        # 1. Parsear los datos JSON para crear el objeto UpdateResponseApprovalRequest
+        try:
+            update_data_dict = json.loads(update_data_json)
+            
+            # Convertir reviewed_at si viene como string
+            if update_data_dict.get('reviewed_at') and isinstance(update_data_dict['reviewed_at'], str):
+                try:
+                    update_data_dict['reviewed_at'] = datetime.fromisoformat(
+                        update_data_dict['reviewed_at'].replace('Z', '+00:00')
+                    )
+                except ValueError:
+                    update_data_dict['reviewed_at'] = datetime.utcnow()
+            
+            # Crear el objeto UpdateResponseApprovalRequest
+            update_data = UpdateResponseApprovalRequest(**update_data_dict)
+            
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid JSON format in update_data"
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid data format: {str(e)}"
+            )
+
+        # 2. Procesar archivos adjuntos si existen
+        uploaded_files_info = []
+        if files:
+            for file in files:
+                # Verificar que el archivo no esté vacío
+                if file.filename and file.size and file.size > 0:
+                    try:
+                        # Generar nombre único para el archivo
+                        unique_filename = f"{uuid.uuid4()}_{file.filename}"
+                        file_path = os.path.join(APPROVAL_ATTACHMENTS_FOLDER, unique_filename)
+                        
+                        # Guardar el archivo
+                        with open(file_path, "wb") as f:
+                            content = await file.read()
+                            f.write(content)
+                        
+                        # Guardar información del archivo
+                        file_info = {
+                            "original_name": file.filename,
+                            "stored_name": unique_filename,
+                            "file_path": file_path,
+                            "content_type": file.content_type,
+                            "size": len(content),
+                            "uploaded_at": datetime.utcnow().isoformat()
+                        }
+                        uploaded_files_info.append(file_info)
+                        
+                    except Exception as e:
+                        # Si falla la subida de un archivo, lanzar error
+                        raise HTTPException(
+                            status_code=500, 
+                            detail=f"Error uploading file {file.filename}: {str(e)}"
+                        )
+
+        print("Datos recibidos:", update_data)
+        print("Archivos procesados:", len(uploaded_files_info))
+
+        # 3. Llamar a la función original (sin modificar)
         updated_response_approval = await update_response_approval_status(
             response_id=response_id,
             user_id=current_user.id,
             update_data=update_data,
             db=db,
             current_user=current_user,
-            request = request
+            request=request
         )
-        return {"message": "ResponseApproval updated successfully", "response_approval": updated_response_approval}
+
+        # 4. Actualizar el campo attachment_files si hay archivos
+        if uploaded_files_info:
+            # Buscar el registro actualizado
+            response_approval = db.query(ResponseApproval).filter(
+                ResponseApproval.response_id == response_id,
+                ResponseApproval.sequence_number == update_data.selectedSequence
+            ).first()
+            
+            if response_approval:
+                # Actualizar el campo de archivos adjuntos
+                response_approval.attachment_files = uploaded_files_info
+                db.commit()
+                db.refresh(response_approval)
+                
+                print(f"✅ Se guardaron {len(uploaded_files_info)} archivos adjuntos")
+
+        return {
+            "message": "ResponseApproval updated successfully",
+            "response_approval": updated_response_approval,
+            "uploaded_files": len(uploaded_files_info),
+            "files_info": [{"name": f["original_name"], "size": f["size"]} for f in uploaded_files_info] if uploaded_files_info else []
+        }
+
     except HTTPException as e:
         raise e
-
-
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error: {str(e)}"
+        )
 
 @router.put("/form-approvals/{id}/set-not-is_active")
 def set_is_active_false(id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -877,3 +941,143 @@ def get_approval_requirements_by_response(db: Session, response_id: int):
     return result
 
 
+@router.get("/response/{response_id}/approval-details", response_model=ResponseDetailInfo)
+async def get_response_approval_details(
+    response_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Obtiene información completa de aprobación para una respuesta específica,
+    incluyendo estado de aprobadores, requisitos y archivos adjuntos.
+    """
+    
+    current_user_id = current_user.id  # Extraer ID del usuario autenticado
+    
+    # Consulta principal para obtener la respuesta con toda la información relacionada
+    response = db.query(Response).options(
+        joinedload(Response.form),
+        joinedload(Response.user),
+        joinedload(Response.approvals).joinedload(ResponseApproval.user),
+        joinedload(Response.approval_requirements_status).joinedload(
+            ResponseApprovalRequirement.approval_requirement
+        ).joinedload(ApprovalRequirement.required_form),
+        joinedload(Response.approval_requirements_status).joinedload(
+            ResponseApprovalRequirement.fulfilling_response
+        )
+    ).filter(Response.id == response_id).first()
+    
+    if not response:
+        raise HTTPException(status_code=404, detail="Response not found")
+    
+    # Obtener configuración de aprobación del formulario
+    form_approvals = db.query(FormApproval).filter(
+        FormApproval.form_id == response.form_id,
+        FormApproval.is_active == True
+    ).order_by(FormApproval.sequence_number).all()
+    
+    # Construir información de aprobadores
+    all_approvers = []
+    your_approval_status = None
+    
+    for form_approval in form_approvals:
+        # Buscar si ya existe una aprobación para este aprobador en esta respuesta
+        response_approval = db.query(ResponseApproval).filter(
+            and_(
+                ResponseApproval.response_id == response_id,
+                ResponseApproval.user_id == form_approval.user_id,
+                ResponseApproval.sequence_number == form_approval.sequence_number
+            )
+        ).first()
+        
+        approver_info = {
+            "user_id": form_approval.user_id,
+            "sequence_number": form_approval.sequence_number,
+            "is_mandatory": form_approval.is_mandatory,
+            "status": response_approval.status.value if response_approval else "pendiente",
+            "reconsideration_requested": response_approval.reconsideration_requested if response_approval else False,
+            "reviewed_at": response_approval.reviewed_at if response_approval else None,
+            "message": response_approval.message if response_approval else None,
+            "attachment_files": response_approval.attachment_files if response_approval else None,
+            "user": {
+                "name": form_approval.user.name,
+                "email": form_approval.user.email,
+                "num_document": form_approval.user.num_document
+            }
+        }
+        
+        all_approvers.append(approver_info)
+        
+        # Si es el usuario actual, guardar su estado de aprobación
+        if form_approval.user_id == current_user_id:
+            your_approval_status = {
+                "status": response_approval.status.value if response_approval else "pendiente",
+                "reviewed_at": response_approval.reviewed_at if response_approval else None,
+                "message": response_approval.message if response_approval else None,
+                "sequence_number": form_approval.sequence_number
+            }
+    
+    # Construir información de requisitos de aprobación
+    approval_requirements_info = {
+        "has_requirements": len(response.approval_requirements_status) > 0,
+        "total_requirements": len(response.approval_requirements_status),
+        "fulfilled_requirements": sum(1 for req in response.approval_requirements_status if req.is_fulfilled),
+        "pending_requirements": sum(1 for req in response.approval_requirements_status if not req.is_fulfilled),
+        "all_requirements_fulfilled": all(req.is_fulfilled for req in response.approval_requirements_status) if response.approval_requirements_status else True,
+        "completion_percentage": (
+            (sum(1 for req in response.approval_requirements_status if req.is_fulfilled) / len(response.approval_requirements_status) * 100)
+            if response.approval_requirements_status else 100.0
+        ),
+        "requirements": []
+    }
+    
+    # Detallar cada requisito
+    for req_status in response.approval_requirements_status:
+        req = req_status.approval_requirement
+        fulfilling_response = req_status.fulfilling_response
+        
+        requirement_detail = {
+            "requirement_id": req.id,
+            "required_form": {
+                "form_id": req.required_form.id,
+                "form_title": req.required_form.title,
+                "form_description": req.required_form.description
+            },
+            "linea_aprobacion": req.linea_aprobacion,
+            "approver": {
+                "user_id": req.approver.id,
+                "name": req.approver.name,
+                "email": req.approver.email,
+                "num_document": req.approver.num_document
+            },
+            "fulfillment_status": {
+                "is_fulfilled": req_status.is_fulfilled,
+                "fulfilling_response_id": req_status.fulfilling_response_id,
+                "fulfilling_response_submitted_at": fulfilling_response.submitted_at if fulfilling_response else None,
+                "updated_at": req_status.updated_at,
+                "needs_completion": not req_status.is_fulfilled,
+                "completion_status": "fulfilled" if req_status.is_fulfilled else "pending"
+            }
+        }
+        
+        approval_requirements_info["requirements"].append(requirement_detail)
+    
+    # Construir respuesta final
+    response_info = {
+        "response_id": response.id,
+        "form_id": response.form.id,
+        "form_title": response.form.title,
+        "form_description": response.form.description,
+        "submitted_by": {
+            "user_id": response.user.id,
+            "name": response.user.name,
+            "email": response.user.email,
+            "num_document": response.user.num_document
+        },
+        "submitted_at": response.submitted_at,
+        "your_approval_status": your_approval_status,
+        "all_approvers": all_approvers,
+        "approval_requirements": approval_requirements_info
+    }
+    
+    return response_info

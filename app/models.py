@@ -311,6 +311,7 @@ class ResponseApproval(Base):
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
     message = Column(Text, nullable=True)
     reconsideration_requested = Column(Boolean, nullable=True, default=False)
+    attachment_files = Column(JSON, nullable=True, default=None)
     response = relationship("Response", back_populates="approvals")
     user = relationship("User")
 

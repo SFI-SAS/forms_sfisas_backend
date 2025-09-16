@@ -4240,17 +4240,18 @@ def delete_form(db: Session, form_id: int):
                 db.query(AnswerFileSerial).filter(AnswerFileSerial.answer_id.in_(answer_ids)).delete(synchronize_session=False)
                 db.query(AnswerHistory).filter(AnswerHistory.previous_answer_id.in_(answer_ids)).delete(synchronize_session=False)
             
+            # 🔹 Borrar dependencias antes de Responses
             db.query(ResponseApproval).filter(ResponseApproval.response_id.in_(response_ids)).delete(synchronize_session=False)
+            db.query(ResponseApprovalRequirement).filter(ResponseApprovalRequirement.response_id.in_(response_ids)).delete(synchronize_session=False)
+            
             db.query(Answer).filter(Answer.response_id.in_(response_ids)).delete(synchronize_session=False)
             db.query(Response).filter(Response.id.in_(response_ids)).delete(synchronize_session=False)
         
-        # AGREGAR: Eliminar approval_requirements ANTES de eliminar el formulario
-        # Eliminar donde form_id es el formulario principal
+        # 🔹 Eliminar approval_requirements relacionados al formulario
         db.query(ApprovalRequirement).filter(ApprovalRequirement.form_id == form_id).delete(synchronize_session=False)
-        # Eliminar donde required_form_id es el formulario que se va a eliminar
         db.query(ApprovalRequirement).filter(ApprovalRequirement.required_form_id == form_id).delete(synchronize_session=False)
         
-        # Continuar con las demás eliminaciones
+        # 🔹 Eliminar dependencias en otras tablas
         db.query(QuestionFilterCondition).filter(QuestionFilterCondition.form_id == form_id).delete(synchronize_session=False)
         db.query(FormAnswer).filter(FormAnswer.form_id == form_id).delete(synchronize_session=False)
         db.query(FormApproval).filter(FormApproval.form_id == form_id).delete(synchronize_session=False)
@@ -4260,7 +4261,7 @@ def delete_form(db: Session, form_id: int):
         db.query(FormQuestion).filter(FormQuestion.form_id == form_id).delete(synchronize_session=False)
         db.query(FormCloseConfig).filter(FormCloseConfig.form_id == form_id).delete(synchronize_session=False)
         
-        # Finalmente eliminar el formulario
+        # 🔹 Finalmente eliminar el formulario
         db.delete(form)
         db.commit()
         
