@@ -818,3 +818,5 @@ def get_approval_requirements_by_response(db: Session, response_id: int):
 
     db.commit()
     return result
+
+

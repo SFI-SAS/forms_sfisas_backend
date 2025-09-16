@@ -11,7 +11,7 @@ from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, ResponseApproval, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
 from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
@@ -2850,7 +2850,6 @@ def create_response_approval(db: Session, approval_data: ResponseApprovalCreate)
     db.refresh(new_approval)
     return new_approval
 
-
 def get_forms_pending_approval_for_user(user_id: int, db: Session):
     """
     Recupera los formularios y respuestas que requieren aprobación por parte de un usuario específico.
@@ -2878,6 +2877,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
         - Estado de todos los aprobadores del flujo.
         - Historial de cambios en respuestas.
         - Requisitos de aprobación para el formulario y usuario.
+        - Estado de diligenciamiento de cada requisito.
     """
     results = []
 
@@ -2941,6 +2941,18 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
 
             if not all_prev_approved:
                 continue  # Todavía no es el turno de este aprobador
+
+            # 📌 NUEVO: Obtener el estado de requisitos específicos para esta respuesta
+            response_requirements_status = (
+                db.query(ResponseApprovalRequirement)
+                .options(
+                    joinedload(ResponseApprovalRequirement.approval_requirement)
+                    .joinedload(ApprovalRequirement.required_form),
+                    joinedload(ResponseApprovalRequirement.fulfilling_response)
+                )
+                .filter(ResponseApprovalRequirement.response_id == response.id)
+                .all()
+            )
 
             # 📌 NUEVO: Obtener historial de respuestas para esta response
             histories = db.query(AnswerHistory).filter(AnswerHistory.response_id == response.id).all()
@@ -3039,9 +3051,19 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
 
             user_response = db.query(User).filter(User.id == response.user_id).first()
 
-            # 📌 NUEVO: Construir información de requisitos de aprobación
+            # 📌 NUEVO: Construir información de requisitos de aprobación con estado de diligenciamiento
             requirements_data = []
+            
+            # Crear un mapeo de approval_requirement_id -> ResponseApprovalRequirement para búsqueda rápida
+            requirement_status_map = {
+                req_status.approval_requirement_id: req_status 
+                for req_status in response_requirements_status
+            }
+            
             for req in approval_requirements:
+                # Obtener el estado específico de este requisito para esta respuesta
+                req_status = requirement_status_map.get(req.id)
+                
                 requirement_info = {
                     "requirement_id": req.id,
                     "required_form": {
@@ -3055,9 +3077,24 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                         "name": req.approver.name,
                         "email": req.approver.email,
                         "num_document": req.approver.num_document
+                    },
+                    # 📌 NUEVO: Estado de diligenciamiento del requisito
+                    "fulfillment_status": {
+                        "is_fulfilled": req_status.is_fulfilled if req_status else False,
+                        "fulfilling_response_id": req_status.fulfilling_response_id if req_status else None,
+                        "fulfilling_response_submitted_at": req_status.fulfilling_response.submitted_at.isoformat() if req_status and req_status.fulfilling_response else None,
+                        "updated_at": req_status.updated_at.isoformat() if req_status else None,
+                        "needs_completion": not (req_status and req_status.is_fulfilled),
+                        "completion_status": "completed" if req_status and req_status.is_fulfilled else "pending"
                     }
                 }
                 requirements_data.append(requirement_info)
+
+            # 📌 NUEVO: Calcular estadísticas de requisitos
+            total_requirements = len(requirements_data)
+            fulfilled_requirements = sum(1 for req in requirements_data if req["fulfillment_status"]["is_fulfilled"])
+            pending_requirements = total_requirements - fulfilled_requirements
+            all_requirements_fulfilled = fulfilled_requirements == total_requirements if total_requirements > 0 else True
 
             # 📌 NUEVO: Agregar información del historial a nivel de respuesta
             response_data = {
@@ -3089,7 +3126,11 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 },
                 "approval_requirements": {
                     "has_requirements": len(requirements_data) > 0,
-                    "total_requirements": len(requirements_data),
+                    "total_requirements": total_requirements,
+                    "fulfilled_requirements": fulfilled_requirements,
+                    "pending_requirements": pending_requirements,
+                    "all_requirements_fulfilled": all_requirements_fulfilled,
+                    "completion_percentage": round((fulfilled_requirements / total_requirements) * 100, 2) if total_requirements > 0 else 100,
                     "requirements": requirements_data
                 }
             }
@@ -3097,7 +3138,6 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
             results.append(response_data)
 
     return results
-
 
 def get_bogota_time() -> datetime:
     """Retorna la hora actual con la zona horaria de Bogotá."""

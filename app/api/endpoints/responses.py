@@ -12,7 +12,7 @@ from app.api.controllers.mail import send_reconsideration_email
 from app.crud import create_answer_in_db, encrypt_object, generate_unique_serial, post_create_response, process_responses_with_history, send_form_action_emails, send_mails_to_next_supporters
 from app.database import get_db
 from app.schemas import AnswerHistoryChangeSchema, AnswerHistoryCreate, FileSerialCreate, FilteredAnswersResponse, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, RegisfacialAnswerResponse, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
-from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, Form, FormApproval, FormQuestion, FormatType, Question, QuestionFilterCondition, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, User, UserType
+from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, Form, FormApproval, FormQuestion, FormatType, Question, QuestionFilterCondition, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, UserType
 from app.core.security import get_current_user
 from typing import Dict
 from sqlalchemy import delete
@@ -1068,8 +1068,6 @@ def get_responses_with_answers(
     result = process_responses_with_history(responses, db)
 
     return result
-
-
 @router.delete("/responses_delete/{response_id}")
 async def delete_response(
     response_id: int,
@@ -1078,16 +1076,6 @@ async def delete_response(
 ) -> Dict[str, str]:
     """
     Elimina una respuesta y todas sus relaciones asociadas.
-    
-    Args:
-        response_id: ID de la respuesta a eliminar
-        db: Sesión de base de datos
-        
-    Returns:
-        Dict con mensaje de confirmación
-        
-    Raises:
-        HTTPException: Si la respuesta no existe o hay error en la eliminación
     """
     try:
         if not current_user:
@@ -1095,18 +1083,19 @@ async def delete_response(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User does not have permission to access completed forms",
             )
-            # Verificar que la respuesta existe
+
+        # Verificar que la respuesta existe
         response = db.query(Response).filter(Response.id == response_id).first()
         if not response:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Response with id {response_id} not found"
             )
-        
-        # 1. Obtener IDs de las respuestas para eliminar file_serials
+
+        # 1. Obtener IDs de las respuestas (Answer)
         answer_ids = db.query(Answer.id).filter(Answer.response_id == response_id).all()
         answer_ids_list = [answer.id for answer in answer_ids]
-        
+
         # 2. Eliminar AnswerFileSerial relacionados
         if answer_ids_list:
             db.execute(
@@ -1114,47 +1103,50 @@ async def delete_response(
                     AnswerFileSerial.answer_id.in_(answer_ids_list)
                 )
             )
-        
+
         # 3. Eliminar AnswerHistory relacionados
         db.execute(
             delete(AnswerHistory).where(AnswerHistory.response_id == response_id)
         )
-        
-        # 4. Eliminar todas las respuestas (Answer) asociadas
+
+        # 4. Eliminar Answer relacionados
         db.execute(
             delete(Answer).where(Answer.response_id == response_id)
         )
-        
-        # 5. Eliminar ResponseApproval si existe
-        try:
-            db.execute(
-                delete(ResponseApproval).where(ResponseApproval.response_id == response_id)
+
+        # 5. Eliminar registros en ResponseApprovalRequirements
+        db.execute(
+            delete(ResponseApprovalRequirement).where(
+                (ResponseApprovalRequirement.response_id == response_id) |
+                (ResponseApprovalRequirement.fulfilling_response_id == response_id)
             )
-        except Exception:
-            # Si la tabla ResponseApproval no existe, continuamos
-            pass
-        
-        # 6. Finalmente eliminar la Response
+        )
+
+        # 6. Eliminar registros en ResponseApproval
+        db.execute(
+            delete(ResponseApproval).where(ResponseApproval.response_id == response_id)
+        )
+
+        # 7. Finalmente eliminar la Response
         db.execute(
             delete(Response).where(Response.id == response_id)
         )
-        
-        # Confirmar todos los cambios
+
+        # Confirmar cambios
         db.commit()
-        
+
         return {"message": f"Response {response_id} and all related data deleted successfully"}
-        
+
     except HTTPException:
-        # Re-lanzar HTTPExceptions
         db.rollback()
         raise
     except Exception as e:
-        # Rollback en caso de error
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error deleting response: {str(e)}"
         )
+
         
         
 
