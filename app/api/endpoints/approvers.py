@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
@@ -533,27 +534,26 @@ def save_approval_requirements(data: ApprovalRequirementsCreateSchema, db: Sessi
     db.commit()
     return created_requirement_ids
 
-
-        
 def save_response_approval_requirements(
     data: ResponseApprovalRequirementsCreateSchema, 
     db: Session
 ) -> List[int]:
     """
     Guarda los requisitos de aprobación específicos para respuestas.
-    
+    Automáticamente aprueba ResponseApproval existentes cuando coincide el usuario.
+         
     Args:
         data: Schema con la lista de requisitos de respuesta
         db: Sesión de la base de datos
-        
+             
     Returns:
         List[int]: Lista de IDs creados
-        
+             
     Raises:
         HTTPException: Si hay errores de validación o guardado
     """
     created_ids = []
-    
+         
     try:
         for req_data in data.requirements:
             # Validar que la respuesta existe
@@ -565,7 +565,7 @@ def save_response_approval_requirements(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Response with ID {req_data.response_id} not found"
                 )
-            
+                         
             # Validar que el approval requirement existe
             approval_req = db.query(ApprovalRequirement).filter(
                 ApprovalRequirement.id == req_data.approval_requirement_id
@@ -575,8 +575,9 @@ def save_response_approval_requirements(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Approval requirement with ID {req_data.approval_requirement_id} not found"
                 )
-            
+                         
             # Validar fulfilling_response_id si se proporciona
+            fulfilling_response = None
             if req_data.fulfilling_response_id:
                 fulfilling_response = db.query(Response).filter(
                     Response.id == req_data.fulfilling_response_id
@@ -586,19 +587,19 @@ def save_response_approval_requirements(
                         status_code=status.HTTP_404_NOT_FOUND,
                         detail=f"Fulfilling response with ID {req_data.fulfilling_response_id} not found"
                     )
-            
+                         
             # Verificar si ya existe este requisito para esta respuesta
             existing = db.query(ResponseApprovalRequirement).filter(
                 ResponseApprovalRequirement.response_id == req_data.response_id,
                 ResponseApprovalRequirement.approval_requirement_id == req_data.approval_requirement_id
             ).first()
-            
+                         
             if existing:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Response approval requirement already exists for response {req_data.response_id} and approval requirement {req_data.approval_requirement_id}"
                 )
-            
+                         
             # Crear el nuevo registro
             new_requirement = ResponseApprovalRequirement(
                 response_id=req_data.response_id,
@@ -606,14 +607,22 @@ def save_response_approval_requirements(
                 fulfilling_response_id=req_data.fulfilling_response_id,
                 is_fulfilled=req_data.is_fulfilled
             )
-            
+                         
             db.add(new_requirement)
             db.flush()  # Para obtener el ID
             created_ids.append(new_requirement.id)
-        
+            
+            # Auto-aprobar ResponseApproval si hay fulfilling_response_id
+            if fulfilling_response:
+                auto_approve_response_approvals(
+                    db=db,
+                    fulfilling_response_id=req_data.fulfilling_response_id,
+                    original_response_user_id=response.user_id  # Usuario de la respuesta original
+                )
+                 
         db.commit()
         return created_ids
-        
+             
     except HTTPException:
         db.rollback()
         raise
@@ -624,6 +633,53 @@ def save_response_approval_requirements(
             detail=f"Error saving response approval requirements: {str(e)}"
         )
 
+def auto_approve_response_approvals(
+    db: Session,
+    fulfilling_response_id: int,
+    original_response_user_id: int
+) -> int:
+    """
+    Automáticamente aprueba ResponseApproval de la respuesta que cumple el requisito
+    cuando el usuario que debe aprobar es el mismo que envió la respuesta original.
+    
+    Args:
+        db: Sesión de la base de datos
+        fulfilling_response_id: ID de la respuesta que cumple el requisito
+        original_response_user_id: ID del usuario de la respuesta original
+        
+    Returns:
+        int: Número de aprobaciones actualizadas
+    """
+    try:
+        # Buscar ResponseApproval de la fulfilling_response donde el usuario que debe aprobar
+        # sea el mismo que envió la respuesta original
+        approvals_to_update = db.query(ResponseApproval).filter(
+            and_(
+                ResponseApproval.response_id == fulfilling_response_id,  # Aprobaciones de la fulfilling_response
+                ResponseApproval.user_id == original_response_user_id,   # Usuario que debe aprobar es el de la respuesta original
+                ResponseApproval.status == ApprovalStatus.pendiente      # Solo actualizar los pendientes
+            )
+        ).all()
+        
+        updated_count = 0
+        current_time = datetime.now()
+        
+        for approval in approvals_to_update:
+            approval.status = ApprovalStatus.aprobado
+            approval.reviewed_at = current_time
+            approval.message = "Auto-aprobado: El usuario que debe aprobar es el mismo que envió la respuesta original"
+            updated_count += 1
+        
+        if updated_count > 0:
+            db.flush()  # Asegurar que los cambios se persistan
+            
+        return updated_count
+        
+    except Exception as e:
+        # Log del error pero no fallar toda la operación
+        print(f"Error en auto-aprobación: {str(e)}")
+        return 0
+
 # Endpoint
 @router.post("/response-approval-requirements/create")
 def create_response_approval_requirements(
@@ -633,37 +689,38 @@ def create_response_approval_requirements(
 ):
     """
     Crea requisitos de aprobación específicos para respuestas de formularios.
-    
-    - Requiere que el usuario actual esté autenticado.
-    - Valida la existencia de respuestas y requisitos de aprobación.
-    - Guarda los requisitos específicos para cada respuesta con:
-        - Respuesta específica que debe cumplir el requisito
-        - Requisito de aprobación base desde la configuración del formulario
-        - Respuesta que cumple el requisito (opcional)
-        - Estado de cumplimiento del requisito
-    
-    Args:
-        data (ResponseApprovalRequirementsCreateSchema): Lista de requisitos de respuesta.
-            - requirements: Lista con:
-                - response_id: ID de la respuesta que debe cumplir el requisito
-                - approval_requirement_id: ID del requisito de aprobación base
-                - fulfilling_response_id: ID de la respuesta que cumple el requisito (opcional)
-                - is_fulfilled: Estado del requisito (default: False)
-        db (Session): Sesión de la base de datos inyectada por dependencia.
-        current_user (User): Usuario autenticado actual.
-    
-    Returns:
-        dict: Resultado de la operación con IDs creados y resumen.
+    Automáticamente aprueba ResponseApproval existentes cuando coincide el usuario.
     """
     if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission"
         )
-    
+         
     try:
         created_ids = save_response_approval_requirements(data, db)
         
+        # Contar auto-aprobaciones realizadas
+        auto_approved_count = 0
+        for req_data in data.requirements:
+            if req_data.fulfilling_response_id:
+                # Obtener la respuesta original para saber su user_id
+                original_response = db.query(Response).filter(
+                    Response.id == req_data.response_id
+                ).first()
+                
+                if original_response:
+                    # Contar cuántas se auto-aprobaron para la fulfilling_response
+                    count = db.query(ResponseApproval).filter(
+                        and_(
+                            ResponseApproval.response_id == req_data.fulfilling_response_id,  # Cambio aquí
+                            ResponseApproval.user_id == original_response.user_id,           # Cambio aquí
+                            ResponseApproval.status == ApprovalStatus.aprobado,
+                            ResponseApproval.message.like("Auto-aprobado:%")
+                        )
+                    ).count()
+                    auto_approved_count += count
+                 
         return {
             "success": True,
             "message": "Requisitos de aprobación de respuestas creados exitosamente",
@@ -675,10 +732,11 @@ def create_response_approval_requirements(
                 ]),
                 "pending_requirements": len([
                     req for req in data.requirements if not req.is_fulfilled
-                ])
+                ]),
+                "auto_approved_responses": auto_approved_count
             }
         }
-    
+         
     except HTTPException as e:
         # Re-raise HTTP exceptions
         raise e
@@ -688,7 +746,6 @@ def create_response_approval_requirements(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno del servidor: {str(e)}"
         )
-
 # Endpoint adicional para actualizar el estado de cumplimiento
 @router.put("/response-approval-requirements/{requirement_id}/fulfill")
 def fulfill_response_approval_requirement(
