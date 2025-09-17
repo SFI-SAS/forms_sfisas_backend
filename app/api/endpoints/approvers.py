@@ -1,9 +1,11 @@
 from datetime import datetime
 import json
 import os
+from pathlib import Path
 from typing import List, Optional
 import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session, joinedload
@@ -1081,3 +1083,145 @@ async def get_response_approval_details(
     }
     
     return response_info
+
+
+
+@router.get("/download-file-approvers/{file_name}")
+async def download_file_approvers(
+    file_name: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Descarga un archivo adjunto de las aprobaciones.
+    
+    Args:
+        file_name (str): Nombre del archivo almacenado (stored_name del archivo)
+        current_user (User): Usuario actual autenticado
+        db (Session): Sesión de base de datos
+    
+    Returns:
+        FileResponse: El archivo para descargar
+    """
+
+
+        # Verificar que el usuario esté autenticado
+    if current_user is None:
+            logger.warning("Unauthenticated user attempt")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User authentication required"
+            )
+
+        # Construir la ruta completa del archivo
+    file_path = os.path.join(APPROVAL_ATTACHMENTS_FOLDER, file_name)
+
+        # Verificar que el archivo existe
+    if not os.path.exists(file_path):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"File '{file_name}' not found"
+            )
+        
+        # Verificar que es un archivo (no un directorio)
+    if not os.path.isfile(file_path):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid file path"
+            )
+
+        # Obtener el nombre original del archivo desde la base de datos
+    original_filename = get_original_filename_sync(file_name, db)
+        
+        # Determinar el tipo de contenido basado en la extensión del archivo
+    file_extension = Path(file_name).suffix.lower()
+    media_type = get_media_type_by_extension(file_extension)
+        
+        # Retornar el archivo
+    return FileResponse(
+            path=file_path,
+            filename=original_filename or file_name,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{original_filename or file_name}\""
+            }
+        )
+
+
+
+
+def get_original_filename_sync(stored_name: str, db: Session) -> str:
+    """
+    Obtiene el nombre original del archivo desde la base de datos.
+    
+    Args:
+        stored_name (str): Nombre almacenado del archivo
+        db (Session): Sesión de base de datos
+    
+    Returns:
+        str: Nombre original del archivo o el nombre almacenado si no se encuentra
+    """
+    try:
+        # Buscar en las aprobaciones que tengan este archivo
+        # Usando JSONB contains para PostgreSQL o JSON_CONTAINS para MySQL
+        response_approval = db.query(ResponseApproval).filter(
+            ResponseApproval.attachment_files.isnot(None)
+        ).all()
+        
+        # Buscar manualmente en los archivos (más compatible)
+        for approval in response_approval:
+            if approval.attachment_files:
+                for file_info in approval.attachment_files:
+                    if isinstance(file_info, dict) and file_info.get("stored_name") == stored_name:
+                        return file_info.get("original_name", stored_name)
+        
+        return stored_name
+        
+    except Exception as e:
+        return stored_name
+
+
+# Versión más simple sin búsqueda en BD si tienes problemas
+def get_original_filename_simple(stored_name: str) -> str:
+    """
+    Versión simple que solo devuelve el nombre almacenado.
+    Usa esta versión si tienes problemas con la consulta a la BD.
+    """
+    return stored_name
+
+
+def get_media_type_by_extension(extension: str) -> str:
+    """
+    Determina el tipo MIME basado en la extensión del archivo.
+    
+    Args:
+        extension (str): Extensión del archivo (con punto)
+    
+    Returns:
+        str: Tipo MIME correspondiente
+    """
+    mime_types = {
+        '.pdf': 'application/pdf',
+        '.doc': 'application/msword',
+        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        '.xls': 'application/vnd.ms-excel',
+        '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        '.ppt': 'application/vnd.ms-powerpoint',
+        '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        '.txt': 'text/plain',
+        '.csv': 'text/csv',
+        '.json': 'application/json',
+        '.xml': 'application/xml',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.png': 'image/png',
+        '.gif': 'image/gif',
+        '.bmp': 'image/bmp',
+        '.svg': 'image/svg+xml',
+        '.zip': 'application/zip',
+        '.rar': 'application/vnd.rar',
+        '.7z': 'application/x-7z-compressed',
+    }
+    
+    return mime_types.get(extension.lower(), 'application/octet-stream')
+
