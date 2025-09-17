@@ -2849,35 +2849,15 @@ def create_response_approval(db: Session, approval_data: ResponseApprovalCreate)
     db.commit()
     db.refresh(new_approval)
     return new_approval
-
 def get_forms_pending_approval_for_user(user_id: int, db: Session):
     """
     Recupera los formularios y respuestas que requieren aprobación por parte de un usuario específico.
+    INCLUYE VALIDACIÓN de requisitos de aprobadores anteriores con línea de aprobación.
 
     Esta función consulta las aprobaciones asignadas al usuario, valida que sea su turno 
     (es decir, que los aprobadores anteriores obligatorios ya hayan aprobado) 
-    y construye una estructura de datos con toda la información relevante de las respuestas y sus aprobadores.
-    Incluye el historial de cambios en las respuestas para trazabilidad y los requisitos de aprobación.
-
-    Parámetros:
-    ----------
-    user_id : int
-        ID del usuario autenticado.
-    db : Session
-        Sesión activa de la base de datos.
-
-    Retorna:
-    -------
-    List[Dict]
-        Una lista de objetos con la siguiente información:
-        - Datos del formulario (ID, título, descripción, diseño).
-        - Información del usuario que respondió.
-        - Respuestas por pregunta (texto, archivo si aplica).
-        - Estado de aprobación del usuario actual.
-        - Estado de todos los aprobadores del flujo.
-        - Historial de cambios en respuestas.
-        - Requisitos de aprobación para el formulario y usuario.
-        - Estado de diligenciamiento de cada requisito.
+    y ADEMÁS valida que todos los aprobadores anteriores hayan cumplido sus requisitos
+    de formularios requeridos con línea de aprobación completada.
     """
     results = []
 
@@ -2890,7 +2870,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
     for form_approval in form_approvals:
         form = form_approval.form
 
-        # 📌 NUEVO: Obtener requisitos de aprobación para este formulario y usuario
+        # Obtener requisitos de aprobación para este formulario y usuario
         approval_requirements = (
             db.query(ApprovalRequirement)
             .options(
@@ -2904,7 +2884,6 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
             .all()
         )
 
-        # 📌 Mostrar plantilla de aprobadores para este formulario
         approval_template = db.query(FormApproval).filter(FormApproval.form_id == form.id).order_by(FormApproval.sequence_number).all()
 
         for approver in approval_template:
@@ -2942,7 +2921,22 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
             if not all_prev_approved:
                 continue  # Todavía no es el turno de este aprobador
 
-            # 📌 NUEVO: Obtener el estado de requisitos específicos para esta respuesta
+            # 🔥 NUEVA VALIDACIÓN: Verificar requisitos de aprobadores anteriores
+            validation_result = validate_approver_requirements_with_approval_line(
+                response.id, user_id, db
+            )
+            
+            # Si no puede aprobar por requisitos bloqueantes, continuar con la siguiente respuesta
+            # O incluir la respuesta pero marcada como bloqueada (según prefieras)
+            if not validation_result["can_approve"]:
+                # OPCIÓN 1: Saltar esta respuesta completamente
+                continue
+                
+                # OPCIÓN 2: Incluir pero marcada como bloqueada (descomenta lo siguiente)
+                # response_blocked = True
+                # blocking_reasons = validation_result["blocking_requirements"]
+
+            # Obtener el estado de requisitos específicos para esta respuesta
             response_requirements_status = (
                 db.query(ResponseApprovalRequirement)
                 .options(
@@ -2954,7 +2948,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 .all()
             )
 
-            # 📌 NUEVO: Obtener historial de respuestas para esta response
+            # Obtener historial de respuestas para esta response
             histories = db.query(AnswerHistory).filter(AnswerHistory.response_id == response.id).all()
             
             # Obtener todos los IDs de respuestas (previous y current) del historial
@@ -2988,7 +2982,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 if history.previous_answer_id:
                     previous_answer_ids.add(history.previous_answer_id)
 
-            # 📌 Mostrar estado de cada aprobador de esta respuesta
+            # Mostrar estado de cada aprobador de esta respuesta
             response_approvals_all = db.query(ResponseApproval).filter(
                 ResponseApproval.response_id == response.id
             ).order_by(ResponseApproval.sequence_number).all()
@@ -2996,7 +2990,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
             for ra in response_approvals_all:
                 user_ra = ra.user
 
-            # 📌 MODIFICADO: Obtener respuestas actuales (excluyendo las que son previous_answer_ids)
+            # Obtener respuestas actuales (excluyendo las que son previous_answer_ids)
             answers = db.query(Answer, Question).join(Question).filter(
                 Answer.response_id == response.id,
                 ~Answer.id.in_(previous_answer_ids) if previous_answer_ids else True
@@ -3014,7 +3008,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                     "has_history": a.id in history_map
                 }
                 
-                # 📌 NUEVO: Agregar información del historial si existe
+                # Agregar información del historial si existe
                 if a.id in history_map:
                     history = history_map[a.id]
                     previous_answer = historical_answers.get(history.previous_answer_id) if history.previous_answer_id else None
@@ -3051,7 +3045,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
 
             user_response = db.query(User).filter(User.id == response.user_id).first()
 
-            # 📌 NUEVO: Construir información de requisitos de aprobación con estado de diligenciamiento
+            # Construir información de requisitos de aprobación con estado de diligenciamiento
             requirements_data = []
             
             # Crear un mapeo de approval_requirement_id -> ResponseApprovalRequirement para búsqueda rápida
@@ -3078,7 +3072,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                         "email": req.approver.email,
                         "num_document": req.approver.num_document
                     },
-                    # 📌 NUEVO: Estado de diligenciamiento del requisito
+                    # Estado de diligenciamiento del requisito
                     "fulfillment_status": {
                         "is_fulfilled": req_status.is_fulfilled if req_status else False,
                         "fulfilling_response_id": req_status.fulfilling_response_id if req_status else None,
@@ -3090,13 +3084,13 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 }
                 requirements_data.append(requirement_info)
 
-            # 📌 NUEVO: Calcular estadísticas de requisitos
+            # Calcular estadísticas de requisitos
             total_requirements = len(requirements_data)
             fulfilled_requirements = sum(1 for req in requirements_data if req["fulfillment_status"]["is_fulfilled"])
             pending_requirements = total_requirements - fulfilled_requirements
             all_requirements_fulfilled = fulfilled_requirements == total_requirements if total_requirements > 0 else True
 
-            # 📌 NUEVO: Agregar información del historial a nivel de respuesta
+            # Construir la respuesta final con información de validación
             response_data = {
                 "deadline_days": form_approval.deadline_days,
                 "form_id": form.id,
@@ -3132,12 +3126,221 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                     "all_requirements_fulfilled": all_requirements_fulfilled,
                     "completion_percentage": round((fulfilled_requirements / total_requirements) * 100, 2) if total_requirements > 0 else 100,
                     "requirements": requirements_data
+                },
+                # 🔥 NUEVA SECCIÓN: Información de validación de requisitos anteriores
+                "previous_approvers_validation": {
+                    "can_approve": validation_result["can_approve"],
+                    "has_blocking_requirements": len(validation_result["blocking_requirements"]) > 0,
+                    "blocking_requirements": validation_result["blocking_requirements"],
+                    "validation_details": validation_result["validation_details"]
                 }
             }
+
+            # Si quisieras incluir respuestas bloqueadas (OPCIÓN 2), descomenta:
+            # if 'response_blocked' in locals() and response_blocked:
+            #     response_data["approval_blocked"] = True
+            #     response_data["blocking_reasons"] = blocking_reasons
 
             results.append(response_data)
 
     return results
+
+
+# También necesitarás incluir las funciones de validación en el mismo archivo:
+
+def validate_approver_requirements_with_approval_line(response_id: int, approver_user_id: int, db: Session):
+    """
+    Valida si un aprobador puede aprobar una respuesta verificando que TODOS los aprobadores
+    anteriores en la secuencia hayan cumplido sus requisitos de aprobación.
+    """
+    # Obtener la secuencia del aprobador actual
+    current_approver = (
+        db.query(ResponseApproval)
+        .filter(
+            ResponseApproval.response_id == response_id,
+            ResponseApproval.user_id == approver_user_id
+        )
+        .first()
+    )
+    
+    if not current_approver:
+        return {
+            "can_approve": False,
+            "blocking_requirements": [{"reason": "Usuario no es aprobador de esta respuesta"}],
+            "validation_details": []
+        }
+    
+    current_sequence = current_approver.sequence_number
+    
+    # Obtener todos los aprobadores anteriores (secuencia menor)
+    previous_approvers = (
+        db.query(ResponseApproval)
+        .options(joinedload(ResponseApproval.user))
+        .filter(
+            ResponseApproval.response_id == response_id,
+            ResponseApproval.sequence_number < current_sequence
+        )
+        .all()
+    )
+    
+    if not previous_approvers:
+        return {
+            "can_approve": True,
+            "blocking_requirements": [],
+            "validation_details": []
+        }
+    
+    blocking_requirements = []
+    validation_details = []
+    
+    # Verificar requisitos de cada aprobador anterior
+    for prev_approver in previous_approvers:
+        prev_approver_requirements = (
+            db.query(ResponseApprovalRequirement)
+            .join(ApprovalRequirement, ResponseApprovalRequirement.approval_requirement_id == ApprovalRequirement.id)
+            .options(
+                joinedload(ResponseApprovalRequirement.approval_requirement)
+                .joinedload(ApprovalRequirement.required_form),
+                joinedload(ResponseApprovalRequirement.approval_requirement)
+                .joinedload(ApprovalRequirement.approver),
+                joinedload(ResponseApprovalRequirement.fulfilling_response)
+            )
+            .filter(
+                ResponseApprovalRequirement.response_id == response_id,
+                ApprovalRequirement.approver_id == prev_approver.user_id
+            )
+            .all()
+        )
+        
+        approver_detail = {
+            "approver_user_id": prev_approver.user_id,
+            "approver_name": prev_approver.user.name,
+            "sequence_number": prev_approver.sequence_number,
+            "has_requirements": len(prev_approver_requirements) > 0,
+            "requirements_status": []
+        }
+        
+        if not prev_approver_requirements:
+            approver_detail["overall_status"] = "no_requirements_ok"
+            validation_details.append(approver_detail)
+            continue
+        
+        approver_has_blocking_requirements = False
+        
+        for req_status in prev_approver_requirements:
+            requirement = req_status.approval_requirement
+            required_form = requirement.required_form
+            
+            req_detail = {
+                "requirement_id": requirement.id,
+                "required_form_id": required_form.id,
+                "required_form_title": required_form.title,
+                "is_fulfilled": req_status.is_fulfilled,
+                "linea_aprobacion": requirement.linea_aprobacion,
+                "fulfilling_response_id": req_status.fulfilling_response_id,
+                "status": None,
+                "approval_line_validation": None
+            }
+            
+            if not req_status.is_fulfilled:
+                blocking_requirements.append({
+                    "type": "unfulfilled_requirement",
+                    "blocking_approver": {
+                        "user_id": prev_approver.user_id,
+                        "name": prev_approver.user.name,
+                        "sequence": prev_approver.sequence_number
+                    },
+                    "requirement_id": requirement.id,
+                    "required_form_title": required_form.title,
+                    "reason": f"El aprobador {prev_approver.user.name} no ha diligenciado el formulario requerido '{required_form.title}'"
+                })
+                req_detail["status"] = "not_fulfilled"
+                approver_has_blocking_requirements = True
+            
+            elif requirement.linea_aprobacion and req_status.fulfilling_response_id:
+                approval_line_result = validate_approval_line_completion(req_status.fulfilling_response_id, db)
+                req_detail["approval_line_validation"] = approval_line_result
+                
+                if not approval_line_result["all_approved"]:
+                    blocking_requirements.append({
+                        "type": "pending_approval_line",
+                        "blocking_approver": {
+                            "user_id": prev_approver.user_id,
+                            "name": prev_approver.user.name,
+                            "sequence": prev_approver.sequence_number
+                        },
+                        "requirement_id": requirement.id,
+                        "required_form_title": required_form.title,
+                        "fulfilling_response_id": req_status.fulfilling_response_id,
+                        "reason": f"El formulario requerido '{required_form.title}' del aprobador {prev_approver.user.name} no ha completado su línea de aprobación",
+                        "pending_approvers": approval_line_result["pending_approvers"]
+                    })
+                    req_detail["status"] = "approval_line_pending"
+                    approver_has_blocking_requirements = True
+                else:
+                    req_detail["status"] = "fully_approved"
+            else:
+                req_detail["status"] = "fulfilled_no_approval_line"
+            
+            approver_detail["requirements_status"].append(req_detail)
+        
+        approver_detail["overall_status"] = "has_blocking_requirements" if approver_has_blocking_requirements else "all_requirements_fulfilled"
+        validation_details.append(approver_detail)
+    
+    return {
+        "can_approve": len(blocking_requirements) == 0,
+        "blocking_requirements": blocking_requirements,
+        "validation_details": validation_details
+    }
+
+
+def validate_approval_line_completion(response_id: int, db: Session):
+    """Verifica si todos los aprobadores obligatorios de una respuesta ya aprobaron."""
+    response_approvals = (
+        db.query(ResponseApproval)
+        .options(joinedload(ResponseApproval.user))
+        .filter(ResponseApproval.response_id == response_id)
+        .order_by(ResponseApproval.sequence_number)
+        .all()
+    )
+    
+    if not response_approvals:
+        return {
+            "all_approved": True,
+            "total_approvers": 0,
+            "approved_count": 0,
+            "pending_approvers": [],
+            "approval_status": []
+        }
+    
+    approved_count = 0
+    pending_approvers = []
+    approval_status = []
+    
+    for approval in response_approvals:
+        status_info = {
+            "user_id": approval.user_id,
+            "user_name": approval.user.name,
+            "sequence_number": approval.sequence_number,
+            "status": approval.status.value,
+            "is_mandatory": approval.is_mandatory,
+            "reviewed_at": approval.reviewed_at.isoformat() if approval.reviewed_at else None
+        }
+        
+        if approval.status == ApprovalStatus.aprobado:
+            approved_count += 1
+        elif approval.is_mandatory:
+            pending_approvers.append(status_info)
+        
+        approval_status.append(status_info)
+    
+    return {
+        "all_approved": len(pending_approvers) == 0,
+        "total_approvers": len(response_approvals),
+        "approved_count": approved_count,
+        "pending_approvers": pending_approvers,
+        "approval_status": approval_status
+    }
 
 def get_bogota_time() -> datetime:
     """Retorna la hora actual con la zona horaria de Bogotá."""
