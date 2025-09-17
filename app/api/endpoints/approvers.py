@@ -2,7 +2,7 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
@@ -13,8 +13,8 @@ from app.crud import get_forms_by_approver, save_form_approvals, update_response
 from app.database import get_db
 from app.core.security import get_current_user
 import pandas as pd
-from app.models import ApprovalRequirement, ApprovalStatus, Form, FormApproval, Response, ResponseApproval, ResponseApprovalRequirement, User
-from app.schemas import ApprovalRequirementsCreateSchema, BulkUpdateFormApprovals, FormApprovalCreateSchema, FormWithApproversResponse, ResponseDetailInfo, UpdateResponseApprovalRequest
+from app.models import Answer, AnswerHistory, ApprovalRequirement, ApprovalStatus, Form, FormApproval, Question, Response, ResponseApproval, ResponseApprovalRequirement, User
+from app.schemas import ApprovalRequirementsCreateSchema, BulkUpdateFormApprovals, FormApprovalCreateSchema, FormWithApproversResponse, RequiredFormsResponse, ResponseDetailInfo, UpdateResponseApprovalRequest
 from fastapi import Form as FastAPIForm 
 
 router = APIRouter()
@@ -1085,6 +1085,257 @@ async def get_response_approval_details(
     return response_info
 
 
+@router.get("/response/{response_id}/approver/{approver_user_id}/required-forms", 
+            response_model=RequiredFormsResponse)
+async def get_response_approver_required_forms(
+    response_id: int,
+    approver_user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Obtiene los formularios requeridos que un aprobador específico debe haber diligenciado
+    para poder aprobar una respuesta, junto con todas las respuestas que ha dado a esos formularios.
+    """
+    
+    # Verificar que la respuesta existe
+    response = db.query(Response).filter(Response.id == response_id).first()
+    if not response:
+        raise HTTPException(status_code=404, detail="Response not found")
+    
+    # Verificar que el aprobador existe
+    approver = db.query(User).filter(User.id == approver_user_id).first()
+    if not approver:
+        raise HTTPException(status_code=404, detail="Approver user not found")
+    
+    # Opcional: Verificar permisos (por ejemplo, que el current_user puede ver esta información)
+    # Puedes agregar lógica de autorización aquí según tus necesidades
+    
+    required_forms_data = get_approver_required_forms_responses(
+        response_id=response_id,
+        approver_user_id=approver_user_id,
+        db=db
+    )
+    
+    # Convertir enums a strings para serialización JSON
+    for form_data in required_forms_data:
+        for response_data in form_data["approver_responses"]["responses"]:
+            for answer in response_data["answers"]:
+                if hasattr(answer["question_type"], "value"):
+                    answer["question_type"] = answer["question_type"].value
+    
+    return {
+        "main_response_id": response_id,
+        "approver": {
+            "user_id": approver.id,
+            "name": approver.name,
+            "email": approver.email,
+            "num_document": approver.num_document
+        },
+        "required_forms": required_forms_data,
+        "summary": {
+            "total_required_forms": len(required_forms_data),
+            "fulfilled_requirements": sum(1 for form in required_forms_data 
+                                        if form["fulfillment_status"]["is_fulfilled"]),
+            "pending_requirements": sum(1 for form in required_forms_data 
+                                      if not form["fulfillment_status"]["is_fulfilled"]),
+            "total_responses_given": sum(form["approver_responses"]["total_responses"] 
+                                       for form in required_forms_data)
+        }
+    }
+
+def get_approver_required_forms_responses(response_id: int, approver_user_id: int, db: Session):
+    """
+    Obtiene los formularios requeridos que un aprobador específico debe haber diligenciado
+    para poder aprobar una respuesta, junto con las respuestas que ha dado a esos formularios.
+    
+    IMPORTANTE: Solo retorna los requisitos que están registrados en ResponseApprovalRequirement
+    para la respuesta específica.
+
+    Parámetros:
+    ----------
+    response_id : int
+        ID de la respuesta que requiere aprobación.
+    approver_user_id : int
+        ID del usuario aprobador.
+    db : Session
+        Sesión activa de la base de datos.
+
+    Retorna:
+    -------
+    List[Dict]
+        Lista de formularios requeridos con sus respuestas correspondientes.
+    """
+    
+    # Obtener la respuesta principal para verificar que existe
+    main_response = db.query(Response).filter(Response.id == response_id).first()
+    if not main_response:
+        return []
+    
+    # CAMBIO PRINCIPAL: Obtener SOLO los requisitos que están en ResponseApprovalRequirement
+    # para esta respuesta específica y que corresponden al aprobador
+    response_requirements_status = (
+        db.query(ResponseApprovalRequirement)
+        .join(ApprovalRequirement, ResponseApprovalRequirement.approval_requirement_id == ApprovalRequirement.id)
+        .options(
+            joinedload(ResponseApprovalRequirement.approval_requirement)
+            .joinedload(ApprovalRequirement.required_form),
+            joinedload(ResponseApprovalRequirement.approval_requirement)
+            .joinedload(ApprovalRequirement.approver),
+            joinedload(ResponseApprovalRequirement.fulfilling_response)
+        )
+        .filter(
+            ResponseApprovalRequirement.response_id == response_id,
+            ApprovalRequirement.approver_id == approver_user_id
+        )
+        .all()
+    )
+    
+    if not response_requirements_status:
+        return []
+    
+    results = []
+    
+    for req_status in response_requirements_status:
+        requirement = req_status.approval_requirement
+        required_form = requirement.required_form
+        
+        # Obtener todas las respuestas del aprobador a este formulario requerido
+        approver_responses = (
+            db.query(Response)
+            .filter(
+                Response.form_id == required_form.id,
+                Response.user_id == approver_user_id
+            )
+            .order_by(Response.submitted_at.desc())
+            .all()
+        )
+        
+        # Para cada respuesta del aprobador a este formulario
+        responses_data = []
+        for response in approver_responses:
+            
+            # Obtener las respuestas con preguntas (excluyendo historial previo)
+            # Obtener historial para saber qué respuestas no mostrar individualmente
+            histories = db.query(AnswerHistory).filter(AnswerHistory.response_id == response.id).all()
+            previous_answer_ids = set()
+            history_map = {}
+            
+            for history in histories:
+                history_map[history.current_answer_id] = history
+                if history.previous_answer_id:
+                    previous_answer_ids.add(history.previous_answer_id)
+            
+            # Obtener respuestas actuales (excluyendo las que son previous_answer_ids)
+            answers = (
+                db.query(Answer, Question)
+                .join(Question)
+                .filter(
+                    Answer.response_id == response.id,
+                    ~Answer.id.in_(previous_answer_ids) if previous_answer_ids else True
+                )
+                .all()
+            )
+            
+            answers_data = []
+            for answer, question in answers:
+                answer_data = {
+                    "question_id": question.id,
+                    "question_text": question.question_text,
+                    "question_type": question.question_type,
+                    "answer_text": answer.answer_text,
+                    "file_path": answer.file_path,
+                    "answer_id": answer.id,
+                    "has_history": answer.id in history_map
+                }
+                
+                # Agregar información del historial si existe
+                if answer.id in history_map:
+                    history = history_map[answer.id]
+                    # Obtener la respuesta anterior
+                    previous_answer = None
+                    if history.previous_answer_id:
+                        previous_answer = (
+                            db.query(Answer)
+                            .options(joinedload(Answer.question))
+                            .filter(Answer.id == history.previous_answer_id)
+                            .first()
+                        )
+                    
+                    answer_data["history"] = {
+                        "previous_answer": {
+                            "answer_text": previous_answer.answer_text if previous_answer else None,
+                            "file_path": previous_answer.file_path if previous_answer else None,
+                        } if previous_answer else None,
+                        "was_modified": True
+                    }
+                else:
+                    answer_data["history"] = {
+                        "previous_answer": None,
+                        "was_modified": False
+                    }
+                
+                answers_data.append(answer_data)
+            
+            # Obtener información del aprobador (usuario que respondió)
+            approver_user = db.query(User).filter(User.id == response.user_id).first()
+            
+            response_data = {
+                "response_id": response.id,
+                "submitted_at": response.submitted_at.isoformat(),
+                "status": response.status.value,
+                "answers": answers_data,
+                "submitted_by": {
+                    "user_id": approver_user.id,
+                    "name": approver_user.name,
+                    "email": approver_user.email,
+                    "num_document": approver_user.num_document
+                },
+                "response_history": {
+                    "has_modifications": len(histories) > 0,
+                    "total_changes": len(histories),
+                    "modified_answers_count": len([a for a in answers_data if a["has_history"]])
+                },
+                # Indicar si esta respuesta específica cumple el requisito
+                "fulfills_requirement": req_status.fulfilling_response_id == response.id if req_status.fulfilling_response_id else False
+            }
+            
+            responses_data.append(response_data)
+        
+        # Construir la información del formulario requerido
+        form_data = {
+            "requirement_id": requirement.id,
+            "required_form": {
+                "form_id": required_form.id,
+                "form_title": required_form.title,
+                "form_description": required_form.description,
+                "form_design": required_form.form_design
+            },
+            "linea_aprobacion": requirement.linea_aprobacion,
+            "approver": {
+                "user_id": requirement.approver.id,
+                "name": requirement.approver.name,
+                "email": requirement.approver.email,
+                "num_document": requirement.approver.num_document
+            },
+            "fulfillment_status": {
+                "is_fulfilled": req_status.is_fulfilled,
+                "fulfilling_response_id": req_status.fulfilling_response_id,
+                "fulfilling_response_submitted_at": req_status.fulfilling_response.submitted_at.isoformat() if req_status.fulfilling_response else None,
+                "updated_at": req_status.updated_at.isoformat(),
+                "needs_completion": not req_status.is_fulfilled,
+                "completion_status": "fulfilled" if req_status.is_fulfilled else "pending"
+            },
+            "approver_responses": {
+                "total_responses": len(responses_data),
+                "has_responses": len(responses_data) > 0,
+                "responses": responses_data
+            }
+        }
+        
+        results.append(form_data)
+    
+    return results
 
 @router.get("/download-file-approvers/{file_name}")
 async def download_file_approvers(

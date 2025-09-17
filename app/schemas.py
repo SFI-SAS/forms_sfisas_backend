@@ -768,3 +768,9 @@ class ResponseDetailInfo(BaseModel):
     your_approval_status: Optional[dict]
     all_approvers: List[ApproverInfo]
     approval_requirements: dict
+    
+class RequiredFormsResponse(BaseModel):
+    main_response_id: int
+    approver: Dict[str, Any]
+    required_forms: List[Dict[str, Any]]
+    summary: Dict[str, Any]
