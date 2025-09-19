@@ -26,3 +26,4 @@ WeasyPrint==60.2
 qrcode==8.2
 weasyprint==60.2
 pydyf==0.10.0
+click==8.1.7
