@@ -22,6 +22,7 @@
 "ARG MAIL_PORT_ALT",
 "ARG MAIL_USERNAME_ALT",
 "ARG RECAPTCHA_SECRET_KEY",
+"ARG ENCRYPTION_KEY",
 "ENV ALGORITHM=$ALGORITHM",
 "ENV AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID",
 "ENV AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION",
@@ -42,10 +43,11 @@
 "ENV MAIL_PORT_ALT=$MAIL_PORT_ALT",
 "ENV MAIL_USERNAME_ALT=$MAIL_USERNAME_ALT",
 "ENV RECAPTCHA_SECRET_KEY=$RECAPTCHA_SECRET_KEY",
+"ENV ENCRYPTION_KEY=$ENCRYPTION_KEY",
 "WORKDIR /app",
 "COPY requirements.txt .",
 "RUN pip install --no-cache-dir -r requirements.txt",
 "COPY . .",
-"CMD [ \"fastapi\", \"run\"]"
+"CMD [ \"uvicorn\", \"main:app\", \"--host\", \"0.0.0.0\", \"--port\", \"8000\", \"--workers\", \"1\", \"--no-access-log\", \"--loop\", \"uvloop\", \"--http\", \"h11\" ]"
 ]
 }
