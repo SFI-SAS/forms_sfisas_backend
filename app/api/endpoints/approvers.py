@@ -1476,3 +1476,211 @@ def get_media_type_by_extension(extension: str) -> str:
     
     return mime_types.get(extension.lower(), 'application/octet-stream')
 
+
+class ApprovalRequirementResponse(BaseModel):
+    id: int
+    form_id: int
+    approver_id: int
+    required_form_id: int
+    linea_aprobacion: bool
+    required_form_title: str
+    approver_name: str
+    
+    class Config:
+        from_attributes = True
+
+
+# GET - Obtener requisitos de aprobación por formulario y aprobador
+@router.get("/approval-requirements/form/{form_id}/approver/{approver_id}", 
+            response_model=List[ApprovalRequirementResponse])
+async def get_approval_requirements_by_approver(
+    form_id: int,
+    approver_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Obtiene todos los requisitos de aprobación (formatos prerequisito) 
+    para un aprobador específico en un formulario
+    """
+    try:
+        requirements = db.query(ApprovalRequirement).filter(
+            ApprovalRequirement.form_id == form_id,
+            ApprovalRequirement.approver_id == approver_id
+        ).all()
+        
+        result = []
+        for req in requirements:
+            # Obtener información del formato requerido
+            required_form = db.query(Form).filter(Form.id == req.required_form_id).first()
+            approver = db.query(User).filter(User.id == req.approver_id).first()
+            
+            if required_form and approver:
+                result.append({
+                    "id": req.id,
+                    "form_id": req.form_id,
+                    "approver_id": req.approver_id,
+                    "required_form_id": req.required_form_id,
+                    "linea_aprobacion": req.linea_aprobacion,
+                    "required_form_title": required_form.title,
+                    "approver_name": approver.name
+                })
+        
+        return result
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al obtener requisitos de aprobación: {str(e)}"
+        )
+
+
+# GET - Obtener todos los requisitos de un formulario
+@router.get("/approval-requirements/form/{form_id}", 
+            response_model=List[ApprovalRequirementResponse])
+async def get_all_approval_requirements_by_form(
+    form_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Obtiene todos los requisitos de aprobación de un formulario,
+    agrupados por aprobador
+    """
+    try:
+        requirements = db.query(ApprovalRequirement).filter(
+            ApprovalRequirement.form_id == form_id
+        ).all()
+        
+        result = []
+        for req in requirements:
+            required_form = db.query(Form).filter(Form.id == req.required_form_id).first()
+            approver = db.query(User).filter(User.id == req.approver_id).first()
+            
+            if required_form and approver:
+                result.append({
+                    "id": req.id,
+                    "form_id": req.form_id,
+                    "approver_id": req.approver_id,
+                    "required_form_id": req.required_form_id,
+                    "linea_aprobacion": req.linea_aprobacion,
+                    "required_form_title": required_form.title,
+                    "approver_name": approver.name
+                })
+        
+        return result
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al obtener requisitos de aprobación: {str(e)}"
+        )
+
+
+# DELETE - Eliminar un requisito de aprobación específico
+@router.delete("/approval-requirements/{requirement_id}")
+async def delete_approval_requirement(
+    requirement_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Elimina un requisito de aprobación específico
+    """
+    try:
+        requirement = db.query(ApprovalRequirement).filter(
+            ApprovalRequirement.id == requirement_id
+        ).first()
+        
+        if not requirement:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Requisito de aprobación no encontrado"
+            )
+        
+        db.delete(requirement)
+        db.commit()
+        
+        return {
+            "message": "Requisito de aprobación eliminado exitosamente",
+            "deleted_id": requirement_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al eliminar requisito de aprobación: {str(e)}"
+        )
+
+
+# DELETE - Eliminar todos los requisitos de un aprobador en un formulario
+@router.delete("/approval-requirements/form/{form_id}/approver/{approver_id}")
+async def delete_all_requirements_by_approver(
+    form_id: int,
+    approver_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Elimina todos los requisitos de aprobación de un aprobador específico
+    en un formulario
+    """
+    try:
+        deleted_count = db.query(ApprovalRequirement).filter(
+            ApprovalRequirement.form_id == form_id,
+            ApprovalRequirement.approver_id == approver_id
+        ).delete()
+        
+        db.commit()
+        
+        return {
+            "message": f"Se eliminaron {deleted_count} requisito(s) de aprobación",
+            "deleted_count": deleted_count
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al eliminar requisitos de aprobación: {str(e)}"
+        )
+
+
+# PUT - Actualizar un requisito de aprobación
+@router.put("/approval-requirements/{requirement_id}")
+async def update_approval_requirement(
+    requirement_id: int,
+    linea_aprobacion: bool,
+    db: Session = Depends(get_db)
+):
+    """
+    Actualiza si un requisito sigue o no la línea de aprobación
+    """
+    try:
+        requirement = db.query(ApprovalRequirement).filter(
+            ApprovalRequirement.id == requirement_id
+        ).first()
+        
+        if not requirement:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Requisito de aprobación no encontrado"
+            )
+        
+        requirement.linea_aprobacion = linea_aprobacion
+        db.commit()
+        db.refresh(requirement)
+        
+        return {
+            "message": "Requisito de aprobación actualizado exitosamente",
+            "requirement_id": requirement_id,
+            "linea_aprobacion": linea_aprobacion
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al actualizar requisito de aprobación: {str(e)}"
+        )
