@@ -4113,32 +4113,6 @@ def get_form_with_full_responses(form_id: int, db: Session):
     """
     Recupera todos los detalles de un formulario con sus preguntas, respuestas, historial de respuestas
     y estado de aprobación para cada una.
-
-    Parámetros:
-    ----------
-    form_id : int
-        ID del formulario a consultar.
-
-    db : Session
-        Sesión activa de la base de datos.
-
-    Retorna:
-    -------
-    dict
-        Estructura detallada del formulario con:
-        - form_id, título y descripción.
-        - Lista de preguntas (id, texto, tipo).
-        - Lista de respuestas con:
-            - Datos del usuario que respondió.
-            - Fecha de envío.
-            - Respuestas por pregunta.
-            - Estado de aprobación general.
-        - Historial de cambios en respuestas (si existen).
-
-    Notas:
-    ------
-    - Se excluyen respuestas históricas (`previous_answer_id`) para evitar duplicidad.
-    - Se utiliza `joinedload` para mejorar eficiencia en la carga de datos relacionados.
     """
     
     # Función auxiliar para procesar respuestas de reconocimiento facial
@@ -4191,22 +4165,6 @@ def get_form_with_full_responses(form_id: int, db: Session):
     if not form:
         return None
 
-    results = {
-        "form_id": form.id,
-        "title": form.title,
-        "description": form.description,
- 
-        "questions": [
-            {
-                "id": q.id,
-                "text": q.question_text,
-                "type": q.question_type.name,
-            }
-            for q in form.questions
-        ],
-        "responses": [],
-    }
-
     # Obtener todos los response_ids para buscar el historial
     response_ids = [response.id for response in form.responses]
     
@@ -4244,6 +4202,46 @@ def get_form_with_full_responses(form_id: int, db: Session):
         if history.previous_answer_id:
             previous_answer_ids.add(history.previous_answer_id)
 
+    # ==========================================
+    # AQUÍ ESTÁ EL CAMBIO IMPORTANTE
+    # ==========================================
+    # En lugar de obtener las preguntas de form.questions,
+    # las extraemos de las respuestas REALES
+    all_questions_map = {}  # question_id -> question_data
+    
+    for response in form.responses:
+        # Obtener respuestas actuales (excluyendo las que son previous_answer_ids)
+        answers = (
+            db.query(Answer)
+            .options(joinedload(Answer.question))
+            .filter(
+                Answer.response_id == response.id,
+                ~Answer.id.in_(previous_answer_ids) if previous_answer_ids else True
+            )
+            .all()
+        )
+        
+        # Agregar cada pregunta al mapa si no existe
+        for ans in answers:
+            if ans.question.id not in all_questions_map:
+                all_questions_map[ans.question.id] = {
+                    "id": ans.question.id,
+                    "text": ans.question.question_text,
+                    "type": ans.question.question_type.name if hasattr(ans.question.question_type, 'name') else str(ans.question.question_type),
+                }
+    
+    # Convertir el mapa a lista y ordenar por ID
+    questions_list = list(all_questions_map.values())
+    
+    results = {
+        "form_id": form.id,
+        "title": form.title,
+        "description": form.description,
+        "questions": questions_list,  # ← Ahora tiene TODAS las preguntas reales
+        "responses": [],
+    }
+
+    # Procesar las respuestas
     for response in form.responses:
         response_data = {
             "response_id": response.id,
@@ -4256,7 +4254,7 @@ def get_form_with_full_responses(form_id: int, db: Session):
             },
             "submitted_at": response.submitted_at,
             "answers": [],
-            "approval_status": None,  # Aquí se agregará
+            "approval_status": None,
         }
 
         # Obtener respuestas actuales (excluyendo las que son previous_answer_ids)
@@ -4289,6 +4287,7 @@ def get_form_with_full_responses(form_id: int, db: Session):
         results["responses"].append(response_data)
 
     return results
+
 
 def update_form_design_service(db: Session, form_id: int, design_data: List[Dict[str, Any]]):
     """
