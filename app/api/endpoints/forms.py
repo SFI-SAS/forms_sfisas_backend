@@ -6,9 +6,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 from typing import Any, List
 from app.database import get_db
-from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormSchedule, Response, ResponseApproval, User, UserType
+from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormQuestion, FormSchedule, Question, Response, ResponseApproval, User, UserType
 from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category_by_id, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_form_categories, get_all_forms, get_all_user_responses_by_form_id, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, remove_moderator_from_form, remove_question_from_form, save_form_approvals, send_rejection_email_to_all, update_form_design_service, update_notification_status, update_response_approval_status
-from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryResponse, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, ResponseApprovalCreate, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
+from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryResponse, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormResponse, FormScheduleCreate, FormScheduleOut, FormSchema, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, ResponseApprovalCreate, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
 import pandas as pd
@@ -142,6 +142,60 @@ def check_form_responses(form_id: int, db: Session = Depends(get_db), current_us
     else:    
         return check_form_data(db, form_id)
     
+@router.put("/{form_id}/questions")
+async def update_form_questions(
+    form_id: int,
+    request: QuestionIdsRequest,  # { "question_ids": [1, 2, 3] }
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Actualiza las relaciones de preguntas para un formulario (reemplaza las existentes)
+    Útil para modo edición del formulario
+    """
+    try:
+        # Verificar que el formulario existe y pertenece al usuario
+        form = db.query(Form).filter(
+            Form.id == form_id,
+            Form.user_id == current_user.id
+        ).first()
+        
+        if not form:
+            raise HTTPException(status_code=404, detail="Formulario no encontrado")
+        
+        # Eliminar todas las relaciones existentes
+        db.query(FormQuestion).filter(FormQuestion.form_id == form_id).delete()
+        
+        # Agregar las nuevas relaciones
+        if request.question_ids and len(request.question_ids) > 0:
+            for question_id in request.question_ids:
+                # Verificar que la pregunta existe
+                question = db.query(Question).filter(Question.id == question_id).first()
+                if not question:
+                    raise HTTPException(
+                        status_code=404, 
+                        detail=f"Pregunta {question_id} no encontrada"
+                    )
+                
+                # Crear la relación
+                form_question = FormQuestion(
+                    form_id=form_id,
+                    question_id=question_id
+                )
+                db.add(form_question)
+        
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Preguntas actualizadas correctamente",
+            "form_id": form_id,
+            "question_ids": request.question_ids
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     
 @router.get("/emails/all-emails")
 def get_all_emails(db: Session = Depends(get_db)):

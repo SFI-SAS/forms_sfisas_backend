@@ -5,6 +5,17 @@ from enum import Enum
 
 from app.models import ApprovalStatus
 
+class QuestionIdsRequest(BaseModel):
+    """Modelo para actualizar las preguntas de un formulario"""
+    question_ids: List[int] = []
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "question_ids": [1, 2, 3, 4]
+            }
+        }
+        
 # Enum for UserType
 class UserType(str, Enum):
     admin = "admin"
