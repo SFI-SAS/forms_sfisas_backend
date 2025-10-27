@@ -154,11 +154,8 @@ async def update_form_questions(
     Útil para modo edición del formulario
     """
     try:
-        # Verificar que el formulario existe y pertenece al usuario
-        form = db.query(Form).filter(
-            Form.id == form_id,
-            Form.user_id == current_user.id
-        ).first()
+        # Verificar que el formulario existe
+        form = db.query(Form).filter(Form.id == form_id).first()
         
         if not form:
             raise HTTPException(status_code=404, detail="Formulario no encontrado")
@@ -166,33 +163,45 @@ async def update_form_questions(
         # Eliminar todas las relaciones existentes
         db.query(FormQuestion).filter(FormQuestion.form_id == form_id).delete()
         
-        # Agregar las nuevas relaciones
+        # Filtrar solo las preguntas que existen
+        valid_question_ids = []
+        invalid_question_ids = []
+        
         if request.question_ids and len(request.question_ids) > 0:
             for question_id in request.question_ids:
                 # Verificar que la pregunta existe
                 question = db.query(Question).filter(Question.id == question_id).first()
-                if not question:
-                    raise HTTPException(
-                        status_code=404, 
-                        detail=f"Pregunta {question_id} no encontrada"
-                    )
                 
-                # Crear la relación
-                form_question = FormQuestion(
-                    form_id=form_id,
-                    question_id=question_id
-                )
-                db.add(form_question)
+                if question:
+                    # Crear la relación solo si la pregunta existe
+                    form_question = FormQuestion(
+                        form_id=form_id,
+                        question_id=question_id
+                    )
+                    db.add(form_question)
+                    valid_question_ids.append(question_id)
+                else:
+                    # Registrar las preguntas inválidas para informar al usuario
+                    invalid_question_ids.append(question_id)
         
         db.commit()
         
-        return {
+        response = {
             "success": True,
             "message": "Preguntas actualizadas correctamente",
             "form_id": form_id,
-            "question_ids": request.question_ids
+            "valid_question_ids": valid_question_ids
         }
         
+        # Informar si hubo preguntas que no se pudieron agregar
+        if invalid_question_ids:
+            response["warning"] = f"Las siguientes preguntas no existen y fueron omitidas: {invalid_question_ids}"
+            response["invalid_question_ids"] = invalid_question_ids
+        
+        return response
+        
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
