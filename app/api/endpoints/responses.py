@@ -1019,6 +1019,101 @@ async def get_response_with_complete_answers_and_history(
         current_answers=current_answers_list,
         answer_history=history_changes_list
     )
+    
+@router.get("/get_responses/all")
+def get_all_user_responses(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Obtiene TODAS las respuestas completadas por el usuario autenticado en TODOS sus formularios,
+    incluyendo respuestas, aprobaciones, estado de revisión y historial de cambios.
+     
+    Args:
+        db (Session): Sesión activa de la base de datos.
+        current_user (User): Usuario autenticado.
+     
+    Returns:
+        dict: Diccionario con:
+            - total_forms (int): Número total de formularios con respuestas
+            - total_responses (int): Número total de respuestas
+            - forms (List[dict]): Lista de formularios con sus respuestas, cada uno contiene:
+                - form_id (int): ID del formulario
+                - form_title (str): Título del formulario
+                - form_description (str): Descripción del formulario
+                - response_count (int): Cantidad de respuestas en este formulario
+                - responses (List[dict]): Lista de respuestas con historial
+     
+    Raises:
+        HTTPException: 403 si no hay un usuario autenticado.
+        HTTPException: 404 si no se encuentran respuestas.
+    """
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to access completed forms",
+        )
+
+    # Obtener todas las respuestas del usuario con sus formularios
+    stmt = (
+        select(Response)
+        .where(Response.user_id == current_user.id)
+        .options(
+            joinedload(Response.form),
+            joinedload(Response.answers).joinedload(Answer.question),
+            joinedload(Response.approvals).joinedload(ResponseApproval.user)
+        )
+    )
+    
+    all_responses = db.execute(stmt).unique().scalars().all()
+
+    if not all_responses:
+        raise HTTPException(status_code=404, detail="No se encontraron respuestas")
+
+    # Agrupar respuestas por formulario
+    forms_dict = {}
+    
+    for response in all_responses:
+        form_id = response.form_id
+        
+        if form_id not in forms_dict:
+            forms_dict[form_id] = {
+                "form_id": form_id,
+                "form_title": response.form.title if response.form else "Sin título",
+                "form_description": response.form.description if response.form else "",
+                "format_type": response.form.format_type.name if response.form and response.form.format_type else None,
+                "responses": []
+            }
+        
+        forms_dict[form_id]["responses"].append(response)
+    
+    # Procesar cada formulario con sus respuestas
+    result_forms = []
+    total_responses = 0
+    
+    for form_id, form_data in forms_dict.items():
+        # Procesar respuestas con historial
+        processed_responses = process_responses_with_history(form_data["responses"], db)
+        
+        result_forms.append({
+            "form_id": form_data["form_id"],
+            "form_title": form_data["form_title"],
+            "form_description": form_data["form_description"],
+            "format_type": form_data["format_type"],
+            "response_count": len(processed_responses),
+            "responses": processed_responses
+        })
+        
+        total_responses += len(processed_responses)
+    
+    # Ordenar formularios por ID (o por título si lo prefieres)
+    result_forms.sort(key=lambda x: x["form_id"])
+    
+    return {
+        "total_forms": len(result_forms),
+        "total_responses": total_responses,
+        "forms": result_forms
+    }
 
 @router.get("/get_responses/")
 def get_responses_with_answers(

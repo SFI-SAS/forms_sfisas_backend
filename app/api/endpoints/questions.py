@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
-from app.models import Question, QuestionCategory, QuestionLocationRelation, User, UserType
+from app.models import Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, User, UserType
 from app.crud import create_question, create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_filtered_questions, get_related_or_filtered_answers, get_related_or_filtered_answers_with_forms, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
 from app.schemas import AnswerSchema, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionWithCategory, UpdateQuestionCategory
 from app.core.security import get_current_user
@@ -435,7 +435,74 @@ def create_question_table_relation(
         }
     }
 
+@router.get("/question-table-relation/answers/all")
+def get_all_related_answers(
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Obtiene todas las respuestas dinámicas relacionadas o filtradas para todas las preguntas.
     
+    Este endpoint procesa todas las preguntas que tienen relaciones de tabla o condiciones de filtro,
+    retornando la información completa de formularios y respuestas para cada una.
+
+    Retorna:
+    --------
+    dict:
+        Diccionario con el campo:
+        - `questions` (List[dict]): lista de todas las preguntas con sus relaciones, cada una contiene:
+            - `question_id` (int): ID de la pregunta
+            - `source` (str): origen de los datos
+            - `data` (List[dict]): lista de respuestas únicas
+            - `forms` (List[dict]): formularios completos con sus respuestas
+            - `related_question` (dict): información de la pregunta relacionada (si aplica)
+            - `correlations` (dict): mapa de correlaciones entre respuestas
+    """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get all questions"
+        )
+    
+    # Obtener todas las preguntas que tienen relaciones o condiciones
+    relations = db.query(QuestionTableRelation).all()
+    conditions = db.query(QuestionFilterCondition).all()
+    
+    # Crear un conjunto de question_ids únicos
+    question_ids = set()
+    
+    # Agregar IDs de relaciones
+    for relation in relations:
+        question_ids.add(relation.question_id)
+    
+    # Agregar IDs de condiciones
+    for condition in conditions:
+        question_ids.add(condition.filtered_question_id)
+    
+    # Procesar cada pregunta
+    all_questions_data = []
+    
+    for question_id in question_ids:
+        try:
+            question_data = get_related_or_filtered_answers_with_forms(db, question_id)
+            
+            # Agregar el question_id al resultado
+            all_questions_data.append({
+                "question_id": question_id,
+                **question_data
+            })
+        except HTTPException as e:
+            # Si hay error con una pregunta específica, continuar con las demás
+            print(f"Error procesando pregunta {question_id}: {e.detail}")
+            continue
+        except Exception as e:
+            print(f"Error inesperado procesando pregunta {question_id}: {str(e)}")
+            continue
+    
+    return {
+        "total_questions": len(all_questions_data),
+        "questions": all_questions_data
+    }
 
 # Endpoint actualizado
 @router.get("/question-table-relation/answers/{question_id}")

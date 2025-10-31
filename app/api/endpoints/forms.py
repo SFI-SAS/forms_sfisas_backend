@@ -83,6 +83,40 @@ def add_questions_to_form_endpoint(
         )
     return add_questions_to_form(db, form_id, questions.question_ids)
 
+@router.get("/all")
+def get_all_forms_endpoint(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):   
+    """
+    Obtener todos los formularios del usuario autenticado.
+
+    Este endpoint recupera la información completa de todos los formularios 
+    asociados al usuario autenticado, incluyendo preguntas, opciones y respuestas.
+
+    Args:
+        db (Session): Sesión activa de la base de datos, inyectada como dependencia.
+        current_user (User): Usuario autenticado, obtenido desde el token JWT.
+
+    Returns:
+        list: Lista de objetos con los datos de todos los formularios del usuario.
+    """
+    # Obtener todos los form_ids del usuario
+    user_forms = db.query(Form.id).filter(Form.user_id == current_user.id).all()
+    
+    if not user_forms:
+        return []
+    
+    # Obtener los detalles completos de cada formulario
+    forms_data = []
+    for form_tuple in user_forms:
+        form_id = form_tuple[0]
+        form_detail = get_form(db, form_id, current_user.id)
+        if form_detail:
+            forms_data.append(form_detail)
+    
+    return forms_data
+
 @router.get("/{form_id}")
 def get_form_endpoint(
     form_id: int,
@@ -110,6 +144,8 @@ def get_form_endpoint(
     if not form:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Form not found")
     return form
+
+
 
 @router.get("/{form_id}/has-responses")
 def check_form_responses(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

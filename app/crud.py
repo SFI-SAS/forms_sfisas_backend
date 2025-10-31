@@ -420,6 +420,9 @@ def get_form(db: Session, form_id: int, user_id: int):
         "questions": questions_data,
         "responses": responses_data
     }
+    
+    
+    
 def get_forms(db: Session, skip: int = 0, limit: int = 10):
     return db.query(Form).offset(skip).limit(limit).all()
 
@@ -2063,6 +2066,8 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
         "forms": [],
         "correlations": {}
     }
+
+
 def get_related_or_filtered_answers(db: Session, question_id: int):
     """
     Obtiene respuestas dinámicas relacionadas o filtradas para una pregunta.
@@ -4071,14 +4076,7 @@ def get_response_approval_status(response_approvals: list) -> dict:
             "message": has_rejected.message or "Formulario rechazado"
         }
 
-    if pending_mandatory:
-        print("Faltan por aprobar los siguientes usuarios obligatorios:")
-        for user in pending_users:
-            print(f"- User ID: {user['user_id']}, Secuencia: {user['sequence_number']}, Estado: {user['status'].value}")
-        return {
-            "status": "pendiente",
-            "message": "Faltan aprobaciones obligatorias"
-        }
+    
 
     return {
         "status": "aprobado",
