@@ -99,17 +99,44 @@ class Form(Base):
     category = relationship("FormCategory", back_populates="forms")
 
 
+# Modelo actualizado para soportar jerarquías
 class FormCategory(Base):
     __tablename__ = 'form_categories'
     
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    name = Column(String(100), nullable=False, unique=True)
-    description = Column(String(255), nullable=True)  # Opcional: descripción de la categoría
+    name = Column(String(100), nullable=False)
+    description = Column(String(255), nullable=True)
     
+    # Campo clave para la jerarquía
+    parent_id = Column(BigInteger, ForeignKey('form_categories.id'), nullable=True)
+    
+    # Campos adicionales útiles
+    order = Column(Integer, default=0)  # Para ordenar carpetas al mismo nivel
+    is_expanded = Column(Boolean, default=True)  # Estado UI por defecto
+    icon = Column(String(50), nullable=True)  # Icono opcional
+    color = Column(String(20), nullable=True)  # Color opcional
+    
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(TIMESTAMP(timezone=True), onupdate=func.now())
+    
+    # Relaciones
     # Relación con formularios
     forms = relationship("Form", back_populates="category")
+    
+    # Auto-referencia para jerarquía
+    parent = relationship(
+        "FormCategory",
+        remote_side=[id],
+        back_populates="children"
+    )
+    children = relationship(
+        "FormCategory",
+        back_populates="parent",
+        cascade="all, delete-orphan",
+        order_by="FormCategory.order"
+    )
 
-# Modelo Questions
+
 class Question(Base):
     __tablename__ = 'questions'
 

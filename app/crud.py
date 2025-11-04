@@ -12,7 +12,7 @@ from app.api.controllers.mail import send_action_notification_email, send_email_
 from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
 from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
-from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
+from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
@@ -5016,34 +5016,173 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
 
-# Crear una nueva categoría de formulario
+# # Crear una nueva categoría de formulario
+# def create_form_category(db: Session, category: FormCategoryCreate):
+#     try:
+#         db_category = FormCategory(
+#             name=category.name,
+#             description=category.description
+#         )
+#         db.add(db_category)
+#         db.commit()
+#         db.refresh(db_category)
+#         return db_category
+#     except IntegrityError:
+#         db.rollback()
+#         raise HTTPException(
+#             status_code=status.HTTP_400_BAD_REQUEST,
+#             detail="Ya existe una categoría con ese nombre"
+#         )
+
+# # Obtener todas las categorías de formularios
+# def get_all_form_categories(db: Session):
+#     return db.query(FormCategory).all()
+
+# # Obtener categoría por ID
+# def get_form_category_by_id(db: Session, category_id: int):
+#     return db.query(FormCategory).filter(FormCategory.id == category_id).first()
+
+# # Eliminar categoría por ID
+# def delete_form_category_by_id(db: Session, category_id: int):
+#     category = db.query(FormCategory).filter(FormCategory.id == category_id).first()
+    
+#     if not category:
+#         raise HTTPException(
+#             status_code=status.HTTP_404_NOT_FOUND,
+#             detail="Categoría no encontrada"
+#         )
+    
+#     # Establecer en NULL la categoría de los formularios que la usan
+#     forms_with_category = db.query(Form).filter(Form.id_category == category_id).all()
+#     for form in forms_with_category:
+#         form.id_category = None
+
+#     # Eliminar la categoría
+#     db.delete(category)
+#     db.commit()
+    
+#     return {"message": "Categoría eliminada correctamente y formularios actualizados"}
+
+# # Actualizar categoría de formulario
+# def update_form_category_assignment(db: Session, form_id: int, category_id: Optional[int]):
+#     form = db.query(Form).filter(Form.id == form_id).first()
+#     if not form:
+#         raise HTTPException(
+#             status_code=status.HTTP_404_NOT_FOUND,
+#             detail="Formulario no encontrado"
+#         )
+    
+#     if category_id is not None:
+#         category = db.query(FormCategory).filter(FormCategory.id == category_id).first()
+#         if not category:
+#             raise HTTPException(
+#                 status_code=status.HTTP_404_NOT_FOUND,
+#                 detail="Categoría no encontrada"
+#             )
+    
+#     form.id_category = category_id
+#     db.commit()
+#     db.refresh(form)
+#     return form
+
+# # Obtener formularios por categoría
+# def get_forms_by_category(db: Session, category_id: int):
+#     category = db.query(FormCategory).filter(FormCategory.id == category_id).first()
+#     if not category:
+#         raise HTTPException(
+#             status_code=status.HTTP_404_NOT_FOUND,
+#             detail="Categoría no encontrada"
+#         )
+    
+#     return db.query(Form).filter(Form.id_category == category_id).all()
+
+# # Obtener formularios sin categoría
+# def get_forms_without_category(db: Session):
+#     return db.query(Form).filter(Form.id_category.is_(None)).all()
+
+
 def create_form_category(db: Session, category: FormCategoryCreate):
-    try:
-        db_category = FormCategory(
-            name=category.name,
-            description=category.description
+    # Validar que el padre existe si se especifica
+    if category.parent_id is not None:
+        parent = db.query(FormCategory).filter(FormCategory.id == category.parent_id).first()
+        if not parent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="La categoría padre no existe"
+            )
+    
+    # Verificar nombre único dentro del mismo nivel
+    existing = db.query(FormCategory).filter(
+        and_(
+            FormCategory.name == category.name,
+            FormCategory.parent_id == category.parent_id
         )
+    ).first()
+    
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ya existe una categoría con ese nombre en este nivel"
+        )
+    
+    try:
+        db_category = FormCategory(**category.dict())
         db.add(db_category)
         db.commit()
         db.refresh(db_category)
         return db_category
-    except IntegrityError:
+    except Exception as e:
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ya existe una categoría con ese nombre"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al crear la categoría: {str(e)}"
         )
 
-# Obtener todas las categorías de formularios
-def get_all_form_categories(db: Session):
-    return db.query(FormCategory).all()
+# Obtener árbol completo de categorías
+def get_category_tree(db: Session) -> List[FormCategoryTreeResponse]:
+    # Obtener solo las categorías raíz (sin padre)
+    root_categories = db.query(FormCategory)\
+        .filter(FormCategory.parent_id.is_(None))\
+        .order_by(FormCategory.order, FormCategory.name)\
+        .all()
+    
+    def build_tree(category: FormCategory) -> FormCategoryTreeResponse:
+        # Contar formularios
+        forms_count = db.query(func.count(Form.id))\
+            .filter(Form.id_category == category.id)\
+            .scalar()
+        
+        # Construir respuesta
+        response = FormCategoryTreeResponse(
+            id=category.id,
+            name=category.name,
+            description=category.description,
+            parent_id=category.parent_id,
+            icon=category.icon,
+            color=category.color,
+            order=category.order,
+            created_at=category.created_at,
+            updated_at=category.updated_at,
+            forms_count=forms_count,
+            children_count=len(category.children),
+            children=[]
+        )
+        
+        # Recursivamente construir hijos
+        for child in sorted(category.children, key=lambda x: (x.order, x.name)):
+            response.children.append(build_tree(child))
+        
+        return response
+    
+    return [build_tree(cat) for cat in root_categories]
 
-# Obtener categoría por ID
-def get_form_category_by_id(db: Session, category_id: int):
-    return db.query(FormCategory).filter(FormCategory.id == category_id).first()
+# Obtener categorías de un nivel específico
+def get_categories_by_parent(db: Session, parent_id: Optional[int] = None):
+    query = db.query(FormCategory).filter(FormCategory.parent_id == parent_id)
+    return query.order_by(FormCategory.order, FormCategory.name).all()
 
-# Eliminar categoría por ID
-def delete_form_category_by_id(db: Session, category_id: int):
+# Actualizar categoría
+def update_form_category(db: Session, category_id: int, category_update: FormCategoryUpdate):
     category = db.query(FormCategory).filter(FormCategory.id == category_id).first()
     
     if not category:
@@ -5052,50 +5191,113 @@ def delete_form_category_by_id(db: Session, category_id: int):
             detail="Categoría no encontrada"
         )
     
-    # Establecer en NULL la categoría de los formularios que la usan
-    forms_with_category = db.query(Form).filter(Form.id_category == category_id).all()
-    for form in forms_with_category:
-        form.id_category = None
-
-    # Eliminar la categoría
-    db.delete(category)
-    db.commit()
-    
-    return {"message": "Categoría eliminada correctamente y formularios actualizados"}
-
-# Actualizar categoría de formulario
-def update_form_category_assignment(db: Session, form_id: int, category_id: Optional[int]):
-    form = db.query(Form).filter(Form.id == form_id).first()
-    if not form:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Formulario no encontrado"
-        )
-    
-    if category_id is not None:
-        category = db.query(FormCategory).filter(FormCategory.id == category_id).first()
-        if not category:
+    # Validar nuevo padre si se especifica
+    if category_update.parent_id is not None:
+        # Evitar ciclos: no puede ser su propio padre ni descendiente
+        if category_update.parent_id == category_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Una categoría no puede ser su propio padre"
+            )
+        
+        # Verificar que no se crea un ciclo
+        if is_descendant(db, category_id, category_update.parent_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No se puede mover a una subcategoría de sí misma"
+            )
+        
+        parent = db.query(FormCategory).filter(FormCategory.id == category_update.parent_id).first()
+        if not parent:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Categoría no encontrada"
+                detail="La categoría padre no existe"
             )
     
-    form.id_category = category_id
-    db.commit()
-    db.refresh(form)
-    return form
+    # Actualizar campos
+    for field, value in category_update.dict(exclude_unset=True).items():
+        setattr(category, field, value)
+    
+    try:
+        db.commit()
+        db.refresh(category)
+        return category
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al actualizar la categoría: {str(e)}"
+        )
 
-# Obtener formularios por categoría
-def get_forms_by_category(db: Session, category_id: int):
+# Función auxiliar para detectar ciclos
+def is_descendant(db: Session, category_id: int, potential_parent_id: int) -> bool:
+    """Verifica si potential_parent_id es descendiente de category_id"""
+    current = db.query(FormCategory).filter(FormCategory.id == potential_parent_id).first()
+    
+    while current:
+        if current.parent_id == category_id:
+            return True
+        if current.parent_id is None:
+            return False
+        current = db.query(FormCategory).filter(FormCategory.id == current.parent_id).first()
+    
+    return False
+
+# Mover categoría
+def move_category(db: Session, category_id: int, move_data: FormCategoryMove):
+    return update_form_category(
+        db, 
+        category_id, 
+        FormCategoryUpdate(
+            parent_id=move_data.new_parent_id,
+            order=move_data.new_order
+        )
+    )
+
+# Eliminar categoría
+def delete_form_category(db: Session, category_id: int, force: bool = False):
     category = db.query(FormCategory).filter(FormCategory.id == category_id).first()
+    
     if not category:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Categoría no encontrada"
         )
     
-    return db.query(Form).filter(Form.id_category == category_id).all()
+    # Verificar si tiene hijos
+    if category.children and not force:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No se puede eliminar una categoría con subcategorías. Use force=true para eliminar todo el árbol."
+        )
+    
+    # Mover formularios a la categoría padre o a null
+    forms = db.query(Form).filter(Form.id_category == category_id).all()
+    for form in forms:
+        form.id_category = category.parent_id
+    
+    try:
+        # Si force=True, las subcategorías se eliminan en cascada
+        db.delete(category)
+        db.commit()
+        return {"message": "Categoría eliminada exitosamente", "forms_moved": len(forms)}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al eliminar la categoría: {str(e)}"
+        )
 
-# Obtener formularios sin categoría
-def get_forms_without_category(db: Session):
-    return db.query(Form).filter(Form.id_category.is_(None)).all()
+# Obtener ruta completa (breadcrumb)
+def get_category_path(db: Session, category_id: int) -> List[FormCategoryResponse]:
+    path = []
+    current = db.query(FormCategory).filter(FormCategory.id == category_id).first()
+    
+    while current:
+        path.insert(0, current)
+        if current.parent_id:
+            current = db.query(FormCategory).filter(FormCategory.id == current.parent_id).first()
+        else:
+            break
+    
+    return path

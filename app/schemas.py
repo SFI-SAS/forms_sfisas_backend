@@ -649,10 +649,24 @@ class UserCategoryResponse(BaseModel):
 class UpdateUserCategory(BaseModel):
     id_category: Optional[int] = None
     
-    
 class FormCategoryBase(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = None
+    parent_id: Optional[int] = None
+    icon: Optional[str] = None
+    color: Optional[str] = None
+    order: int = 0
+    
+class FormCategoryUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    description: Optional[str] = None
+    parent_id: Optional[int] = None
+    icon: Optional[str] = None
+    color: Optional[str] = None
+    order: Optional[int] = None
+class FormCategoryMove(BaseModel):
+    new_parent_id: Optional[int] = None
+    new_order: Optional[int] = None
 
 # Esquema para crear categoría
 class FormCategoryCreate(FormCategoryBase):
@@ -663,19 +677,48 @@ class UpdateFormCategory(BaseModel):
     id_category: Optional[int] = None
 
 # Esquema de respuesta para categoría
-class FormCategoryResponse(FormCategoryBase):
+class FormCategoryResponse(BaseModel):
     id: int
+    name: str
+    description: Optional[str]
+    parent_id: Optional[int]
+    icon: Optional[str]
+    color: Optional[str]
+    order: int
+    created_at: datetime
+    updated_at: Optional[datetime]
+    
+    # Contadores útiles
+    forms_count: int = 0
+    children_count: int = 0
     
     class Config:
         from_attributes = True
 
-# Esquema para respuesta con formularios incluidos
+class FormCategoryResponse(BaseModel):
+    # Asumo que estos campos están presentes o son similares en tu modelo base:
+    id: int
+    name: str
+    parent_id: Optional[int] = None
+    
+    order: Optional[int] = None # Acepta int O None, lo que resuelve el error 500.
+    
+    class Config:
+        from_attributes = True
+
+# Tu clase FormCategoryTreeResponse quedaría igual, ya que hereda la solución:
+class FormCategoryTreeResponse(FormCategoryResponse):
+    children: List['FormCategoryTreeResponse'] = []
+    forms: List['FormResponse'] = [] 
+
+FormCategoryTreeResponse.model_rebuild()
+
+# Tu clase FormCategoryWithFormsResponse también se beneficia:
 class FormCategoryWithFormsResponse(FormCategoryResponse):
     forms: List['FormResponse'] = []
-    
+     
     class Config:
         from_attributes = True
-
 # Esquema básico de formulario para evitar importación circular
 class FormBasicResponse(BaseModel):
     id: int
