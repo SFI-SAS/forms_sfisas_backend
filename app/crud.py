@@ -5169,7 +5169,7 @@ def get_category_tree(db: Session) -> List[FormCategoryTreeResponse]:
         )
         
         # Recursivamente construir hijos
-        for child in sorted(category.children, key=lambda x: (x.order, x.name)):
+        for child in sorted(category.children, key=lambda x: (x.order or 0, x.name)):
             response.children.append(build_tree(child))
         
         return response
@@ -5182,7 +5182,7 @@ def get_categories_by_parent(db: Session, parent_id: Optional[int] = None):
     return query.order_by(FormCategory.order, FormCategory.name).all()
 
 # Actualizar categoría
-def update_form_category(db: Session, category_id: int, category_update: FormCategoryUpdate):
+def update_form_category_1(db: Session, category_id: int, category_update: FormCategoryUpdate):
     category = db.query(FormCategory).filter(FormCategory.id == category_id).first()
     
     if not category:
@@ -5245,7 +5245,7 @@ def is_descendant(db: Session, category_id: int, potential_parent_id: int) -> bo
 
 # Mover categoría
 def move_category(db: Session, category_id: int, move_data: FormCategoryMove):
-    return update_form_category(
+    return update_form_category_1(
         db, 
         category_id, 
         FormCategoryUpdate(

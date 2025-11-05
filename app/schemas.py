@@ -338,6 +338,11 @@ class FormatType(str, Enum):
     abierto = "abierto"
     cerrado = "cerrado"
 
+class FormatTypeEdit(str, Enum):
+    abierto = "abierto"
+    cerrado = "cerrado"
+    semi_abierto = "semi_abierto"  # ← Guión bajo
+    
 class ApproverSchema(BaseModel):
     user_id: int
     sequence_number: int = Field(default=1)
@@ -705,6 +710,11 @@ class FormCategoryResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+class UpdateFormBasicInfo(BaseModel):
+    title: Optional[str] = Field(None, max_length=255, min_length=1)
+    description: Optional[str] = Field(None, max_length=255)
+    format_type: Optional[FormatTypeEdit] = None
 
 # Tu clase FormCategoryTreeResponse quedaría igual, ya que hereda la solución:
 class FormCategoryTreeResponse(FormCategoryResponse):
