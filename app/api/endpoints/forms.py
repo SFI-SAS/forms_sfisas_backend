@@ -1528,7 +1528,69 @@ def create_form_close_config(config: FormCloseConfigCreate, db: Session = Depend
     
     return new_config
 
+# Agregar estos endpoints en tu archivo de rutas de forms
 
+@router.get("/form_close_config/{form_id}", response_model=FormCloseConfigOut)
+def get_form_close_config(form_id: int, db: Session = Depends(get_db)):
+    """
+    Obtiene la configuración de cierre de un formulario específico
+    """
+    config = db.query(FormCloseConfig).filter(FormCloseConfig.form_id == form_id).first()
+    
+    if not config:
+        raise HTTPException(status_code=404, detail="No se encontró configuración de cierre para este formulario")
+    
+    return config
+
+
+@router.put("/form_close_config/{form_id}", response_model=FormCloseConfigOut)
+def update_form_close_config(
+    form_id: int,
+    config: FormCloseConfigCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Actualiza la configuración de cierre de un formulario
+    """
+    existing_config = db.query(FormCloseConfig).filter(FormCloseConfig.form_id == form_id).first()
+    
+    if not existing_config:
+        raise HTTPException(status_code=404, detail="No existe configuración de cierre para este formulario")
+    
+    # Validaciones
+    if config.send_download_link and not config.download_link_recipient:
+        raise HTTPException(status_code=400, detail="Se requiere destinatario para enviar enlace de descarga.")
+    
+    if config.send_pdf_attachment and not config.email_recipient:
+        raise HTTPException(status_code=400, detail="Se requiere destinatario para enviar PDF como adjunto.")
+    
+    if config.generate_report and not config.report_recipient:
+        raise HTTPException(status_code=400, detail="Se requiere destinatario para generar reporte.")
+    
+    # Actualizar campos
+    for key, value in config.dict().items():
+        setattr(existing_config, key, value)
+    
+    db.commit()
+    db.refresh(existing_config)
+    
+    return existing_config
+
+
+@router.delete("/form_close_config/{form_id}")
+def delete_form_close_config(form_id: int, db: Session = Depends(get_db)):
+    """
+    Elimina la configuración de cierre de un formulario
+    """
+    config = db.query(FormCloseConfig).filter(FormCloseConfig.form_id == form_id).first()
+    
+    if not config:
+        raise HTTPException(status_code=404, detail="No existe configuración de cierre para este formulario")
+    
+    db.delete(config)
+    db.commit()
+    
+    return {"message": "Configuración de cierre eliminada exitosamente"}
 UPLOAD_FOLDER = "logo"
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
 
