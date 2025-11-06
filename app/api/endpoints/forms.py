@@ -1957,13 +1957,6 @@ def update_form_basic_info(
             detail="Formulario no encontrado"
         )
 
-    # Verificar que el usuario actual sea el propietario del formulario
-    if form.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo el propietario del formulario puede editarlo"
-        )
-
     # Validar que al menos un campo esté presente
     if form_data.title is None and form_data.description is None and form_data.format_type is None:
         raise HTTPException(
