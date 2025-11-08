@@ -87,6 +87,7 @@ class Form(Base):
     
     # Nuevo campo para categoría
     id_category = Column(BigInteger, ForeignKey('form_categories.id'), nullable=True)
+    is_enabled = Column(Boolean, nullable=False, default=True, server_default='1')
     
     # Relaciones existentes
     user = relationship('User', back_populates='forms')

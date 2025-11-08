@@ -1075,6 +1075,7 @@ def get_all_forms(db: Session):
             "title": form.title,
             "description": form.description,
             "format_type": form.format_type.value,
+            "is_enabled": form.is_enabled,
             "created_at": form.created_at,
             "category": {
                 "id": form.category.id,
@@ -1171,6 +1172,7 @@ def get_forms_by_approver(db: Session, user_id: int):
             "format_type": form.format_type,
             "created_at": form.created_at,
             "id_category": form.id_category,
+            "is_enabled": form.is_enabled,
             "category": {
                 "id": form.category.id,
                 "name": form.category.name,
@@ -5301,3 +5303,31 @@ def get_category_path(db: Session, category_id: int) -> List[FormCategoryRespons
             break
     
     return path
+
+def toggle_form_status(db: Session, form_id: int, is_enabled: bool):
+    """
+    Habilita o deshabilita un formulario.
+    Solo administradores pueden usar esta función.
+    """
+
+        # Buscar el formulario
+    form = db.query(Form).filter(Form.id == form_id).first()
+        
+    if not form:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Form with id {form_id} not found"
+            )
+        
+        # Actualizar el estado
+    form.is_enabled = is_enabled
+    db.commit()
+    db.refresh(form)
+        
+    return {
+            "message": f"Form {'enabled' if is_enabled else 'disabled'} successfully",
+            "form_id": form.id,
+            "title": form.title,
+            "is_enabled": form.is_enabled
+        }
+        

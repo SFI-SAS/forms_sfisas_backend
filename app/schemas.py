@@ -749,6 +749,7 @@ class FormResponse(BaseModel):
     created_at: datetime
     user_id: int
     id_category: Optional[int] = None
+    is_enabled: bool = True
     category: Optional[FormCategoryResponse] = None
     
     class Config:
@@ -838,3 +839,13 @@ class RequiredFormsResponse(BaseModel):
     approver: Dict[str, Any]
     required_forms: List[Dict[str, Any]]
     summary: Dict[str, Any]
+    
+class FormStatusUpdate(BaseModel):
+    is_enabled: bool
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "is_enabled": False
+            }
+        }
