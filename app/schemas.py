@@ -299,6 +299,7 @@ class AnswerSchema(BaseModel):
     answer_text: Optional[str]
     file_path: Optional[str]
     question: QuestionSchema  # ← Aquí se incluye la pregunta
+    question_index: int = 0 
 
 
 

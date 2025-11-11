@@ -310,21 +310,8 @@ def get_responses_with_answers(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Obtiene todas las respuestas completadas por el usuario autenticado para un formulario específico,
-    incluyendo sus respuestas, aprobaciones y estado de revisión.
-    Maneja el historial de respuestas para mostrar solo las más recientes.
-
-    Args:
-        form_id (int): ID del formulario del cual se desean obtener las respuestas.
-        db (Session): Sesión activa de la base de datos.
-        current_user (User): Usuario autenticado.
-
-    Returns:
-        List[dict]: Lista de respuestas con sus respectivos detalles de aprobación y respuestas a preguntas.
-
-    Raises:
-        HTTPException: 403 si no hay un usuario autenticado.
-        HTTPException: 404 si no se encuentran respuestas.
+    ⭐ Devuelve TODAS las respuestas, ordenadas por question_index y repeat_instance
+    Incluye question_index para manejar preguntas repetidas correctamente
     """
     if not current_user:
         raise HTTPException(
@@ -348,34 +335,23 @@ def get_responses_with_answers(
 
     # Función auxiliar para procesar respuestas de reconocimiento facial
     def process_regisfacial_answer(answer_text, question_type):
-        """
-        Procesa las respuestas de tipo regisfacial para mostrar un texto descriptivo
-        del registro facial guardado en lugar del JSON completo de faceData
-        """
         if question_type != "regisfacial" or not answer_text:
             return answer_text
         
         try:
-            # Intentar parsear el JSON
             face_data = json.loads(answer_text)
-            
-            # Buscar en diferentes estructuras posibles
             person_name = "Usuario"
             success = False
             
-            # Estructura 1: {"faceData": {"success": true, "personName": "..."}}
             if isinstance(face_data, dict) and "faceData" in face_data:
                 face_info = face_data["faceData"]
                 if isinstance(face_info, dict):
                     success = face_info.get("success", False)
                     person_name = face_info.get("personName", "Usuario")
-            
-            # Estructura 2: directamente {"success": true, "personName": "..."}
             elif isinstance(face_data, dict):
                 success = face_data.get("success", False)
                 person_name = face_data.get("personName", face_data.get("person_name", "Usuario"))
             
-            # Buscar también otras variantes de nombres
             if person_name == "Usuario":
                 person_name = face_data.get("name", face_data.get("user_name", "Usuario"))
             
@@ -385,56 +361,17 @@ def get_responses_with_answers(
                 return f"Error en el registro de datos biométricos de {person_name}"
             
         except (json.JSONDecodeError, KeyError, TypeError):
-            # Si hay error al parsear JSON, devolver un mensaje genérico
             return "Datos biométricos procesados"
-
-    # Obtener todos los response_ids para buscar el historial
-    response_ids = [response.id for response in responses]
-    
-    # Obtener historiales de respuestas
-    histories = db.query(AnswerHistory).filter(AnswerHistory.response_id.in_(response_ids)).all()
-    
-    # Obtener todos los IDs de respuestas (previous y current) del historial
-    all_answer_ids = set()
-    for history in histories:
-        if history.previous_answer_id:
-            all_answer_ids.add(history.previous_answer_id)
-        all_answer_ids.add(history.current_answer_id)
-    
-    # Obtener todas las respuestas del historial con sus preguntas
-    historical_answers = {}
-    if all_answer_ids:
-        historical_answer_list = (
-            db.query(Answer)
-            .options(joinedload(Answer.question))
-            .filter(Answer.id.in_(all_answer_ids))
-            .all()
-        )
-        
-        # Crear mapeo de answer_id -> Answer
-        for answer in historical_answer_list:
-            historical_answers[answer.id] = answer
-    
-    # Crear mapeo de current_answer_id -> history
-    history_map = {}
-    # Crear conjunto de previous_answer_ids para saber cuáles no mostrar individualmente
-    previous_answer_ids = set()
-    
-    for history in histories:
-        history_map[history.current_answer_id] = history
-        if history.previous_answer_id:
-            previous_answer_ids.add(history.previous_answer_id)
 
     result = []
     for r in responses:
         approval_result = get_response_approval_status(r.approvals)
 
-        # Obtener respuestas actuales (excluyendo las que son previous_answer_ids)
-        current_answers = []
-        for answer in r.answers:
-            # Solo incluir respuestas que no sean previous_answer_ids (es decir, las más recientes)
-            if answer.id not in previous_answer_ids:
-                current_answers.append(answer)
+        # ✅ ORDENAR POR question_id, question_index y repeat_instance
+        current_answers = sorted(
+            r.answers,
+            key=lambda x: (x.question_id, x.question_index or 0)
+        )
 
         result.append({
             "response_id": r.id,
@@ -452,12 +389,12 @@ def get_responses_with_answers(
             "answers": [
                 {
                     "id_answer": a.id,
-                    "repeated_id": r.repeated_id,
                     "question_id": a.question.id,
                     "question_text": a.question.question_text,
                     "question_type": a.question.question_type,
                     "answer_text": process_regisfacial_answer(a.answer_text, a.question.question_type),
-                    "file_path": a.file_path
+                    "file_path": a.file_path,
+                    "question_index": a.question_index or 0,  # ✅ AGREGAR question_index
                 }
                 for a in current_answers
             ],
@@ -1968,7 +1905,6 @@ async def get_response_details_json(
         # Preparar respuesta JSON
         response_data = {
             'response_id': response.id,
-            'repeated_id': response.repeated_id,
             'submitted_at': response.submitted_at.isoformat() if response.submitted_at else None,
             'approval_status': approval_result["status"],
             'message': approval_result["message"],
