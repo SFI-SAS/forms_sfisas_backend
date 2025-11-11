@@ -4,15 +4,15 @@ from io import BytesIO
 import json
 import os
 import pytz
-from sqlalchemy import and_, exists, func, not_, select
+from sqlalchemy import and_, exists, func, not_, or_, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
-from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, NotificationResponse, PostCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, PalabrasClave, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationBitacora, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, NotificationResponse, PalabrasClaveCreate, PostCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
@@ -853,6 +853,37 @@ async def create_answer_in_db(
                 db.add(new_answer)
                 db.flush()
                 created_answers.append(new_answer)
+                if answer.relation_bitacora_id:
+                        # 🔹 1. Obtener la relación bitácora
+                        relation = db.query(RelationBitacora).filter(RelationBitacora.id == answer.relation_bitacora_id).first()
+                        if not relation:
+                            raise HTTPException(status_code=404, detail="RelationBitacora no encontrada")
+
+                        # 🔹 2. Obtener la respuesta relacionada
+                        response = db.query(Response).filter(Response.id == relation.id_response).first()
+                        if not response:
+                            raise HTTPException(status_code=404, detail="Response no encontrada")
+
+                        # 🔹 3. Obtener el formulario (nombre del formato)
+                        form = db.query(Form).filter(Form.id == response.form_id).first()
+                        name_format = form.title if form else "Desconocido"
+
+                        # 🔹 4. Obtener el usuario (nombre del usuario que envió la respuesta)
+                        user = db.query(User).filter(User.id == response.user_id).first()
+                        name_user = user.name if user else "Desconocido"
+
+                        # 🔹 5. Obtener la pregunta original
+                        question_obj = db.query(Question).filter(Question.id == question_id).first()
+
+                        if question_obj:
+                            bitacora_entry = QuestionAndAnswerBitacora(
+                                id_relation_bitacora=answer.relation_bitacora_id,
+                                name_format=name_format,
+                                name_user=name_user,
+                                question=question_obj.question_text,
+                                answer=text
+                            )
+                            db.add(bitacora_entry)
 
             db.commit()
             for ans in created_answers:
@@ -5350,3 +5381,366 @@ def toggle_form_status(db: Session, form_id: int, is_enabled: bool):
             "is_enabled": form.is_enabled
         }
         
+
+def crear_palabras_clave_service(data: PalabrasClaveCreate, db: Session):
+    """
+    Crea un nuevo registro en la tabla form_palabras_clave.
+    """
+    keywords_str = ",".join([k.strip() for k in data.keywords if k.strip()])
+
+    nueva_palabra = PalabrasClave(
+        form_id=data.form_id,
+        keywords=keywords_str
+    )
+
+    db.add(nueva_palabra)
+    db.commit()
+    db.refresh(nueva_palabra)
+
+    return nueva_palabra
+
+def create_bitacora_log_simple(db: Session, data: BitacoraLogsSimpleCreate, current_user: User):
+    """
+    Crea un registro en la tabla bitacora_logs_simple.
+    """
+    registrado_por = f"{current_user.name} - {current_user.num_document}"
+
+    new_log = BitacoraLogsSimple(
+        titulo=data.titulo,
+        fecha=data.fecha,
+        hora=data.hora,
+        ubicacion=data.ubicacion,
+        participantes=data.participantes,
+        descripcion=data.descripcion,
+        archivos=json.dumps(data.archivos) if data.archivos else None,
+        registrado_por=registrado_por
+    )
+
+    try:
+        db.add(new_log)
+        db.commit()
+        db.refresh(new_log)
+        return new_log
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Error de integridad en base de datos: {str(e.orig)}"
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creando registro: {str(e)}"
+        )
+    
+def response_bitacora_log_simple(db: Session, data: BitacoraLogsSimpleCreate, current_user: User):
+    """
+    Crea un registro en la tabla bitacora_logs_simple.
+    """
+    registrado_por = f"{current_user.name}-{current_user.num_document}"
+
+    new_log = BitacoraLogsSimple(
+        titulo=data.titulo,
+        fecha=data.fecha,
+        hora=data.hora,
+        ubicacion=data.ubicacion,
+        participantes=data.participantes,
+        descripcion=data.descripcion,
+        archivos=json.dumps(data.archivos) if data.archivos else None,
+        registrado_por=registrado_por
+    )
+
+    try:
+        db.add(new_log)
+        db.commit()
+        db.refresh(new_log)
+        return new_log
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Error de integridad en base de datos: {str(e.orig)}"
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creando registro: {str(e)}"
+        )
+
+
+def get_all_bitacora_eventos(db: Session):
+    """
+    Obtiene todos los registros de la tabla bitacora_eventos.
+    """
+    try:
+        logs = db.query(BitacoraLogsSimple).order_by(BitacoraLogsSimple.created_at.desc()).all()
+        return logs
+    except Exception as e:
+        print(f"⚠️ Error al obtener bitácora: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al obtener los registros de bitácora."
+        )
+    
+def get_bitacora_eventos_by_user(db: Session, user_identifier: str):
+    """
+    Obtiene los eventos donde el usuario autenticado:
+    - Es el creador (registrado_por)
+    - O aparece como participante (campo participantes)
+    """
+    try:
+        logs = (
+            db.query(BitacoraLogsSimple)
+            .filter(
+                or_(
+                    BitacoraLogsSimple.registrado_por.ilike(f"%{user_identifier}%"),
+                    and_(
+                        BitacoraLogsSimple.participantes.isnot(None),
+                        BitacoraLogsSimple.participantes.ilike(f"%{user_identifier}%")
+                    )
+                )
+            )
+            .order_by(BitacoraLogsSimple.created_at.desc())
+            .all()
+        )
+
+        # 🔹 Eliminar duplicados por si un usuario aparece en ambos roles
+        unique_logs = {log.id: log for log in logs}.values()
+
+        return list(unique_logs)
+
+    except Exception as e:
+        print(f"⚠️ Error al obtener bitácora del usuario: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al obtener los registros de bitácora del usuario."
+        )
+    
+def get_all_bitacora_formatos(db: Session):
+    """
+    Obtiene todos los registros de la bitácora con:
+    - Formato (título)
+    - Categoría del formato
+    - Usuario que respondió
+    - Preguntas y respuestas asociadas
+    """
+    bitacoras = db.query(RelationBitacora).all()
+    data = []
+
+    for rel in bitacoras:
+        response = db.query(Response).filter(Response.id == rel.id_response).first()
+        if not response:
+            continue
+
+        user = db.query(User).filter(User.id == response.user_id).first()
+        form = db.query(Form).filter(Form.id == response.form_id).first()
+
+        # ✅ Obtener la categoría del formato (si existe)
+        categoria_form = None
+        if form and form.id_category:
+            categoria_obj = db.query(FormCategory).filter(FormCategory.id == form.id_category).first()
+            categoria_form = categoria_obj.name if categoria_obj else "Sin categoría"
+        
+          # ✅ Obtener las palabras clave del formato
+        palabras_obj = (
+            db.query(PalabrasClave)
+            .filter(PalabrasClave.form_id == form.id)
+            .first()
+            if form else None
+        )
+        palabras_clave = palabras_obj.keywords.split(",") if palabras_obj and palabras_obj.keywords else []
+
+
+        # ✅ Obtener todas las preguntas y respuestas asociadas
+        qa_items = db.query(QuestionAndAnswerBitacora).filter(
+            QuestionAndAnswerBitacora.id_relation_bitacora == rel.id
+        ).all()
+
+        preguntas_respuestas = [
+            {"pregunta": qa.question, "respuesta": qa.answer} for qa in qa_items
+        ]
+
+        # ✅ Construir el objeto de salida
+        data.append({
+            "id": rel.id,
+            "formato": form.title if form else "Desconocido",
+            "categoria_form": categoria_form or "Sin categoría",
+            "usuario": user.name if user else "Anónimo",
+            "respuestas": preguntas_respuestas,
+            "palabras_clave": palabras_clave, 
+            "created_at": rel.created_at,
+        })
+
+    return data
+
+def atender_y_finalizar_service(evento_id: int, usuario: str, num_document: str, db: Session):
+    """Marca un evento como atendido y finalizado por un usuario."""
+    evento = db.query(BitacoraLogsSimple).filter(BitacoraLogsSimple.id == evento_id).first()
+
+    if not evento:
+        raise ValueError("Evento no encontrado")
+
+    if not usuario or not num_document:
+        raise ValueError("Datos del usuario incompletos")
+
+    try:
+        evento.estado = EstadoEvento.finalizado
+        evento.atendido_por = f"{usuario} - {num_document}"
+        evento.updated_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(evento)
+        return evento
+    except Exception as e:
+        db.rollback()
+        raise RuntimeError(f"Error al actualizar el evento: {e}")
+    
+def reabrir_evento_service(evento_id: int, usuario: str, num_document: str, db: Session):
+    """Cambia el estado del evento a 'pendiente' y registra quién lo reabrió."""
+    evento = db.query(BitacoraLogsSimple).filter(BitacoraLogsSimple.id == evento_id).first()
+
+    if not evento:
+        raise ValueError("Evento no encontrado")
+
+    if evento.estado == EstadoEvento.pendiente:
+        raise ValueError("El evento ya está en estado pendiente")
+
+    try:
+        evento.estado = EstadoEvento.pendiente
+        evento.atendido_por = f"{usuario} - {num_document}"
+        evento.updated_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(evento)
+        return evento
+    except Exception as e:
+        db.rollback()
+        raise RuntimeError(f"Error al reabrir el evento: {e}")
+
+
+def response_bitacora_log_simple(db: Session, log_data, current_user, evento_id: int):
+    """
+    Marca un evento como atendido y crea una respuesta asociada.
+    """
+
+    # 1️⃣ Buscar el evento original
+    evento = db.query(BitacoraLogsSimple).filter(BitacoraLogsSimple.id == evento_id).first()
+    if not evento:
+        raise HTTPException(status_code=404, detail="Evento original no encontrado")
+
+    # 2️⃣ Marcar el evento original como respondido
+    evento.estado = EstadoEvento.respondido
+    evento.atendido_por = f"{current_user.name} - {current_user.num_document}"
+    evento.updated_at = datetime.utcnow()
+
+    # 3️⃣ Determinar los participantes del nuevo evento
+    # Autor original del evento
+    participante_original = evento.registrado_por
+
+    # Participantes enviados desde el front (puede venir en string, lista, o None)
+    participantes_nuevos = []
+
+    if log_data.participantes:
+        # Si viene como string, convertir en lista
+        if isinstance(log_data.participantes, str):
+            # Si es un string separado por comas, lo convertimos
+            participantes_nuevos = [p.strip() for p in log_data.participantes.split(",") if p.strip()]
+        elif isinstance(log_data.participantes, list):
+            participantes_nuevos = log_data.participantes
+
+    # Agregar el autor original si no está ya incluido
+    if participante_original not in participantes_nuevos:
+        participantes_nuevos.append(participante_original)
+
+    # Convertir a string final (unificado por comas)
+    participantes_final = ", ".join(participantes_nuevos)
+
+    # 4️⃣ Crear el nuevo evento como respuesta
+    nueva_respuesta = BitacoraLogsSimple(
+        titulo=log_data.titulo,
+        fecha=log_data.fecha,
+        hora=log_data.hora,
+        ubicacion=log_data.ubicacion,
+        participantes=participantes_final,  # ✅ aquí va la lista actualizada
+        descripcion=log_data.descripcion,
+        archivos=json.dumps(log_data.archivos) if log_data.archivos else None,
+        registrado_por=f"{current_user.name} - {current_user.num_document}",
+        estado=EstadoEvento.pendiente,
+        evento_responde_id=evento.id
+    )
+
+    db.add(nueva_respuesta)
+    db.commit()
+    db.refresh(nueva_respuesta)
+
+    return {
+        "evento_atendido": {
+            "id": evento.id,
+            "titulo": evento.titulo,
+            "estado": evento.estado.value,
+            "atendido_por": evento.atendido_por,
+            "updated_at": evento.updated_at,
+        },
+        "respuesta_creada": {
+            "id": nueva_respuesta.id,
+            "titulo": nueva_respuesta.titulo,
+            "estado": nueva_respuesta.estado.value,
+            "registrado_por": nueva_respuesta.registrado_por,
+            "participantes": nueva_respuesta.participantes,  # ✅ mostramos resultado final
+            "evento_responde_id": nueva_respuesta.evento_responde_id,
+            "created_at": nueva_respuesta.created_at,
+        },
+    }
+
+
+def obtener_conversacion_completa(db: Session, evento_id: int):
+    """
+    Devuelve el evento raíz y todas sus respuestas (en orden de creación),
+    incluyendo todos los campos relevantes y archivos adjuntos.
+    """
+
+    evento = db.query(BitacoraLogsSimple).filter(BitacoraLogsSimple.id == evento_id).first()
+    if not evento:
+        return None
+
+    # 🔁 Si este evento es una respuesta, buscamos la raíz
+    while evento.evento_responde_id:
+        evento = db.query(BitacoraLogsSimple).filter(BitacoraLogsSimple.id == evento.evento_responde_id).first()
+
+    # 🧩 Función recursiva para construir el árbol de respuestas
+    def build_tree(ev: BitacoraLogsSimple):
+        respuestas = (
+            db.query(BitacoraLogsSimple)
+            .filter(BitacoraLogsSimple.evento_responde_id == ev.id)
+            .order_by(BitacoraLogsSimple.created_at.asc())
+            .all()
+        )
+
+        # ✅ Convertimos los archivos desde JSON si existen
+        archivos = []
+        if ev.archivos:
+            try:
+                archivos = json.loads(ev.archivos)
+            except json.JSONDecodeError:
+                archivos = [ev.archivos]  # fallback si no está en formato JSON
+
+        return {
+            "id": ev.id,
+            "titulo": ev.titulo,
+            "descripcion": ev.descripcion,
+            "fecha": ev.fecha,
+            "hora": ev.hora,
+            "ubicacion": ev.ubicacion,
+            "participantes": ev.participantes,
+            "registrado_por": ev.registrado_por,
+            "atendido_por": ev.atendido_por,
+            "estado": ev.estado.value if hasattr(ev.estado, "value") else ev.estado,
+            "archivos": archivos,
+            "created_at": ev.created_at,
+            "updated_at": ev.updated_at,
+            "respuestas": [build_tree(r) for r in respuestas],
+        }
+
+    return build_tree(evento)

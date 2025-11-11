@@ -1336,3 +1336,258 @@ async def get_regisfacial_answers(db: Session = Depends(get_db),current_user: Us
             status_code=500, 
             detail=f"Error al obtener las respuestas: {str(e)}"
         )
+        
+@router.post("/save-answers/")
+async def create_answer(
+    request: Request,
+    answer: PostCreate,
+    action: str = Query("send", enum=["send", "send_and_close"]),  # NUEVO
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    LÓGICA SIMPLE:
+    - action="send": Guarda respuestas SIN enviar emails
+    - action="send_and_close": Guarda respuestas Y envía emails si corresponde
+    - Para formato cerrado: IGNORA action, siempre envía emails
+    """
+    if current_user == None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No permission")
+
+    # Obtener formato del formulario
+    response = db.query(Response).filter(Response.id == answer.response_id).first()
+    if not response:
+        raise HTTPException(status_code=404, detail="Response not found")
+    
+    form = db.query(Form).filter(Form.id == response.form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Form not found")
+
+    # REGLA SIMPLE:
+    # - Cerrado = siempre enviar emails
+    # - Abierto/Semi_abierto = enviar solo si action="send_and_close"
+    send_emails = (form.format_type == FormatType.cerrado) or (action == "send_and_close")
+
+    new_answer = await create_answer_in_db(answer, db, current_user, request, send_emails)
+    return {"message": "Answer created", "answer": new_answer}
+
+@router.post("/bitacora/logs-simple", summary="Crear registro en bitácora simple")
+def create_bitacora_log_endpoint(
+    log_data: BitacoraLogsSimpleCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Endpoint: crea un registro en la tabla bitacora_logs_simple.
+    """
+    new_log = create_bitacora_log_simple(db, log_data, current_user)
+    return {
+        "message": "✅ Registro creado exitosamente",
+        "data": new_log
+    }
+
+@router.get("/bitacora/eventos")
+def get_bitacora_eventos(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Devuelve todos los registros de la tabla bitacora_eventos.
+    Solo accesible si el usuario tiene asign_bitacora = True.
+    """
+    # 🔐 Verificar si el usuario tiene permiso
+    if not current_user.asign_bitacora:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permisos para ver los registros de bitácora."
+        )
+
+    try:
+        logs = get_all_bitacora_eventos(db)
+        return {
+            "message": "Registros obtenidos exitosamente",
+            "data": logs
+        }
+    except Exception as e:
+        print(f"⚠️ Error al obtener bitácora: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al obtener los registros de bitácora."
+        )
+
+
+@router.get("/bitacora/mis-eventos", summary="Obtener los eventos creados por el usuario autenticado")
+def get_mis_eventos(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Devuelve solo los registros de bitácora creados por el usuario autenticado.
+    """
+    logs = get_bitacora_eventos_by_user(db, str(current_user.num_document))
+
+    return {
+        "message": "✅ Registros del usuario autenticado obtenidos correctamente",
+        "data": logs
+    }
+
+@router.put("/eventos/{evento_id}/finalizar", summary="Atender y finalizar evento")
+def atender_y_finalizar(evento_id: int, db: Session = Depends(get_db), user = Depends(get_current_user)):
+    try:
+        evento = atender_y_finalizar_service(evento_id, user.name, user.num_document, db)
+        return {"message": "✅ Evento finalizado correctamente", "data": evento}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al finalizar el evento: {e}")
+    
+@router.put("/eventos/{evento_id}/reabrir", summary="Reabrir conversación del evento")
+def reabrir_evento(evento_id: int, db: Session = Depends(get_db), user = Depends(get_current_user)):
+    """
+    Permite reabrir una conversación previamente finalizada.
+    Cambia el estado del evento a 'pendiente' y actualiza el usuario que la reabre.
+    """
+    try:
+        evento = reabrir_evento_service(evento_id, user.name, user.num_document, db)
+        return {"message": "🔄 Conversación reabierta correctamente", "data": evento}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al reabrir el evento: {e}")
+
+
+@router.post("/eventos/{evento_id}/response", summary="Crear una respuesta a una bitácora simple")
+def create_bitacora_log_endpoint(
+    log_data: BitacoraLogsSimpleCreate,
+    evento_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Endpoint: crea un registro en la tabla bitacora_logs_simple.
+    """
+    new_log = response_bitacora_log_simple(db, log_data, current_user, evento_id)
+    return {
+        "message": "✅ respuesta creado exitosamente",
+        "data": new_log
+    }
+
+@router.get("/bitacora/conversacion/{evento_id}", response_model=BitacoraResponse)
+def obtener_conversacion(evento_id: int, db: Session = Depends(get_db)):
+    conversacion = obtener_conversacion_completa(db, evento_id)
+    if not conversacion:
+        raise HTTPException(status_code=404, detail="Evento no encontrado")
+    return conversacion
+
+@router.get("/bitacora/formatos")
+def get_bitacora_formatos(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Devuelve la bitácora de formatos con:
+    - Formato (título)
+    - Usuario que respondió
+    - Preguntas y respuestas asociadas
+
+    ⚠️ Solo los usuarios con asign_bitacora = True pueden acceder.
+    """
+    # ✅ Verificar si el usuario tiene permiso para ver la bitácora
+    if not current_user.asign_bitacora:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para acceder a la bitácora de formatos."
+        )
+
+    try:
+        results = get_all_bitacora_formatos(db)
+        return {"message": "Bitácora de formatos obtenida exitosamente", "data": results}
+
+    except Exception as e:
+        print(f"⚠️ Error al obtener bitácora de formatos: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al obtener la bitácora de formatos."
+        )
+
+@router.post("/crear-palabras-clave", summary="Crear palabras clave")
+def crear_palabras_clave(
+    data: PalabrasClaveCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)  # ✅ Se valida el token
+):
+    """
+    Crea un nuevo registro de palabras clave (solo para admin o creator).
+    """
+
+    if str(current_user.user_type.value) not in ["admin", "creator"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permisos para crear palabras clave."
+        )
+
+    
+    try:
+        nueva_palabra = crear_palabras_clave_service(data, db)
+        return {
+            "message": "✅ Palabras clave registradas correctamente",
+            "data": {
+                "id": nueva_palabra.id,
+                "form_id": nueva_palabra.form_id,
+                "keywords": nueva_palabra.keywords.split(",")
+            }
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al registrar palabras clave: {e}")
+    
+@router.get("/obtener-palabras-clave", summary="Obtener todas las palabras clave")
+def obtener_palabras_clave(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)  # 👈 valida el token
+):
+    """
+    Retorna todas las palabras clave con su formulario y categoría asociada.
+    Solo accesible para usuarios autenticados con roles 'user', 'admin' o 'creator'.
+    """
+    # 🔐 Validar roles permitidos
+    if str(current_user.user_type.value) not in ["user", "admin", "creator"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permisos para acceder a las palabras clave."
+        )
+
+    try:
+        # 🔹 Join con Form y FormCategory
+        palabras = (
+            db.query(PalabrasClave, Form, FormCategory)
+            .join(Form, Form.id == PalabrasClave.form_id)
+            .outerjoin(FormCategory, Form.id_category == FormCategory.id)  # outer join por si no tiene categoría
+            .all()
+        )
+
+        data = [
+            {
+                "id": p.PalabrasClave.id,
+                "form_id": p.PalabrasClave.form_id,
+                "titulo": p.Form.title,
+                "categoria": p.FormCategory.name if p.FormCategory else "Sin categoría",
+                "palabras_clave": [
+                    kw.strip()
+                    for kw in p.PalabrasClave.keywords.split(",")
+                    if kw.strip()
+                ],
+            }
+            for p in palabras
+        ]
+
+        return {
+            "message": "✅ Palabras clave obtenidas correctamente",
+            "data": data,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al obtener palabras clave: {e}"
+        )

@@ -499,3 +499,76 @@ class ResponseApprovalRequirement(Base):
     response = relationship("Response", foreign_keys=[response_id], backref="approval_requirements_status")
     approval_requirement = relationship("ApprovalRequirement", backref="response_requirements")
     fulfilling_response = relationship("Response", foreign_keys=[fulfilling_response_id])
+
+
+
+class RelationBitacora(Base):
+    __tablename__ = "relation_bitacora"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id_response = Column(BigInteger, nullable=False) 
+
+    # Timestamps para auditoría
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+class QuestionAndAnswerBitacora(Base):
+    __tablename__ = "question_and_answer_bitacora"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id_relation_bitacora = Column(BigInteger, ForeignKey("relation_bitacora.id"), nullable=False)
+    name_format = Column(String(255), nullable=False)
+    name_user = Column(String(255), nullable=False)
+    question = Column(String(255), nullable=False)
+    answer = Column(Text, nullable=True)
+
+    # Timestamps para auditoría
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    
+class EstadoEvento(enum.Enum):
+    pendiente = "pendiente"
+    finalizado = "finalizado"
+    respondido = "respondido"
+
+class BitacoraLogsSimple(Base):
+    __tablename__ = "bitacora_logs_simple"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    titulo = Column(String(255), nullable=False)
+    fecha = Column(String(20), nullable=False)
+    hora = Column(String(10), nullable=False)
+    ubicacion = Column(String(255), nullable=True)
+    participantes = Column(Text, nullable=True)
+    descripcion = Column(Text, nullable=True)
+
+    # Nuevo campo
+    archivos = Column(Text, nullable=True)  # Guarda lista JSON de nombres o rutas
+    registrado_por = Column(String(255), nullable=False)  # Ejemplo: "Neider Torres - 1010234567"
+
+        # 👇 Nuevos campos
+    estado = Column(Enum(EstadoEvento), default=EstadoEvento.pendiente, nullable=False)
+    atendido_por = Column(String(255), nullable=True)
+    evento_responde_id = Column(BigInteger, ForeignKey("bitacora_logs_simple.id"), nullable=True)
+
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    # Relación autorreferencial (evento que responde a otro)
+    respuestas = relationship(
+        "BitacoraLogsSimple",
+        backref="evento_padre",
+        remote_side=[id]
+    )
+
+
+class PalabrasClave(Base):
+    __tablename__ = "form_palabras_clave"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, nullable=False) 
+    keywords = Column(String(500), nullable=False)  # Cambié a plural y aumenté el tamaño
+
+    # Timestamps para auditoría
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

@@ -851,3 +851,36 @@ class FormStatusUpdate(BaseModel):
                 "is_enabled": False
             }
         }
+        
+class BitacoraLogsSimpleCreate(BaseModel):
+    titulo: str
+    fecha: str
+    hora: str
+    ubicacion: Optional[str] = None
+    participantes: Optional[str] = None
+    descripcion: Optional[str] = None
+    archivos: Optional[List[str]] = None  # lista de nombres de archivos subidos
+
+class BitacoraResponse(BaseModel):
+    id: int
+    titulo: str
+    descripcion: Optional[str]
+    fecha: str
+    hora: str
+    registrado_por: str
+    estado: str
+    atendido_por: Optional[str]
+    archivos: Optional[List[str]] = [] 
+    created_at: datetime
+    respuestas: List["BitacoraResponse"] = []
+
+    class Config:
+        orm_mode = True
+        arbitrary_types_allowed = True
+
+BitacoraResponse.update_forward_refs()
+
+
+class PalabrasClaveCreate(BaseModel):
+    form_id: int
+    keywords: List[str]  # Lista de palabras clave
