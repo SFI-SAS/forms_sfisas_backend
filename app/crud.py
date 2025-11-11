@@ -12,7 +12,7 @@ from app.api.controllers.mail import send_action_notification_email, send_email_
 from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
 from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, EmailConfig, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, Project, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
-from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, NotificationResponse, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
+from app.schemas import EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, NotificationResponse, PostCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
@@ -819,13 +819,20 @@ def post_create_response(
         "approvers_created": approvers_created
     }
 
-
-async def create_answer_in_db(answer, db: Session, current_user: User, request, send_emails: bool = True):
-    """Modificada para recibir parámetro send_emails"""
+async def create_answer_in_db(
+    answer: PostCreate, 
+    db: Session, 
+    current_user: User, 
+    request, 
+    send_emails: bool = True
+):
+    """
+    Modificada para usar question_index del frontend
+    """
     
     created_answers = []
 
-    # Lógica de guardado existente (sin cambios)
+    # CASO 1: Múltiples respuestas (JSON)
     if isinstance(answer.question_id, str):
         try:
             parsed_answer = json.loads(answer.answer_text)
@@ -834,11 +841,14 @@ async def create_answer_in_db(answer, db: Session, current_user: User, request, 
 
             for question_id_str, text in parsed_answer.items():
                 question_id = int(question_id_str)
+                
+                # ✅ USAR EL ÍNDICE QUE VIENE DEL FRONTEND
                 new_answer = Answer(
                     response_id=answer.response_id,
                     question_id=question_id,
                     answer_text=text,
-                    file_path=answer.file_path
+                    file_path=answer.file_path,
+                    question_index=answer.question_index  # ✅ USAR EL DEL REQUEST
                 )
                 db.add(new_answer)
                 db.flush()
@@ -852,8 +862,14 @@ async def create_answer_in_db(answer, db: Session, current_user: User, request, 
             db.rollback()
             raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
 
+    # CASO 2: Respuesta individual
     elif isinstance(answer.question_id, int):
-        single_answer_result = save_single_answer(answer, db)
+        # ✅ PASAR EL ÍNDICE QUE VIENE DEL FRONTEND
+        single_answer_result = save_single_answer(
+            answer, 
+            db, 
+            answer.question_index  # ✅ USAR EL DEL REQUEST
+        )
         created_answers = [single_answer_result] if single_answer_result else []
     else:
         raise HTTPException(status_code=400, detail="Invalid question_id type")
@@ -879,30 +895,33 @@ async def create_answer_in_db(answer, db: Session, current_user: User, request, 
     if isinstance(answer.question_id, str):
         return {
             "message": "Multiple answers saved",
-            "answers": [{"id": a.id, "question_id": a.question_id} for a in created_answers]
+            "answers": [
+                {
+                    "id": a.id, 
+                    "question_id": a.question_id,
+                    "question_index": a.question_index
+                } 
+                for a in created_answers
+            ]
         }
     else:
-        return created_answers[0] if created_answers else None
- 
-    
-def save_single_answer(answer, db: Session):
-    
-    print(answer.question_id)
-    existing_answer = db.query(Answer).filter(
-        Answer.response_id == answer.response_id,
-        Answer.question_id == answer.question_id
-    ).first()
-
+        return created_answers[0] if created_answers else None   
+def save_single_answer(answer, db, question_index: int = 0):
+    """
+    Guarda una respuesta individual con su question_index
+    """
     new_answer = Answer(
         response_id=answer.response_id,
         question_id=answer.question_id,
         answer_text=answer.answer_text,
-        file_path=answer.file_path
+        file_path=answer.file_path,
+        question_index=question_index  # ✅ USAR EL ÍNDICE PASADO
     )
     db.add(new_answer)
     db.commit()
     db.refresh(new_answer)
-    return {"message": "Respuesta guardada exitosamente", "answer_id": new_answer.id}
+    return new_answer
+
 
 def check_form_data(db: Session, form_id: int):
     """

@@ -67,10 +67,9 @@ def save_response(
 
 @router.post("/save-answers/")
 async def create_answer(
-        request: Request,
+    request: Request,
     answer: PostCreate,
-    action: str = Query("send", enum=["send", "send_and_close"]),  # NUEVO
-
+    action: str = Query("send", enum=["send", "send_and_close"]),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -97,9 +96,10 @@ async def create_answer(
     # - Abierto/Semi_abierto = enviar solo si action="send_and_close"
     send_emails = (form.format_type == FormatType.cerrado) or (action == "send_and_close")
 
+    # ✅ AQUÍ SE LLAMA CON question_index
     new_answer = await create_answer_in_db(answer, db, current_user, request, send_emails)
+    
     return {"message": "Answer created", "answer": new_answer}
-
 
 @router.post("/close-response/{response_id}")
 async def close_response(
