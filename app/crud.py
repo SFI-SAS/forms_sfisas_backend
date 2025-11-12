@@ -5577,27 +5577,27 @@ def get_all_bitacora_formatos(db: Session):
 
     return data
 
-def atender_y_finalizar_service(evento_id: int, usuario: str, num_document: str, db: Session):
-    """Marca un evento como atendido y finalizado por un usuario."""
-    evento = db.query(BitacoraLogsSimple).filter(BitacoraLogsSimple.id == evento_id).first()
+# def atender_y_finalizar_service(evento_id: int, usuario: str, num_document: str, db: Session):
+#     """Marca un evento como atendido y finalizado por un usuario."""
+#     evento = db.query(BitacoraLogsSimple).filter(BitacoraLogsSimple.id == evento_id).first()
 
-    if not evento:
-        raise ValueError("Evento no encontrado")
+#     if not evento:
+#         raise ValueError("Evento no encontrado")
 
-    if not usuario or not num_document:
-        raise ValueError("Datos del usuario incompletos")
+#     if not usuario or not num_document:
+#         raise ValueError("Datos del usuario incompletos")
 
-    try:
-        evento.estado = EstadoEvento.finalizado
-        evento.atendido_por = f"{usuario} - {num_document}"
-        evento.updated_at = datetime.utcnow()
+#     try:
+#         evento.estado = EstadoEvento.finalizado
+#         evento.atendido_por = f"{usuario} - {num_document}"
+#         evento.updated_at = datetime.utcnow()
 
-        db.commit()
-        db.refresh(evento)
-        return evento
-    except Exception as e:
-        db.rollback()
-        raise RuntimeError(f"Error al actualizar el evento: {e}")
+#         db.commit()
+#         db.refresh(evento)
+#         return evento
+#     except Exception as e:
+#         db.rollback()
+#         raise RuntimeError(f"Error al actualizar el evento: {e}")
     
 def reabrir_evento_service(evento_id: int, usuario: str, num_document: str, db: Session):
     """Cambia el estado del evento a 'pendiente' y registra quién lo reabrió."""
@@ -5696,6 +5696,55 @@ def response_bitacora_log_simple(db: Session, log_data, current_user, evento_id:
         },
     }
 
+def finalizar_conversacion_completa(db: Session, evento_id: int, usuario: str):
+    """
+    Finaliza toda una conversación (evento raíz y todas sus respuestas).
+    """
+    # Buscar el evento base
+    evento = db.query(BitacoraLogsSimple).filter(BitacoraLogsSimple.id == evento_id).first()
+    if not evento:
+        raise HTTPException(status_code=404, detail="Evento no encontrado")
+
+    # Buscar el evento raíz (el primero de la conversación)
+    evento_raiz = evento
+    while evento_raiz.evento_responde_id:
+        evento_raiz = (
+            db.query(BitacoraLogsSimple)
+            .filter(BitacoraLogsSimple.id == evento_raiz.evento_responde_id)
+            .first()
+        )
+        if not evento_raiz:
+            raise HTTPException(status_code=404, detail="Evento raíz no encontrado")
+
+    # Buscar todos los eventos que pertenecen a esa conversación
+    ids_conversacion = [evento_raiz.id]
+    pendientes = [evento_raiz.id]
+    while pendientes:
+        actual_id = pendientes.pop(0)
+        hijos = (
+            db.query(BitacoraLogsSimple)
+            .filter(BitacoraLogsSimple.evento_responde_id == actual_id)
+            .all()
+        )
+        for hijo in hijos:
+            ids_conversacion.append(hijo.id)
+            pendientes.append(hijo.id)
+
+    # Actualizar el estado de todos los eventos
+    db.query(BitacoraLogsSimple).filter(BitacoraLogsSimple.id.in_(ids_conversacion)).update(
+        {
+            BitacoraLogsSimple.estado: EstadoEvento.finalizado,
+            BitacoraLogsSimple.atendido_por: usuario,
+            BitacoraLogsSimple.updated_at: datetime.utcnow(),
+        },
+        synchronize_session=False
+    )
+    db.commit()
+
+    return {
+        "message": f"Conversación finalizada correctamente. {len(ids_conversacion)} eventos actualizados.",
+        "eventos_finalizados": ids_conversacion,
+    }
 
 def obtener_conversacion_completa(db: Session, evento_id: int):
     """

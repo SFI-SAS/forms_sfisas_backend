@@ -9,7 +9,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from app.api.controllers.mail import send_reconsideration_email
-from app.crud import atender_y_finalizar_service, crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, encrypt_object, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
+from app.crud import crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, encrypt_object, finalizar_conversacion_completa, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
 from app.database import get_db
 from app.schemas import AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, PalabrasClaveCreate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, RegisfacialAnswerResponse, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
 from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, Form, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, UserType
@@ -1431,22 +1431,32 @@ def get_mis_eventos(
         "data": logs
     }
 
-@router.put("/eventos/{evento_id}/finalizar", summary="Atender y finalizar evento")
-def atender_y_finalizar(evento_id: int, db: Session = Depends(get_db), user = Depends(get_current_user)):
-    try:
-        evento = atender_y_finalizar_service(evento_id, user.name, user.num_document, db)
-        return {"message": "✅ Evento finalizado correctamente", "data": evento}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al finalizar el evento: {e}")
+# @router.put("/eventos/{evento_id}/finalizar", summary="Atender y finalizar evento")
+# def atender_y_finalizar(evento_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+#     if not user.asign_bitacora:
+#         raise HTTPException(
+#             status_code=status.HTTP_403_FORBIDDEN,
+#             detail="No tienes permiso para acceder a la bitácora de formatos."
+#         )
+#     try:
+#         evento = atender_y_finalizar_service(evento_id, user.name, user.num_document, db)
+#         return {"message": "✅ Evento finalizado correctamente", "data": evento}
+#     except ValueError as e:
+#         raise HTTPException(status_code=404, detail=str(e))
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Error al finalizar el evento: {e}")
     
 @router.put("/eventos/{evento_id}/reabrir", summary="Reabrir conversación del evento")
-def reabrir_evento(evento_id: int, db: Session = Depends(get_db), user = Depends(get_current_user)):
+def reabrir_evento(evento_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """
     Permite reabrir una conversación previamente finalizada.
     Cambia el estado del evento a 'pendiente' y actualiza el usuario que la reabre.
     """
+    if not user.asign_bitacora:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para acceder a la bitácora de formatos."
+        )
     try:
         evento = reabrir_evento_service(evento_id, user.name, user.num_document, db)
         return {"message": "🔄 Conversación reabierta correctamente", "data": evento}
@@ -1478,6 +1488,23 @@ def obtener_conversacion(evento_id: int, db: Session = Depends(get_db)):
     if not conversacion:
         raise HTTPException(status_code=404, detail="Evento no encontrado")
     return conversacion
+
+@router.put("/conversacion/{evento_id}/finalizar", summary="Finalizar toda la conversación")
+def finalizar_conversacion_endpoint(
+    evento_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Endpoint para finalizar todos los eventos de una conversación.
+    """
+    if not current_user.asign_bitacora:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para acceder a la bitácora de formatos."
+        )
+    usuario = f"{current_user.name} - {current_user.num_document}"
+    return finalizar_conversacion_completa(db, evento_id, usuario)
 
 @router.get("/bitacora/formatos")
 def get_bitacora_formatos(
