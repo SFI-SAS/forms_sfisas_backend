@@ -197,7 +197,8 @@ class PostCreate(BaseModel):
     question_id: Union[int, str]  
     answer_text: str | None = None
     file_path: str | None = None
-    question_index: int = 0  # ✅ NUEVO CAMPO
+    form_design_element_id: Optional[str] = None 
+
     
 class FormScheduleCreate(BaseModel):
     form_id: int
@@ -299,7 +300,6 @@ class AnswerSchema(BaseModel):
     answer_text: Optional[str]
     file_path: Optional[str]
     question: QuestionSchema  # ← Aquí se incluye la pregunta
-    question_index: int = 0 
 
 
 

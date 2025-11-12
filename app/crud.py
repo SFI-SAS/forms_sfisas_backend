@@ -820,11 +820,13 @@ def post_create_response(
     }
 
 async def create_answer_in_db(answer, db: Session, current_user: User, request, send_emails: bool = True):
-    """Modificada para recibir parámetro send_emails"""
+    """
+    ✅ MODIFICADO: Ahora incluye form_design_element_id en todas las respuestas
+    """
     
     created_answers = []
 
-    # Lógica de guardado existente (sin cambios)
+    # Caso 1: Múltiples respuestas (JSON dict)
     if isinstance(answer.question_id, str):
         try:
             parsed_answer = json.loads(answer.answer_text)
@@ -837,7 +839,10 @@ async def create_answer_in_db(answer, db: Session, current_user: User, request, 
                     response_id=answer.response_id,
                     question_id=question_id,
                     answer_text=text,
-                    file_path=answer.file_path
+                    file_path=answer.file_path,
+                    repeated_id=answer.repeated_id,
+                    # ✅ NUEVO: Incluir UUID (si aplica en este caso)
+                    form_design_element_id=answer.form_design_element_id
                 )
                 db.add(new_answer)
                 db.flush()
@@ -851,13 +856,14 @@ async def create_answer_in_db(answer, db: Session, current_user: User, request, 
             db.rollback()
             raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
 
+    # Caso 2: Respuesta simple
     elif isinstance(answer.question_id, int):
         single_answer_result = save_single_answer(answer, db)
         created_answers = [single_answer_result] if single_answer_result else []
     else:
         raise HTTPException(status_code=400, detail="Invalid question_id type")
 
-    # Solo enviar emails si send_emails=True
+    # Envío de emails (sin cambios)
     if created_answers and send_emails:
         try:
             response = db.query(Response).filter(Response.id == answer.response_id).first()
@@ -883,22 +889,37 @@ async def create_answer_in_db(answer, db: Session, current_user: User, request, 
     else:
         return created_answers[0] if created_answers else None
 
-def save_single_answer(answer, db, question_index: int = 0):
+def save_single_answer(answer, db: Session):
     """
-    Guarda una respuesta individual con su question_index
+    ✅ MODIFICADO: Ahora guarda form_design_element_id
     """
+    print(f"📝 Guardando respuesta para question_id: {answer.question_id}")
+    print(f"🔗 UUID del elemento: {answer.form_design_element_id}")
+    
+    # Buscar respuesta existente (opcional, dependiendo de tu lógica)
+    existing_answer = db.query(Answer).filter(
+        Answer.response_id == answer.response_id,
+        Answer.question_id == answer.question_id
+    ).first()
+
+    # Crear nueva respuesta
     new_answer = Answer(
         response_id=answer.response_id,
         question_id=answer.question_id,
         answer_text=answer.answer_text,
         file_path=answer.file_path,
-        question_index=question_index  # ✅ USAR EL ÍNDICE PASADO
+        # ✅ NUEVO: Guardar el UUID
+        form_design_element_id=answer.form_design_element_id
     )
+    
     db.add(new_answer)
     db.commit()
     db.refresh(new_answer)
-    return new_answer
-
+    
+    return {
+        "message": "Respuesta guardada exitosamente", 
+        "answer_id": new_answer.id
+    }
 
 def check_form_data(db: Session, form_id: int):
     """

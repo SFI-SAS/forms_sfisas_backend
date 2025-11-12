@@ -303,7 +303,6 @@ def register_form_schedule(schedule_data: FormScheduleCreate, db: Session = Depe
 
 import json
 
-
 @router.get("/responses/")
 def get_responses_with_answers(
     form_id: int,
@@ -458,7 +457,9 @@ def get_responses_with_answers(
                     "question_text": a.question.question_text,
                     "question_type": a.question.question_type,
                     "answer_text": process_regisfacial_answer(a.answer_text, a.question.question_type),
-                    "file_path": a.file_path
+                    "file_path": a.file_path,
+                    # ✅ NUEVO: Incluir el UUID del elemento
+                    "form_design_element_id": a.form_design_element_id
                 }
                 for a in current_answers
             ],

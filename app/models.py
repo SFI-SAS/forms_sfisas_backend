@@ -228,12 +228,15 @@ class Answer(Base):
     question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=False)
     answer_text = Column(String(255), nullable=True)
     file_path = Column(Text, nullable=True)
+    
+    # ✅ NUEVO CAMPO: UUID del elemento en form_design
+    form_design_element_id = Column(String(100), nullable=True)
+    # Este campo guarda el UUID del elemento específico en form_design
+    # Permite identificar múltiples instancias de la misma pregunta
 
     response = relationship('Response', back_populates='answers')
     question = relationship('Question', back_populates='answers')
     file_serial = relationship('AnswerFileSerial', back_populates='answer', uselist=False, cascade='all, delete-orphan')
-
-    
 # Modelo Project
 class Project(Base):
     __tablename__ = 'projects'
