@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
-from typing import Any, List
+from typing import Any, List, Optional
 from app import models
 from app.api.controllers.mail import send_welcome_email
 from app.api.endpoints.pdf_router import generate_pdf_from_form_id
@@ -878,4 +878,44 @@ async def decrypt_test(encrypted_data: str):
     return {
         "decrypted": decrypted,
         "encrypted_was": encrypted_data
+    }
+@router.patch("/asign-bitacora/{user_id}")
+def asignar_bitacora(
+    user_id: int,
+    asignar: Optional[bool] = True,  # True = asignar, False = quitar
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Asigna o quita el permiso de 'asign_bitacora' a un usuario específico.
+    Solo los usuarios con rol 'admin' o 'creator' pueden hacerlo.
+    """
+    # Verificar permisos del usuario actual
+    if current_user.user_type.value not in ["admin", "creator"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permisos para asignar bitácoras."
+        )
+
+    # Buscar el usuario al que se le asignará el permiso
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado."
+        )
+
+    # Actualizar el valor
+    user.asign_bitacora = asignar
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": f"Permiso de bitácora {'asignado' if asignar else 'revocado'} correctamente al usuario {user.name}",
+        "data": {
+            "id": user.id,
+            "name": user.name,
+            "num_document": user.num_document,
+            "asign_bitacora": user.asign_bitacora
+        }
     }

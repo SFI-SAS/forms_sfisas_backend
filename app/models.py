@@ -55,7 +55,8 @@ class User(Base):
     user_type = Column(Enum(UserType), default=UserType.user, nullable=False)
     nickname = Column(String(100), nullable=True)
     password = Column(Text, nullable=False)
-    recognition_id = Column(String(100), nullable=True, unique=True)  # <-- nuevo campo
+    recognition_id = Column(String(100), nullable=True, unique=True)  
+    asign_bitacora = Column(Boolean, default=False, nullable=False)
     
     id_category  = Column(BigInteger, ForeignKey('user_categories.id'), nullable=True)
     category = relationship("UserCategory", back_populates="users")

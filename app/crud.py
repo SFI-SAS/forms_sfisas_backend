@@ -937,6 +937,8 @@ async def create_answer_in_db(
         }
     else:
         return created_answers[0] if created_answers else None   
+
+
 def save_single_answer(answer, db, question_index: int = 0):
     """
     Guarda una respuesta individual con su question_index

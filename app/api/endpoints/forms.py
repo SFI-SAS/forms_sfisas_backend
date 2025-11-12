@@ -394,6 +394,7 @@ def get_responses_with_answers(
                     "question_type": a.question.question_type,
                     "answer_text": process_regisfacial_answer(a.answer_text, a.question.question_type),
                     "file_path": a.file_path,
+                    "response_id": a.response_id,
                     "question_index": a.question_index or 0,  # ✅ AGREGAR question_index
                 }
                 for a in current_answers
