@@ -2069,3 +2069,27 @@ def update_form_status(
         )
     
     return toggle_form_status(db, form_id, status_update.is_enabled)
+
+@router.get("/by-question/{question_id}", response_model=List[FormResponse])
+def get_forms_by_question(question_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Devuelve todos los formularios que contienen la pregunta con el ID especificado.
+    """
+    if str(current_user.user_type.value) not in ["admin", "creator"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permisos para acceder a las palabras clave."
+        )
+
+    # Buscar la pregunta
+    question = db.query(Question).filter(Question.id == question_id).first()
+    if not question:
+        raise HTTPException(status_code=404, detail="Pregunta no encontrada.")
+
+    # Acceder a los formularios relacionados (gracias a la relación many-to-many)
+    forms = question.forms
+
+    if not forms:
+        raise HTTPException(status_code=404, detail="Esta pregunta no pertenece a ningún formulario.")
+
+    return forms

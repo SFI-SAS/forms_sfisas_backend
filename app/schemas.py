@@ -884,3 +884,15 @@ BitacoraResponse.update_forward_refs()
 class PalabrasClaveCreate(BaseModel):
     form_id: int
     keywords: List[str]  # Lista de palabras clave
+
+class FormResponse(BaseModel):
+    id: int
+    title: str
+    description: Optional[str]
+    format_type: str
+    id_category: Optional[int]
+    is_enabled: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

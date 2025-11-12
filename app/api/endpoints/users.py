@@ -314,7 +314,7 @@ def get_all_users(db: Session = Depends(get_db), current_user: User = Depends(ge
         Si el usuario autenticado no tiene permisos para acceder a esta información.
     """
 
-    if current_user.user_type not in [UserType.creator, UserType.admin]:
+    if current_user.user_type not in [UserType.creator, UserType.admin, UserType.user]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to search for users by email"

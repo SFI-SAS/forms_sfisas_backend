@@ -1583,3 +1583,61 @@ def obtener_palabras_clave(
             status_code=500,
             detail=f"Error al obtener palabras clave: {e}"
         )
+
+
+@router.get("/by-form-question", summary="Obtener respuestas por formato y pregunta")
+def get_answers_by_form_and_question(
+    form_id: int,
+    question_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)  # 👈 valida el token
+
+):
+    """
+    Devuelve todas las respuestas (answer_text y archivos si existen)
+    asociadas a un formato (form_id) y una pregunta (question_id).
+    """
+       # 🔐 Validar roles permitidos
+    if str(current_user.user_type.value) not in ["admin", "creator"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permisos para acceder a las palabras clave."
+        )
+    # Verificar existencia del formato
+    form = db.get(Form, form_id)
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    # Verificar existencia de la pregunta
+    question = db.get(Question, question_id)
+    if not question:
+        raise HTTPException(status_code=404, detail="Pregunta no encontrada")
+
+    # Buscar las respuestas correspondientes
+    stmt = (
+        select(Answer)
+        .join(Response, Response.id == Answer.response_id)
+        .where(Response.form_id == form_id, Answer.question_id == question_id)
+        .order_by(Response.submitted_at.desc())
+    )
+
+    answers = db.scalars(stmt).all()
+
+    if not answers:
+        return {"message": "No hay respuestas para esta pregunta en el formato seleccionado.", "results": []}
+
+    # Estructurar respuesta
+    results = [
+        {
+            "response_id": ans.response_id,
+            "question_id": ans.question_id,
+            "answer_text": ans.answer_text,
+            "file_path": ans.file_path,
+            "submitted_at": ans.response.submitted_at,
+            "user_id": ans.response.user_id,
+            "mode": ans.response.mode,
+        }
+        for ans in answers
+    ]
+
+    return {"count": len(results), "results": results}
