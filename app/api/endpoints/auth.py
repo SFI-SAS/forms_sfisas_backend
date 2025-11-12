@@ -10,6 +10,7 @@ from app.models import User
 
 router = APIRouter()
 
+
 db_dependency = Annotated[Session, Depends(get_db)]
 
 @router.post("/token", response_model=Token)
