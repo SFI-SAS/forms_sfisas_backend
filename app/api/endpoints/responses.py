@@ -64,12 +64,12 @@ def save_response(
     repeated_id = extract_repeated_id(responses)
     return post_create_response(db, form_id, current_user.id, mode, repeated_id, create_approvals, status)
 
-
 @router.post("/save-answers/")
 async def create_answer(
-    request: Request,
+        request: Request,
     answer: PostCreate,
-    action: str = Query("send", enum=["send", "send_and_close"]),
+    action: str = Query("send", enum=["send", "send_and_close"]),  # NUEVO
+
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -96,9 +96,7 @@ async def create_answer(
     # - Abierto/Semi_abierto = enviar solo si action="send_and_close"
     send_emails = (form.format_type == FormatType.cerrado) or (action == "send_and_close")
 
-    # ✅ AQUÍ SE LLAMA CON question_index
     new_answer = await create_answer_in_db(answer, db, current_user, request, send_emails)
-    
     return {"message": "Answer created", "answer": new_answer}
 
 @router.post("/close-response/{response_id}")
@@ -1337,39 +1335,6 @@ async def get_regisfacial_answers(db: Session = Depends(get_db),current_user: Us
             detail=f"Error al obtener las respuestas: {str(e)}"
         )
         
-@router.post("/save-answers/")
-async def create_answer(
-    request: Request,
-    answer: PostCreate,
-    action: str = Query("send", enum=["send", "send_and_close"]),  # NUEVO
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """
-    LÓGICA SIMPLE:
-    - action="send": Guarda respuestas SIN enviar emails
-    - action="send_and_close": Guarda respuestas Y envía emails si corresponde
-    - Para formato cerrado: IGNORA action, siempre envía emails
-    """
-    if current_user == None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No permission")
-
-    # Obtener formato del formulario
-    response = db.query(Response).filter(Response.id == answer.response_id).first()
-    if not response:
-        raise HTTPException(status_code=404, detail="Response not found")
-    
-    form = db.query(Form).filter(Form.id == response.form_id).first()
-    if not form:
-        raise HTTPException(status_code=404, detail="Form not found")
-
-    # REGLA SIMPLE:
-    # - Cerrado = siempre enviar emails
-    # - Abierto/Semi_abierto = enviar solo si action="send_and_close"
-    send_emails = (form.format_type == FormatType.cerrado) or (action == "send_and_close")
-
-    new_answer = await create_answer_in_db(answer, db, current_user, request, send_emails)
-    return {"message": "Answer created", "answer": new_answer}
 
 @router.post("/bitacora/logs-simple", summary="Crear registro en bitácora simple")
 def create_bitacora_log_endpoint(

@@ -819,20 +819,12 @@ def post_create_response(
         "approvers_created": approvers_created
     }
 
-async def create_answer_in_db(
-    answer: PostCreate, 
-    db: Session, 
-    current_user: User, 
-    request, 
-    send_emails: bool = True
-):
-    """
-    Modificada para usar question_index del frontend
-    """
+async def create_answer_in_db(answer, db: Session, current_user: User, request, send_emails: bool = True):
+    """Modificada para recibir parámetro send_emails"""
     
     created_answers = []
 
-    # CASO 1: Múltiples respuestas (JSON)
+    # Lógica de guardado existente (sin cambios)
     if isinstance(answer.question_id, str):
         try:
             parsed_answer = json.loads(answer.answer_text)
@@ -841,49 +833,15 @@ async def create_answer_in_db(
 
             for question_id_str, text in parsed_answer.items():
                 question_id = int(question_id_str)
-                
-                # ✅ USAR EL ÍNDICE QUE VIENE DEL FRONTEND
                 new_answer = Answer(
                     response_id=answer.response_id,
                     question_id=question_id,
                     answer_text=text,
-                    file_path=answer.file_path,
-                    question_index=answer.question_index  # ✅ USAR EL DEL REQUEST
+                    file_path=answer.file_path
                 )
                 db.add(new_answer)
                 db.flush()
                 created_answers.append(new_answer)
-                if answer.relation_bitacora_id:
-                        # 🔹 1. Obtener la relación bitácora
-                        relation = db.query(RelationBitacora).filter(RelationBitacora.id == answer.relation_bitacora_id).first()
-                        if not relation:
-                            raise HTTPException(status_code=404, detail="RelationBitacora no encontrada")
-
-                        # 🔹 2. Obtener la respuesta relacionada
-                        response = db.query(Response).filter(Response.id == relation.id_response).first()
-                        if not response:
-                            raise HTTPException(status_code=404, detail="Response no encontrada")
-
-                        # 🔹 3. Obtener el formulario (nombre del formato)
-                        form = db.query(Form).filter(Form.id == response.form_id).first()
-                        name_format = form.title if form else "Desconocido"
-
-                        # 🔹 4. Obtener el usuario (nombre del usuario que envió la respuesta)
-                        user = db.query(User).filter(User.id == response.user_id).first()
-                        name_user = user.name if user else "Desconocido"
-
-                        # 🔹 5. Obtener la pregunta original
-                        question_obj = db.query(Question).filter(Question.id == question_id).first()
-
-                        if question_obj:
-                            bitacora_entry = QuestionAndAnswerBitacora(
-                                id_relation_bitacora=answer.relation_bitacora_id,
-                                name_format=name_format,
-                                name_user=name_user,
-                                question=question_obj.question_text,
-                                answer=text
-                            )
-                            db.add(bitacora_entry)
 
             db.commit()
             for ans in created_answers:
@@ -893,14 +851,8 @@ async def create_answer_in_db(
             db.rollback()
             raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
 
-    # CASO 2: Respuesta individual
     elif isinstance(answer.question_id, int):
-        # ✅ PASAR EL ÍNDICE QUE VIENE DEL FRONTEND
-        single_answer_result = save_single_answer(
-            answer, 
-            db, 
-            answer.question_index  # ✅ USAR EL DEL REQUEST
-        )
+        single_answer_result = save_single_answer(answer, db)
         created_answers = [single_answer_result] if single_answer_result else []
     else:
         raise HTTPException(status_code=400, detail="Invalid question_id type")
@@ -926,18 +878,10 @@ async def create_answer_in_db(
     if isinstance(answer.question_id, str):
         return {
             "message": "Multiple answers saved",
-            "answers": [
-                {
-                    "id": a.id, 
-                    "question_id": a.question_id,
-                    "question_index": a.question_index
-                } 
-                for a in created_answers
-            ]
+            "answers": [{"id": a.id, "question_id": a.question_id} for a in created_answers]
         }
     else:
-        return created_answers[0] if created_answers else None   
-
+        return created_answers[0] if created_answers else None
 
 def save_single_answer(answer, db, question_index: int = 0):
     """

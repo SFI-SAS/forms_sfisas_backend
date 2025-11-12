@@ -226,7 +226,6 @@ class Answer(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     response_id = Column(BigInteger, ForeignKey('responses.id'), nullable=False)
     question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=False)
-    question_index = Column(Integer, nullable=False, default=0)  
     answer_text = Column(String(255), nullable=True)
     file_path = Column(Text, nullable=True)
 
