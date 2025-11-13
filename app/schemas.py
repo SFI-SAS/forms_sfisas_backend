@@ -885,7 +885,7 @@ class PalabrasClaveCreate(BaseModel):
     form_id: int
     keywords: List[str]  # Lista de palabras clave
 
-class FormResponse(BaseModel):
+class FormResponseBitacora(BaseModel):
     id: int
     title: str
     description: Optional[str]
