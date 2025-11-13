@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import uuid
-from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session, joinedload
@@ -32,14 +32,23 @@ def extract_repeated_id(responses: List[ResponseItem]) -> Optional[str]:
     return None
 
 @router.post("/save-response/{form_id}")
-def save_response(
+async def save_response(  # 🆕 Ahora es async
     form_id: int,
     responses: List[ResponseItem] = Body(...),
     mode: str = Query("online", enum=["online", "offline"]),
     action: str = Query("send", enum=["send", "send_and_close"]),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    request: Request = None  # 🆕 Agregar Request
 ):
+    """
+    Guarda las respuestas de un formulario.
+    
+    - Si es formato cerrado: siempre se envía para aprobación
+    - Si es formato abierto/semi_abierto:
+        - action="send": guarda como borrador (sin aprobación)
+        - action="send_and_close": envía para aprobación o cierra directamente
+    """
     if current_user is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No permission")
 
@@ -50,19 +59,33 @@ def save_response(
     # Determinar estado y si crear aprobaciones
     if form.format_type == FormatType.cerrado:
         # Formato cerrado siempre se envía para aprobación
-        status = ResponseStatus.submitted
+        response_status = ResponseStatus.submitted
         create_approvals = True
     else:
         # Formato abierto/semi_abierto depende de la acción
         if action == "send_and_close":
-            status = ResponseStatus.submitted
+            response_status = ResponseStatus.submitted
             create_approvals = True
         else:  # action == "send"
-            status = ResponseStatus.draft
+            response_status = ResponseStatus.draft
             create_approvals = False
 
     repeated_id = extract_repeated_id(responses)
-    return post_create_response(db, form_id, current_user.id, mode, repeated_id, create_approvals, status)
+    
+    # 🆕 Ahora llamamos con await y pasamos current_user y request
+    result = await post_create_response(
+        db=db,
+        form_id=form_id,
+        user_id=current_user.id,
+        current_user=current_user,  # 🆕 Pasar current_user
+        request=request,  # 🆕 Pasar request
+        mode=mode,
+        repeated_id=repeated_id,
+        create_approvals=create_approvals,
+        status=response_status
+    )
+    
+    return result
 
 @router.post("/save-answers/")
 async def create_answer(
@@ -70,8 +93,10 @@ async def create_answer(
     answer: PostCreate,
     action: str = Query("send", enum=["send", "send_and_close"]),  # NUEVO
 
+
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
+    
 ):
     """
     LÓGICA SIMPLE:

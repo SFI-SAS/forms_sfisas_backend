@@ -1,4 +1,5 @@
-from pydantic import BaseModel, EmailStr, Field
+import json
+from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Any, Literal, Optional, List, Dict, Union
 from datetime import date, datetime
 from enum import Enum
@@ -563,9 +564,47 @@ class FormCloseConfigCreate(BaseModel):
     send_pdf_attachment: bool = False
     generate_report: bool = False
     do_nothing: bool = True
-    download_link_recipient: Optional[EmailStr] = None
-    email_recipient: Optional[EmailStr] = None
-    report_recipient: Optional[EmailStr] = None
+    
+    # 🆕 Ahora son listas de strings
+    download_link_recipients: Optional[List[str]] = None
+    email_recipients: Optional[List[str]] = None
+    report_recipients: Optional[List[str]] = None
+    
+    @validator('download_link_recipients', 'email_recipients', 'report_recipients', pre=True)
+    def validate_emails(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except:
+                return [v]
+        return v
+
+class FormCloseConfigOut(BaseModel):
+    id: int
+    form_id: int
+    send_download_link: bool
+    send_pdf_attachment: bool
+    generate_report: bool
+    do_nothing: bool
+    download_link_recipients: Optional[List[str]] = None
+    email_recipients: Optional[List[str]] = None
+    report_recipients: Optional[List[str]] = None
+    
+    class Config:
+        orm_mode = True
+        
+    @validator('download_link_recipients', 'email_recipients', 'report_recipients', pre=True)
+    def parse_json_field(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except:
+                return []
+        return v
 
 class FormCloseConfigUpdate(BaseModel):
     send_download_link: Optional[bool] = None
@@ -576,21 +615,7 @@ class FormCloseConfigUpdate(BaseModel):
     email_recipient: Optional[EmailStr] = None
     report_recipient: Optional[EmailStr] = None
 
-class FormCloseConfigOut(BaseModel):
-    id: int
-    form_id: int
-    send_download_link: bool
-    send_pdf_attachment: bool
-    generate_report: bool
-    do_nothing: bool
-    download_link_recipient: Optional[str]
-    email_recipient: Optional[str]
-    report_recipient: Optional[str]
-    created_at: datetime
-    updated_at: datetime
-    
-    class Config:
-        from_attributes = True
+
 
 class QuestionLocationRelationCreate(BaseModel):
     form_id: int

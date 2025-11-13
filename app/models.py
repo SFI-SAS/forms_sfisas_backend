@@ -422,17 +422,16 @@ class FormCloseConfig(Base):
     send_download_link = Column(Boolean, default=False, nullable=False)
     send_pdf_attachment = Column(Boolean, default=False, nullable=False)
     generate_report = Column(Boolean, default=False, nullable=False)
-    do_nothing = Column(Boolean, default=True, nullable=False)  # Por defecto activado
+    do_nothing = Column(Boolean, default=True, nullable=False)
     
-    # Destinatarios para las acciones que los requieren
-    download_link_recipient = Column(String(255), nullable=True)  # Para send_download_link
-    email_recipient = Column(String(255), nullable=True)  # Para send_pdf_attachment
-    report_recipient = Column(String(255), nullable=True)  # Para generate_report
+    # 🆕 CAMBIADO: Ahora almacenan JSON con listas de emails
+    download_link_recipients = Column(Text, nullable=True)  # JSON: ["email1", "email2"]
+    email_recipients = Column(Text, nullable=True)  # JSON: ["email1", "email2"]
+    report_recipients = Column(Text, nullable=True)  # JSON: ["email1", "email2"]
     
     # Timestamps
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-
 
 class QuestionLocationRelation(Base):
     __tablename__ = 'question_location_relations'
