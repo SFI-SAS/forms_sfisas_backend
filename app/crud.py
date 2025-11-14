@@ -1,8 +1,10 @@
+import asyncio
 import base64
 from collections import defaultdict
 from io import BytesIO
 import json
 import os
+import threading
 import pytz
 from sqlalchemy import and_, exists, func, not_, or_, select
 from sqlalchemy.orm import Session, joinedload
@@ -749,22 +751,24 @@ def delete_question_from_db(db: Session, question_id: int):
 
     db.commit()
 
-
 async def post_create_response(
-    db: Session, 
-    form_id: int, 
-    user_id: int, 
-    current_user,  # 🆕 NUEVO PARÁMETRO
-    request,  # 🆕 NUEVO PARÁMETRO
-    mode: str = "online", 
-    repeated_id: Optional[str] = None, 
+    db,
+    form_id: int,
+    user_id: int,
+    current_user,
+    request,
+    mode: str = "online",
+    repeated_id: str = None,
     create_approvals: bool = True,
-    status: ResponseStatus = ResponseStatus.draft
+    status = None  # ResponseStatus
 ):
     """
-    Función modificada para incluir el estado y el envío de correos.
-    Ahora envía correos aquí en lugar de en create_answer_in_db.
+    Función modificada para incluir el estado y el envío de correos EN BACKGROUND.
     """
+    from app.models import Form, User, Response, ResponseApproval, FormApproval, FormCloseConfig
+    from app.models import ApprovalStatus, ResponseStatus
+    from sqlalchemy import func
+    from fastapi import HTTPException
     
     form = db.query(Form).filter(Form.id == form_id).first()
     user = db.query(User).filter(User.id == user_id).first()
@@ -774,7 +778,6 @@ async def post_create_response(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Crear response con estado
     last_mode_response = db.query(Response).filter(Response.mode == mode).order_by(Response.mode_sequence.desc()).first()
     new_mode_sequence = last_mode_response.mode_sequence + 1 if last_mode_response else 1
 
@@ -792,11 +795,10 @@ async def post_create_response(
     db.refresh(response)
 
     approvers_created = 0
-    emails_sent_result = None
     
     if create_approvals:
         form_approvals = db.query(FormApproval).filter(
-            FormApproval.form_id == form_id, 
+            FormApproval.form_id == form_id,
             FormApproval.is_active == True
         ).all()
 
@@ -813,40 +815,41 @@ async def post_create_response(
 
         db.commit()
         
-        # Si hay aprobadores, enviar correos a ellos
         if approvers_created > 0:
             send_mails_to_next_supporters(response.id, db)
     
-    # 🆕 NUEVO: Enviar correos de cierre de formulario si NO hay aprobadores
+    # Si no hay aprobadores, enviar correos EN UN THREAD SEPARADO (NO BLOQUEA)
     if not create_approvals or approvers_created == 0:
         try:
-            # Verificar si hay configuración de cierre de formulario
             form_close_config = db.query(FormCloseConfig).filter(
                 FormCloseConfig.form_id == form_id
             ).first()
             
             if form_close_config:
-                # Enviar correos según la configuración
-                emails_sent_result = await send_form_action_emails(
-                    form_id=form.id, 
-                    db=db, 
-                    current_user=current_user, 
+                # EJECUTAR EN THREAD SEPARADO - NO ESPERA
+                from app.database import SessionLocal
+                
+                run_async_in_thread(
+                    send_form_action_emails_background,
+                    SessionLocal,
+                    form_id=form.id,
+                    current_user_id=current_user.id,
                     request=request
                 )
-                print(f"✅ Correos de cierre enviados: {emails_sent_result}")
+                print("✅ Correos de cierre iniciados en background (en thread separado)")
         except Exception as e:
-            print(f"❌ Error al enviar correos de cierre: {str(e)}")
-            # No lanzar excepción, solo loggear el error
+            print(f"❌ Error al iniciar correos de cierre: {str(e)}")
 
     return {
         "message": "Response saved successfully",
         "response_id": response.id,
-        "status": status.value,
+        "status": status.value if status else "draft",
         "mode": mode,
         "mode_sequence": new_mode_sequence,
         "approvers_created": approvers_created,
-        "emails_sent": emails_sent_result  # 🆕 Info sobre correos enviados
+        "emails_status": "en_proceso"
     }
+
 
 async def create_answer_in_db(answer, db: Session, current_user: User, request, send_emails: bool = True):
     """
@@ -3714,7 +3717,152 @@ def get_active_form_actions(form_id: int, db):
         print(f"Error al obtener acciones activas: {str(e)}")
         return []
     
+def run_async_in_thread(async_func, db_session_factory, form_id, current_user_id, request):
+    """
+    Ejecuta una función async en un thread separado con nueva sesión.
+    Totalmente independiente, no bloquea nada.
+    """
+    def wrapper():
+        # CREAR NUEVA SESIÓN PARA EL THREAD
+        new_db = db_session_factory()
+        
+        # Crear un nuevo event loop para este thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(
+                async_func(
+                    form_id=form_id,
+                    current_user_id=current_user_id,
+                    db=new_db,
+                    request=request
+                )
+            )
+        except Exception as e:
+            print(f"❌ Error en thread: {str(e)}")
+        finally:
+            new_db.close()
+            loop.close()
     
+    # Crear thread en background (daemon=True para que no bloquee)
+    thread = threading.Thread(target=wrapper, daemon=True)
+    thread.start()
+
+async def send_form_action_emails_background(form_id: int, current_user_id: int, db, request):
+    """
+    Envía correos electrónicos según las acciones activas configuradas para un formulario.
+    Se ejecuta EN BACKGROUND sin bloquear.
+    """
+    try:
+        # OBTENER current_user CON LA NUEVA SESIÓN
+        from app.models import User, Form, FormCloseConfig
+        
+        current_user = db.query(User).filter(User.id == current_user_id).first()
+        
+        if not current_user:
+            print(f"❌ Usuario con ID {current_user_id} no encontrado")
+            return
+        
+        form = db.query(Form).filter(Form.id == form_id).first()
+        
+        if not form:
+            print(f"❌ Formulario con ID {form_id} no encontrado")
+            return
+        
+        # OBTENER LAS ACCIONES ACTIVAS
+        active_actions = get_active_form_actions(form_id, db)
+        
+        if not active_actions:
+            print(f"No hay acciones activas configuradas para el formulario {form_id}")
+            return
+        
+        results = {
+            "success": True,
+            "emails_sent": 0,
+            "failed_emails": 0,
+            "actions_processed": []
+        }
+        
+        current_date = datetime.now().strftime("%d/%m/%Y")
+        pdf_bytes = None
+        pdf_filename = f"form_{form_id}_response.pdf"
+        
+        # Verificar si necesitamos generar el PDF
+        needs_pdf = any(action in ['send_pdf_attachment', 'send_download_link'] for action, _ in active_actions)
+        
+        if needs_pdf:
+            try:
+                pdf_bytes = await generate_pdf_from_form_id(
+                    form_id=form_id,
+                    db=db,
+                    current_user=current_user,
+                    request=request
+                )
+                print(f"✅ PDF generado exitosamente para el formulario {form_id}")
+            except Exception as e:
+                print(f"❌ Error al generar PDF: {str(e)}")
+                # Filtrar acciones que requieren PDF
+                active_actions = [(action, recipients) for action, recipients in active_actions 
+                                if action not in ['send_pdf_attachment', 'send_download_link']]
+        
+        # Procesar cada acción activa
+        for action, recipients in active_actions:
+            if action == 'do_nothing':
+                print(f"Acción 'do_nothing' detectada - no se envía correo")
+                results["actions_processed"].append({
+                    "action": action,
+                    "status": "skipped",
+                    "message": "Acción configurada para no hacer nada"
+                })
+                continue
+            
+            # Iterar sobre cada destinatario
+            for recipient in recipients:
+                try:
+                    email_sent = await send_action_notification_email(
+                        action=action,
+                        recipient=recipient,
+                        form=form,
+                        current_date=current_date,
+                        pdf_bytes=pdf_bytes,
+                        pdf_filename=pdf_filename,
+                        db=db, 
+                        current_user=current_user,
+                    )
+                    
+                    if email_sent:
+                        results["emails_sent"] += 1
+                        results["actions_processed"].append({
+                            "action": action,
+                            "recipient": recipient,
+                            "status": "success"
+                        })
+                        print(f"✅ Correo enviado exitosamente a {recipient} para acción '{action}'")
+                    else:
+                        results["failed_emails"] += 1
+                        results["actions_processed"].append({
+                            "action": action,
+                            "recipient": recipient,
+                            "status": "failed",
+                            "error": "send_action_notification_email retornó False"
+                        })
+                        print(f"❌ Fallo al enviar correo a {recipient} para acción '{action}'")
+                        
+                except Exception as e:
+                    results["failed_emails"] += 1
+                    results["actions_processed"].append({
+                        "action": action,
+                        "recipient": recipient,
+                        "status": "failed",
+                        "error": str(e)
+                    })
+                    print(f"❌ Error al enviar correo a {recipient}: {str(e)}")
+        
+        print(f"✅ Proceso completado para formulario {form_id}. Resultado: {results}")
+        
+    except Exception as e:
+        print(f"❌ Error al procesar acciones del formulario {form_id}: {str(e)}")   
+        
 async def send_form_action_emails(form_id: int, db, current_user, request):
     """
     Envía correos electrónicos según las acciones activas configuradas para un formulario.
@@ -3842,7 +3990,6 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
     except Exception as e:
         print(f"❌ Error al procesar acciones del formulario {form_id}: {str(e)}")
         return {"success": False, "error": str(e), "emails_sent": 0}
-
 async def update_response_approval_status(
     response_id: int,
     update_data: UpdateResponseApprovalRequest,
@@ -3862,6 +4009,7 @@ async def update_response_approval_status(
     3. Si es una aprobación, verifica si deben activarse las siguientes aprobaciones.
     4. Si todos los aprobadores (obligatorios y opcionales) han aprobado, finaliza el proceso.
     5. Envía correos a usuarios interesados según su configuración de notificación.
+    6. NUEVO: Envía correos de cierre en BACKGROUND si todos aprobaron.
 
     Parámetros:
     ----------
@@ -3898,7 +4046,13 @@ async def update_response_approval_status(
     - Envía correo al siguiente aprobador (si aplica).
     - Envía correo al creador del formulario si se finaliza el proceso.
     - Envía notificaciones a usuarios registrados según el evento configurado.
+    - NUEVO: Inicia envío de correos de cierre en thread separado (background).
     """
+    from app.models import ResponseApproval, Response, Form, FormApproval, FormApprovalNotification, ApprovalStatus
+    from app.database import SessionLocal
+    from fastapi import HTTPException
+    from datetime import datetime
+    
     # 1. Buscar el ResponseApproval correspondiente
     response_approval = db.query(ResponseApproval).filter(
         ResponseApproval.response_id == response_id,
@@ -3929,13 +4083,12 @@ async def update_response_approval_status(
         db.query(FormApproval)
         .filter(
             FormApproval.form_id == form.id,
-            FormApproval.is_active == True  # Solo los que están activos
+            FormApproval.is_active == True
         )
         .order_by(FormApproval.sequence_number)
         .all()
     )
 
-    
     response_approvals = db.query(ResponseApproval).filter(
         ResponseApproval.response_id == response_id
     ).all()
@@ -3952,7 +4105,7 @@ async def update_response_approval_status(
             detener_proceso = True
             break
 
-    # 4. NUEVA FUNCIONALIDAD: Verificar si todos los aprobadores han aprobado
+    # 4. Verificar si todos los aprobadores han aprobado
     if not detener_proceso and update_data.status == "aprobado":
         # Verificar si todos los aprobadores obligatorios han aprobado
         todos_aprobadores_completados = all(
@@ -3968,10 +4121,18 @@ async def update_response_approval_status(
         )
         
         if todos_aprobadores_completados and todos_han_respondido:
-            # El proceso está completamente finalizado, enviar correo al usuario original
+            # El proceso está completamente finalizado
             send_final_approval_email_to_original_user(response_id, db)
-            await send_form_action_emails(form.id, db, current_user, request) 
-            print("✅ Proceso de aprobación completado. Correo enviado al usuario original.")
+            
+            # 🔥 EJECUTAR EN THREAD SEPARADO - NO ESPERA
+            run_async_in_thread(
+                send_form_action_emails_background,
+                SessionLocal,
+                form_id=form.id,
+                current_user_id=current_user.id,
+                request=request
+            )
+            print("✅ Correos de cierre iniciados en background (en thread separado)")
 
     if not detener_proceso:
         faltantes = [fa.user.name for fa in form_approval_template 
@@ -4022,17 +4183,15 @@ Mensaje: {response_approval.message or '-'}
                 status = ra.status.value if ra else "pendiente"
                 contenido += f"[{fa.sequence_number}] {fa.user.name} - {status}\n"
 
-            
             send_email_plain_approval_status(
                 to_email=to_email,
                 name_form=form.title,
                 to_name=user_notify.name,
                 body_text=contenido,
-                subject=f"Proceso de aprobación - {form.title}"  # Aquí pasas el subject
+                subject=f"Proceso de aprobación - {form.title}"
             )
 
     return response_approval
-
 
 def send_final_approval_email_to_original_user(response_id: int, db: Session):
     """
