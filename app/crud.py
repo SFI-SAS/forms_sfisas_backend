@@ -5373,6 +5373,7 @@ def create_bitacora_log_simple(db: Session, data: BitacoraLogsSimpleCreate, curr
     registrado_por = f"{current_user.name} - {current_user.num_document}"
 
     new_log = BitacoraLogsSimple(
+        clasificacion=data.clasificacion,
         titulo=data.titulo,
         fecha=data.fecha,
         hora=data.hora,
@@ -5401,42 +5402,6 @@ def create_bitacora_log_simple(db: Session, data: BitacoraLogsSimpleCreate, curr
             detail=f"Error creando registro: {str(e)}"
         )
     
-def response_bitacora_log_simple(db: Session, data: BitacoraLogsSimpleCreate, current_user: User):
-    """
-    Crea un registro en la tabla bitacora_logs_simple.
-    """
-    registrado_por = f"{current_user.name}-{current_user.num_document}"
-
-    new_log = BitacoraLogsSimple(
-        titulo=data.titulo,
-        fecha=data.fecha,
-        hora=data.hora,
-        ubicacion=data.ubicacion,
-        participantes=data.participantes,
-        descripcion=data.descripcion,
-        archivos=json.dumps(data.archivos) if data.archivos else None,
-        registrado_por=registrado_por
-    )
-
-    try:
-        db.add(new_log)
-        db.commit()
-        db.refresh(new_log)
-        return new_log
-    except IntegrityError as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error de integridad en base de datos: {str(e.orig)}"
-        )
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error creando registro: {str(e)}"
-        )
-
-
 def get_all_bitacora_eventos(db: Session):
     """
     Obtiene todos los registros de la tabla bitacora_eventos.
@@ -5626,6 +5591,7 @@ def response_bitacora_log_simple(db: Session, log_data, current_user, evento_id:
 
     # 4️⃣ Crear el nuevo evento como respuesta
     nueva_respuesta = BitacoraLogsSimple(
+        clasificacion=evento.clasificacion,
         titulo=log_data.titulo,
         fecha=log_data.fecha,
         hora=log_data.hora,
@@ -5652,6 +5618,7 @@ def response_bitacora_log_simple(db: Session, log_data, current_user, evento_id:
         },
         "respuesta_creada": {
             "id": nueva_respuesta.id,
+            "clasificacion": nueva_respuesta.clasificacion,
             "titulo": nueva_respuesta.titulo,
             "estado": nueva_respuesta.estado.value,
             "registrado_por": nueva_respuesta.registrado_por,
@@ -5744,6 +5711,7 @@ def obtener_conversacion_completa(db: Session, evento_id: int):
 
         return {
             "id": ev.id,
+            "clasificacion": ev.clasificacion,
             "titulo": ev.titulo,
             "descripcion": ev.descripcion,
             "fecha": ev.fecha,

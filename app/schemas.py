@@ -853,6 +853,7 @@ class FormStatusUpdate(BaseModel):
         }
         
 class BitacoraLogsSimpleCreate(BaseModel):
+    clasificacion: str
     titulo: str
     fecha: str
     hora: str
@@ -861,8 +862,18 @@ class BitacoraLogsSimpleCreate(BaseModel):
     descripcion: Optional[str] = None
     archivos: Optional[List[str]] = None  # lista de nombres de archivos subidos
 
+class BitacoraLogsSimpleAnswer(BaseModel):
+    titulo: str
+    fecha: str
+    hora: str
+    ubicacion: Optional[str] = None
+    participantes: Optional[str] = None
+    descripcion: Optional[str] = None
+    archivos: Optional[List[str]] = None
+
 class BitacoraResponse(BaseModel):
     id: int
+    clasificacion: str
     titulo: str
     descripcion: Optional[str]
     fecha: str

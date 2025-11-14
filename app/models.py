@@ -538,6 +538,7 @@ class BitacoraLogsSimple(Base):
     __tablename__ = "bitacora_logs_simple"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
+    clasificacion = Column(String(100), nullable=False)
     titulo = Column(String(255), nullable=False)
     fecha = Column(String(20), nullable=False)
     hora = Column(String(10), nullable=False)
@@ -575,3 +576,16 @@ class PalabrasClave(Base):
     # Timestamps para auditoría
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class ClasificacionBitacoraRelacion(Base):
+    __tablename__ = "clasificacion_bitacora_relacion"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, nullable=False) 
+    question_id = Column(BigInteger, nullable=False) 
+
+    # Timestamps para auditoría
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+

@@ -5,14 +5,14 @@ import os
 import uuid
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
-from sqlalchemy import inspect, text
+from sqlalchemy import desc, inspect, text
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from app.api.controllers.mail import send_reconsideration_email
 from app.crud import crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, encrypt_object, finalizar_conversacion_completa, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
 from app.database import get_db
-from app.schemas import AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, PalabrasClaveCreate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, RegisfacialAnswerResponse, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
-from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, Form, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, UserType
+from app.schemas import AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, PalabrasClaveCreate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, RegisfacialAnswerResponse, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
+from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, ClasificacionBitacoraRelacion, Form, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, UserType
 from app.core.security import get_current_user
 from typing import Dict
 from sqlalchemy import delete
@@ -1433,7 +1433,7 @@ def reabrir_evento(evento_id: int, db: Session = Depends(get_db), user: User = D
 
 @router.post("/eventos/{evento_id}/response", summary="Crear una respuesta a una bitácora simple")
 def create_bitacora_log_endpoint(
-    log_data: BitacoraLogsSimpleCreate,
+    log_data: BitacoraLogsSimpleAnswer,
     evento_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -1641,3 +1641,126 @@ def get_answers_by_form_and_question(
     ]
 
     return {"count": len(results), "results": results}
+
+
+# 🧠 Endpoint protegido para crear relaciones
+@router.post("/crear-clasification-relation", summary="Crear relación entre formulario y pregunta")
+def crear_clasificacion_relacion(
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    # 🔐 Verificar permisos
+    if str(current_user.user_type.value) not in ["admin", "creator"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permisos para crear relaciones."
+        )
+
+    form_id = data.get("form_id")
+    question_id = data.get("question_id")
+
+    if not form_id or not question_id:
+        raise HTTPException(status_code=400, detail="Faltan form_id o question_id.")
+
+    # 🧭 Obtener el último registro global (el más reciente en la tabla)
+    ultima_relacion = (
+        db.query(ClasificacionBitacoraRelacion)
+        .order_by(ClasificacionBitacoraRelacion.created_at.desc())
+        .first()
+    )
+
+    # 🔍 Si existe y ambos IDs coinciden => es la relación activa
+    if (
+        ultima_relacion
+        and ultima_relacion.form_id == form_id
+        and ultima_relacion.question_id == question_id
+    ):
+        return {
+            "message": "Esta es la relación actualmente activa.",
+            "exists": True,
+            "data": {
+                "id": ultima_relacion.id,
+                "form_id": ultima_relacion.form_id,
+                "question_id": ultima_relacion.question_id,
+                "created_at": ultima_relacion.created_at,
+            },
+        }
+
+    # 🚀 Si no coincide, crear una nueva relación
+    nueva = ClasificacionBitacoraRelacion(
+        form_id=form_id,
+        question_id=question_id
+    )
+    db.add(nueva)
+    db.commit()
+    db.refresh(nueva)
+
+    return {
+        "message": "✅ Relación creada correctamente",
+        "exists": False,
+        "data": {
+            "id": nueva.id,
+            "form_id": nueva.form_id,
+            "question_id": nueva.question_id,
+            "created_at": nueva.created_at,
+        },
+    }
+
+@router.get("/obtener-ultima-relacion", summary="Obtener la última pregunta relacionada en Clasificación Bitácora")
+def obtener_ultima_relacion(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Devuelve la última relación creada entre formulario y pregunta
+    en la tabla 'clasificacion_bitacora_relacion'.
+    """
+    if str(current_user.user_type.value) not in ["admin", "creator", "user"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permisos para crear relaciones."
+        )
+
+    try:
+        # Buscar la última relación (orden descendente por ID)
+        ultima_relacion = (
+            db.query(ClasificacionBitacoraRelacion)
+            .order_by(ClasificacionBitacoraRelacion.id.desc())
+            .first()
+        )
+
+        if not ultima_relacion:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No hay relaciones registradas aún."
+            )
+
+        # Buscar el texto de la pregunta asociada (en tu modelo Question)
+        pregunta = (
+            db.query(Question)
+            .filter(Question.id == ultima_relacion.question_id)
+            .first()
+        )
+
+        if not pregunta:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No se encontró la pregunta asociada a la relación."
+            )
+
+        return {
+            "message": "✅ Última relación encontrada correctamente.",
+            "data": {
+                "relacion_id": ultima_relacion.id,
+                "form_id": ultima_relacion.form_id,
+                "question_id": ultima_relacion.question_id,
+                "question_text": pregunta.question_text
+            }
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al obtener la última relación: {e}"
+        )
