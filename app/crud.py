@@ -750,16 +750,21 @@ def delete_question_from_db(db: Session, question_id: int):
     db.commit()
 
 
-def post_create_response(
+async def post_create_response(
     db: Session, 
     form_id: int, 
     user_id: int, 
+    current_user,  # 🆕 NUEVO PARÁMETRO
+    request,  # 🆕 NUEVO PARÁMETRO
     mode: str = "online", 
     repeated_id: Optional[str] = None, 
     create_approvals: bool = True,
-    status: ResponseStatus = ResponseStatus.draft  # NUEVO PARÁMETRO
+    status: ResponseStatus = ResponseStatus.draft
 ):
-    """Función modificada para incluir el estado"""
+    """
+    Función modificada para incluir el estado y el envío de correos.
+    Ahora envía correos aquí en lugar de en create_answer_in_db.
+    """
     
     form = db.query(Form).filter(Form.id == form_id).first()
     user = db.query(User).filter(User.id == user_id).first()
@@ -780,13 +785,14 @@ def post_create_response(
         mode_sequence=new_mode_sequence,
         submitted_at=func.now(),
         repeated_id=repeated_id,
-        status=status  # NUEVO CAMPO
+        status=status
     )
     db.add(response)
     db.commit()
     db.refresh(response)
 
     approvers_created = 0
+    emails_sent_result = None
     
     if create_approvals:
         form_approvals = db.query(FormApproval).filter(
@@ -807,8 +813,30 @@ def post_create_response(
 
         db.commit()
         
+        # Si hay aprobadores, enviar correos a ellos
         if approvers_created > 0:
             send_mails_to_next_supporters(response.id, db)
+    
+    # 🆕 NUEVO: Enviar correos de cierre de formulario si NO hay aprobadores
+    if not create_approvals or approvers_created == 0:
+        try:
+            # Verificar si hay configuración de cierre de formulario
+            form_close_config = db.query(FormCloseConfig).filter(
+                FormCloseConfig.form_id == form_id
+            ).first()
+            
+            if form_close_config:
+                # Enviar correos según la configuración
+                emails_sent_result = await send_form_action_emails(
+                    form_id=form.id, 
+                    db=db, 
+                    current_user=current_user, 
+                    request=request
+                )
+                print(f"✅ Correos de cierre enviados: {emails_sent_result}")
+        except Exception as e:
+            print(f"❌ Error al enviar correos de cierre: {str(e)}")
+            # No lanzar excepción, solo loggear el error
 
     return {
         "message": "Response saved successfully",
@@ -816,12 +844,13 @@ def post_create_response(
         "status": status.value,
         "mode": mode,
         "mode_sequence": new_mode_sequence,
-        "approvers_created": approvers_created
+        "approvers_created": approvers_created,
+        "emails_sent": emails_sent_result  # 🆕 Info sobre correos enviados
     }
 
 async def create_answer_in_db(answer, db: Session, current_user: User, request, send_emails: bool = True):
     """
-    ✅ MODIFICADO: Ahora incluye form_design_element_id en todas las respuestas
+    ✅ MODIFICADO: Ya NO envía correos aquí, eso se hace en post_create_response
     """
     
     created_answers = []
@@ -841,7 +870,6 @@ async def create_answer_in_db(answer, db: Session, current_user: User, request, 
                     answer_text=text,
                     file_path=answer.file_path,
                     repeated_id=answer.repeated_id,
-                    # ✅ NUEVO: Incluir UUID (si aplica en este caso)
                     form_design_element_id=answer.form_design_element_id
                 )
                 db.add(new_answer)
@@ -863,22 +891,8 @@ async def create_answer_in_db(answer, db: Session, current_user: User, request, 
     else:
         raise HTTPException(status_code=400, detail="Invalid question_id type")
 
-    # Envío de emails (sin cambios)
-    if created_answers and send_emails:
-        try:
-            response = db.query(Response).filter(Response.id == answer.response_id).first()
-            if response:
-                form_approval_exists = db.query(FormApproval).filter(
-                    FormApproval.form_id == response.form_id,
-                    FormApproval.is_active == True
-                ).first()
-
-                if not form_approval_exists:
-                    form = db.query(Form).filter(Form.id == response.form_id).first()
-                    if form:
-                        await send_form_action_emails(form.id, db, current_user, request)
-        except Exception as e:
-            print(f"Email error: {str(e)}")
+    # 🆕 REMOVIDO: Ya no enviamos correos aquí
+    # Los correos se envían en post_create_response cuando se completa el formulario
 
     # Retornar resultado
     if isinstance(answer.question_id, str):
@@ -3647,13 +3661,14 @@ def send_rejection_email_to_all(response_id: int, db: Session):
 def get_active_form_actions(form_id: int, db):
     """
     Obtiene solo las acciones activas para un formulario en formato simplificado.
+    Ahora retorna listas de destinatarios en lugar de un solo destinatario.
     
     Args:
         form_id (int): ID del formulario
         db: Instancia de la base de datos (session)
     
     Returns:
-        list: Lista de tuplas (acción, destinatario) para las configuraciones activas
+        list: Lista de tuplas (acción, [lista_de_destinatarios]) para las configuraciones activas
     """
     try:
         config = db.query(FormCloseConfig).filter(
@@ -3665,17 +3680,33 @@ def get_active_form_actions(form_id: int, db):
         
         active_actions = []
         
-        if config.send_download_link and config.download_link_recipient:
-            active_actions.append(('send_download_link', config.download_link_recipient))
+        # 🆕 Parsear JSON a lista de emails
+        if config.send_download_link and config.download_link_recipients:
+            try:
+                recipients = json.loads(config.download_link_recipients) if isinstance(config.download_link_recipients, str) else config.download_link_recipients
+                if recipients:  # Solo agregar si hay emails
+                    active_actions.append(('send_download_link', recipients))
+            except Exception as e:
+                print(f"Error al parsear download_link_recipients: {str(e)}")
         
-        if config.send_pdf_attachment and config.email_recipient:
-            active_actions.append(('send_pdf_attachment', config.email_recipient))
+        if config.send_pdf_attachment and config.email_recipients:
+            try:
+                recipients = json.loads(config.email_recipients) if isinstance(config.email_recipients, str) else config.email_recipients
+                if recipients:
+                    active_actions.append(('send_pdf_attachment', recipients))
+            except Exception as e:
+                print(f"Error al parsear email_recipients: {str(e)}")
         
-        if config.generate_report and config.report_recipient:
-            active_actions.append(('generate_report', config.report_recipient))
+        if config.generate_report and config.report_recipients:
+            try:
+                recipients = json.loads(config.report_recipients) if isinstance(config.report_recipients, str) else config.report_recipients
+                if recipients:
+                    active_actions.append(('generate_report', recipients))
+            except Exception as e:
+                print(f"Error al parsear report_recipients: {str(e)}")
         
         if config.do_nothing:
-            active_actions.append(('do_nothing', None))
+            active_actions.append(('do_nothing', []))
         
         return active_actions
         
@@ -3687,6 +3718,7 @@ def get_active_form_actions(form_id: int, db):
 async def send_form_action_emails(form_id: int, db, current_user, request):
     """
     Envía correos electrónicos según las acciones activas configuradas para un formulario.
+    Ahora soporta múltiples destinatarios por acción.
     
     Args:
         form_id (int): ID del formulario
@@ -3703,7 +3735,7 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
         if not form:
             return {"success": False, "error": f"Formulario con ID {form_id} no encontrado", "emails_sent": 0}
         
-        # Obtener las acciones activas
+        # Obtener las acciones activas (ahora con listas de emails)
         active_actions = get_active_form_actions(form_id, db)
         
         if not active_actions:
@@ -3738,21 +3770,22 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
             except Exception as e:
                 print(f"❌ Error al generar PDF: {str(e)}")
                 # Marcar acciones que requieren PDF como fallidas
-                for action, recipient in active_actions:
+                for action, recipients in active_actions:
                     if action in ['send_pdf_attachment', 'send_download_link']:
-                        results["failed_emails"] += 1
-                        results["actions_processed"].append({
-                            "action": action,
-                            "recipient": recipient,
-                            "status": "failed",
-                            "error": f"Error al generar PDF: {str(e)}"
-                        })
+                        results["failed_emails"] += len(recipients)
+                        for recipient in recipients:
+                            results["actions_processed"].append({
+                                "action": action,
+                                "recipient": recipient,
+                                "status": "failed",
+                                "error": f"Error al generar PDF: {str(e)}"
+                            })
                 # Filtrar acciones que no requieren PDF
-                active_actions = [(action, recipient) for action, recipient in active_actions 
+                active_actions = [(action, recipients) for action, recipients in active_actions 
                                 if action not in ['send_pdf_attachment', 'send_download_link']]
         
-        # Procesar cada acción activa
-        for action, recipient in active_actions:
+        # 🆕 Procesar cada acción activa con MÚLTIPLES destinatarios
+        for action, recipients in active_actions:
             if action == 'do_nothing':
                 print(f"Acción 'do_nothing' detectada - no se envía correo")
                 results["actions_processed"].append({
@@ -3762,39 +3795,53 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
                 })
                 continue
             
-            # Preparar el correo según el tipo de acción
-            email_sent = await send_action_notification_email(
-                action=action,
-                recipient=recipient,
-                form=form,
-                current_date=current_date,
-                pdf_bytes=pdf_bytes,
-                pdf_filename=pdf_filename,
-                db=db, 
-                current_user=current_user,
-            )
-            
-            if email_sent:
-                results["emails_sent"] += 1
-                results["actions_processed"].append({
-                    "action": action,
-                    "recipient": recipient,
-                    "status": "success"
-                })
-            else:
-                results["failed_emails"] += 1
-                results["actions_processed"].append({
-                    "action": action,
-                    "recipient": recipient,
-                    "status": "failed"
-                })
+            # 🆕 Iterar sobre cada destinatario
+            for recipient in recipients:
+                try:
+                    email_sent = await send_action_notification_email(
+                        action=action,
+                        recipient=recipient,
+                        form=form,
+                        current_date=current_date,
+                        pdf_bytes=pdf_bytes,
+                        pdf_filename=pdf_filename,
+                        db=db, 
+                        current_user=current_user,
+                    )
+                    
+                    if email_sent:
+                        results["emails_sent"] += 1
+                        results["actions_processed"].append({
+                            "action": action,
+                            "recipient": recipient,
+                            "status": "success"
+                        })
+                        print(f"✅ Correo enviado exitosamente a {recipient} para acción '{action}'")
+                    else:
+                        results["failed_emails"] += 1
+                        results["actions_processed"].append({
+                            "action": action,
+                            "recipient": recipient,
+                            "status": "failed",
+                            "error": "send_action_notification_email retornó False"
+                        })
+                        print(f"❌ Fallo al enviar correo a {recipient} para acción '{action}'")
+                        
+                except Exception as e:
+                    results["failed_emails"] += 1
+                    results["actions_processed"].append({
+                        "action": action,
+                        "recipient": recipient,
+                        "status": "failed",
+                        "error": str(e)
+                    })
+                    print(f"❌ Error al enviar correo a {recipient}: {str(e)}")
         
         return results
         
     except Exception as e:
         print(f"❌ Error al procesar acciones del formulario {form_id}: {str(e)}")
         return {"success": False, "error": str(e), "emails_sent": 0}
-
 
 async def update_response_approval_status(
     response_id: int,

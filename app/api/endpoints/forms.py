@@ -1503,6 +1503,7 @@ def get_form_relations_endpoint(form_id: int, db: Session = Depends(get_db), cur
     
     return relations_info
 
+
 @router.post("/create_form_close_config", response_model=FormCloseConfigOut)
 def create_form_close_config(config: FormCloseConfigCreate, db: Session = Depends(get_db)):
     """
@@ -1514,24 +1515,29 @@ def create_form_close_config(config: FormCloseConfigCreate, db: Session = Depend
     if existing:
         raise HTTPException(status_code=400, detail="Ya existe una configuración para este formulario.")
     
-    # Validar que si se selecciona una acción que requiere email, se proporcione el email
-    if config.send_download_link and not config.download_link_recipient:
-        raise HTTPException(status_code=400, detail="Se requiere destinatario para enviar enlace de descarga.")
+    # 🆕 Validar que si se selecciona una acción, haya al menos un email
+    if config.send_download_link and (not config.download_link_recipients or len(config.download_link_recipients) == 0):
+        raise HTTPException(status_code=400, detail="Se requiere al menos un destinatario para enviar enlace de descarga.")
     
-    if config.send_pdf_attachment and not config.email_recipient:
-        raise HTTPException(status_code=400, detail="Se requiere destinatario para enviar PDF como adjunto.")
+    if config.send_pdf_attachment and (not config.email_recipients or len(config.email_recipients) == 0):
+        raise HTTPException(status_code=400, detail="Se requiere al menos un destinatario para enviar PDF como adjunto.")
     
-    if config.generate_report and not config.report_recipient:
-        raise HTTPException(status_code=400, detail="Se requiere destinatario para generar reporte.")
+    if config.generate_report and (not config.report_recipients or len(config.report_recipients) == 0):
+        raise HTTPException(status_code=400, detail="Se requiere al menos un destinatario para generar reporte.")
     
-    new_config = FormCloseConfig(**config.dict())
+    # 🆕 Convertir listas a JSON para almacenar
+    config_dict = config.dict()
+    config_dict['download_link_recipients'] = json.dumps(config.download_link_recipients or [])
+    config_dict['email_recipients'] = json.dumps(config.email_recipients or [])
+    config_dict['report_recipients'] = json.dumps(config.report_recipients or [])
+    
+    new_config = FormCloseConfig(**config_dict)
     db.add(new_config)
     db.commit()
     db.refresh(new_config)
     
     return new_config
 
-# Agregar estos endpoints en tu archivo de rutas de forms
 
 @router.get("/form_close_config/{form_id}", response_model=FormCloseConfigOut)
 def get_form_close_config(form_id: int, db: Session = Depends(get_db)):
@@ -1560,18 +1566,24 @@ def update_form_close_config(
     if not existing_config:
         raise HTTPException(status_code=404, detail="No existe configuración de cierre para este formulario")
     
-    # Validaciones
-    if config.send_download_link and not config.download_link_recipient:
-        raise HTTPException(status_code=400, detail="Se requiere destinatario para enviar enlace de descarga.")
+    # 🆕 Validaciones con múltiples emails
+    if config.send_download_link and (not config.download_link_recipients or len(config.download_link_recipients) == 0):
+        raise HTTPException(status_code=400, detail="Se requiere al menos un destinatario para enviar enlace de descarga.")
     
-    if config.send_pdf_attachment and not config.email_recipient:
-        raise HTTPException(status_code=400, detail="Se requiere destinatario para enviar PDF como adjunto.")
+    if config.send_pdf_attachment and (not config.email_recipients or len(config.email_recipients) == 0):
+        raise HTTPException(status_code=400, detail="Se requiere al menos un destinatario para enviar PDF como adjunto.")
     
-    if config.generate_report and not config.report_recipient:
-        raise HTTPException(status_code=400, detail="Se requiere destinatario para generar reporte.")
+    if config.generate_report and (not config.report_recipients or len(config.report_recipients) == 0):
+        raise HTTPException(status_code=400, detail="Se requiere al menos un destinatario para generar reporte.")
+    
+    # 🆕 Convertir listas a JSON
+    config_dict = config.dict()
+    config_dict['download_link_recipients'] = json.dumps(config.download_link_recipients or [])
+    config_dict['email_recipients'] = json.dumps(config.email_recipients or [])
+    config_dict['report_recipients'] = json.dumps(config.report_recipients or [])
     
     # Actualizar campos
-    for key, value in config.dict().items():
+    for key, value in config_dict.items():
         setattr(existing_config, key, value)
     
     db.commit()
@@ -1594,6 +1606,7 @@ def delete_form_close_config(form_id: int, db: Session = Depends(get_db)):
     db.commit()
     
     return {"message": "Configuración de cierre eliminada exitosamente"}
+
 UPLOAD_FOLDER = "logo"
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
 
