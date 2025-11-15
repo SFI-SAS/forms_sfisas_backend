@@ -4437,6 +4437,7 @@ def get_form_with_full_responses(form_id: int, db: Session):
         "form_id": form.id,
         "title": form.title,
         "description": form.description,
+        "form_design": form.form_design,
         "questions": questions_list,  # ← Ahora tiene TODAS las preguntas reales
         "responses": [],
     }
@@ -4445,6 +4446,7 @@ def get_form_with_full_responses(form_id: int, db: Session):
     for response in form.responses:
         response_data = {
             "response_id": response.id,
+
             "status": response.status,
             "user": {
                 "id": response.user.id,
@@ -4474,6 +4476,7 @@ def get_form_with_full_responses(form_id: int, db: Session):
             
             response_data["answers"].append({
                 "question_id": ans.question.id,
+                "form_design_element_id": ans.form_design_element_id,
                 "question_text": ans.question.question_text,
                 "answer_text": processed_answer_text,
                 "file_path": ans.file_path,
