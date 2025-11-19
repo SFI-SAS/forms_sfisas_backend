@@ -1,14 +1,19 @@
+from ast import Dict
+from collections import defaultdict
+from difflib import SequenceMatcher
 import io
+import json
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from typing import Any, List, Optional
 from app import models
 from app.api.controllers.mail import send_welcome_email
 from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.database import get_db
-from app.models import EmailConfig, User, UserCategory, UserType
+from app.models import Answer, EmailConfig, Question, Response, User, UserCategory, UserType
 from app.crud import create_email_config, create_user, create_user_category, create_user_with_random_password, decrypt_object, delete_user_category_by_id, encrypt_object, fetch_all_users, get_all_email_configs, get_all_user_categories, get_response_details_logic, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
 from app.schemas import EmailConfigCreate, EmailConfigResponse, EmailConfigUpdate, EmailStatusUpdate, UpdateRecognitionId, UpdateUserCategory, UserBaseCreate, UserCategoryCreate, UserCategoryResponse, UserCreate, UserResponse, UserUpdate, UserUpdateInfo
 from app.core.security import get_current_user, hash_password
@@ -919,3 +924,93 @@ def asignar_bitacora(
             "asign_bitacora": user.asign_bitacora
         }
     }
+
+
+
+class MigrationResponse(BaseModel):
+    status: str
+    total_to_migrate: int
+    migrated: int
+    message: str
+
+
+def get_element_uuid_by_question(form_design, question_id):
+    """Busca el UUID del elemento"""
+    if not form_design or not isinstance(form_design, list):
+        return None
+    
+    for item in form_design:
+        if isinstance(item, dict):
+            if item.get('linkExternalId') == question_id and item.get('id'):
+                return item.get('id')
+    
+    return None
+
+
+@router.post("/migrate/form-design-elements", response_model=MigrationResponse)
+async def migrate_form_design_elements(
+    db: Session = Depends(get_db)
+):
+    """🔄 Migración 100% SQL puro"""
+    
+
+    
+    try:
+        # 1. Obtener answers sin form_design_element_id Y su form_design
+        result = db.execute(
+            text("""
+                SELECT a.id, a.question_id, f.form_design
+                FROM answers a
+                JOIN responses r ON a.response_id = r.id
+                JOIN forms f ON r.form_id = f.id
+                WHERE a.form_design_element_id IS NULL
+            """)
+        )
+        
+        rows = result.fetchall()
+        total = len(rows)
+        migrated = 0
+        
+        if total == 0:
+            return MigrationResponse(
+                status="success",
+                total_to_migrate=0,
+                migrated=0,
+                message="✅ Nada que migrar"
+            )
+        
+        # 2. Procesar cada fila
+        for answer_id, question_id, form_design_json in rows:
+            try:
+                # Parsear el form_design JSON
+                form_design = json.loads(form_design_json)
+                
+                # Buscar el UUID
+                uuid = get_element_uuid_by_question(form_design, question_id)
+                
+                if not uuid:
+                    uuid = f"legacy_q_{question_id}"
+                
+                # Actualizar SOLO con SQL puro
+                db.execute(
+                    text("UPDATE answers SET form_design_element_id = :uuid WHERE id = :id"),
+                    {"uuid": uuid, "id": answer_id}
+                )
+                migrated += 1
+                
+            except Exception as e:
+                print(f"❌ Error answer {answer_id}: {e}")
+                continue
+        
+        db.commit()
+        
+        return MigrationResponse(
+            status="success",
+            total_to_migrate=total,
+            migrated=migrated,
+            message=f"✨ {migrated}/{total} actualizadas"
+        )
+    
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"❌ {str(e)}")
