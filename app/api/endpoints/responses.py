@@ -1421,21 +1421,6 @@ def get_mis_eventos(
         "data": logs
     }
 
-# @router.put("/eventos/{evento_id}/finalizar", summary="Atender y finalizar evento")
-# def atender_y_finalizar(evento_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-#     if not user.asign_bitacora:
-#         raise HTTPException(
-#             status_code=status.HTTP_403_FORBIDDEN,
-#             detail="No tienes permiso para acceder a la bitácora de formatos."
-#         )
-#     try:
-#         evento = atender_y_finalizar_service(evento_id, user.name, user.num_document, db)
-#         return {"message": "✅ Evento finalizado correctamente", "data": evento}
-#     except ValueError as e:
-#         raise HTTPException(status_code=404, detail=str(e))
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=f"Error al finalizar el evento: {e}")
-    
 @router.put("/eventos/{evento_id}/reabrir", summary="Reabrir conversación del evento")
 def reabrir_evento(evento_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """
@@ -1488,10 +1473,10 @@ def finalizar_conversacion_endpoint(
     """
     Endpoint para finalizar todos los eventos de una conversación.
     """
-    if not current_user.asign_bitacora:
+    if str(current_user.user_type.value) not in ["user", "admin", "creator"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tienes permiso para acceder a la bitácora de formatos."
+            detail="No tienes permisos para finalizar la conversación."
         )
     usuario = f"{current_user.name} - {current_user.num_document}"
     return finalizar_conversacion_completa(db, evento_id, usuario)
