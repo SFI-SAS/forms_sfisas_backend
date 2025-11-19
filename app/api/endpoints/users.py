@@ -926,7 +926,6 @@ def asignar_bitacora(
     }
 
 
-
 class MigrationResponse(BaseModel):
     status: str
     total_to_migrate: int
@@ -988,15 +987,13 @@ async def migrate_form_design_elements(
                 # Buscar el UUID
                 uuid = get_element_uuid_by_question(form_design, question_id)
                 
-                if not uuid:
-                    uuid = f"legacy_q_{question_id}"
-                
-                # Actualizar SOLO con SQL puro
-                db.execute(
-                    text("UPDATE answers SET form_design_element_id = :uuid WHERE id = :id"),
-                    {"uuid": uuid, "id": answer_id}
-                )
-                migrated += 1
+                # Solo actualizar si encuentra el UUID
+                if uuid:
+                    db.execute(
+                        text("UPDATE answers SET form_design_element_id = :uuid WHERE id = :id"),
+                        {"uuid": uuid, "id": answer_id}
+                    )
+                    migrated += 1
                 
             except Exception as e:
                 print(f"❌ Error answer {answer_id}: {e}")

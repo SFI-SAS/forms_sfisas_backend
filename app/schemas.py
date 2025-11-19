@@ -1,4 +1,5 @@
 import json
+from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Any, Literal, Optional, List, Dict, Union
 from datetime import date, datetime
@@ -511,7 +512,7 @@ class FilteredAnswersResponse(BaseModel):
     answer: str
     
 class ResponseItem(BaseModel):
-    question_id: int
+    question_id: Union[int, UUID, str] 
     response: Union[str, dict, bool]  # ✅ Ahora puede ser string, dict o booleano
     file_path: Optional[str] = None
     repeated_id: Optional[str] = None
