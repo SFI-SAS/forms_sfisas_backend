@@ -925,23 +925,45 @@ def asignar_bitacora(
         }
     }
 
-
 class MigrationResponse(BaseModel):
     status: str
     total_to_migrate: int
     migrated: int
+    skipped: int
     message: str
+    details: dict = {}
 
 
 def get_element_uuid_by_question(form_design, question_id):
-    """Busca el UUID del elemento"""
+    """
+    🎯 Busca el UUID del elemento que coincida con question_id
+    Ahora usa AMBOS: linkExternalId e id_question
+    """
     if not form_design or not isinstance(form_design, list):
         return None
     
     for item in form_design:
         if isinstance(item, dict):
-            if item.get('linkExternalId') == question_id and item.get('id'):
-                return item.get('id')
+            # ✅ NUEVO: Verificar AMBOS campos
+            link_id = item.get('linkExternalId')
+            id_q = item.get('id_question')
+            element_uuid = item.get('id')
+            
+            # Si cualquiera de los dos coincide, retornar el UUID
+            if element_uuid and (link_id == question_id or id_q == question_id):
+                return element_uuid
+            
+            # 🔄 Buscar recursivamente en children (layouts, repeaters)
+            children = item.get('children', [])
+            if children and isinstance(children, list):
+                for child in children:
+                    if isinstance(child, dict):
+                        child_link = child.get('linkExternalId')
+                        child_id_q = child.get('id_question')
+                        child_uuid = child.get('id')
+                        
+                        if child_uuid and (child_link == question_id or child_id_q == question_id):
+                            return child_uuid
     
     return None
 
@@ -950,41 +972,49 @@ def get_element_uuid_by_question(form_design, question_id):
 async def migrate_form_design_elements(
     db: Session = Depends(get_db)
 ):
-    """🔄 Migración 100% SQL puro"""
-    
-
+    """
+    🔄 Migración mejorada con id_question
+    Actualiza form_design_element_id en answers usando el nuevo campo id_question
+    """
     
     try:
         # 1. Obtener answers sin form_design_element_id Y su form_design
         result = db.execute(
             text("""
-                SELECT a.id, a.question_id, f.form_design
+                SELECT a.id, a.question_id, f.form_design, f.id as form_id
                 FROM answers a
                 JOIN responses r ON a.response_id = r.id
                 JOIN forms f ON r.form_id = f.id
                 WHERE a.form_design_element_id IS NULL
+                ORDER BY a.id
             """)
         )
         
         rows = result.fetchall()
         total = len(rows)
         migrated = 0
+        skipped = 0
+        details = {
+            "by_form": {},
+            "errors": []
+        }
         
         if total == 0:
             return MigrationResponse(
                 status="success",
                 total_to_migrate=0,
                 migrated=0,
-                message="✅ Nada que migrar"
+                skipped=0,
+                message="✅ Nada que migrar - Todos los answers ya tienen form_design_element_id"
             )
         
         # 2. Procesar cada fila
-        for answer_id, question_id, form_design_json in rows:
+        for answer_id, question_id, form_design_json, form_id in rows:
             try:
                 # Parsear el form_design JSON
-                form_design = json.loads(form_design_json)
+                form_design = json.loads(form_design_json) if form_design_json else []
                 
-                # Buscar el UUID
+                # Buscar el UUID usando la función mejorada
                 uuid = get_element_uuid_by_question(form_design, question_id)
                 
                 # Solo actualizar si encuentra el UUID
@@ -994,20 +1024,153 @@ async def migrate_form_design_elements(
                         {"uuid": uuid, "id": answer_id}
                     )
                     migrated += 1
+                    
+                    # Tracking por formulario
+                    if form_id not in details["by_form"]:
+                        details["by_form"][form_id] = {"migrated": 0, "skipped": 0}
+                    details["by_form"][form_id]["migrated"] += 1
+                    
+                else:
+                    skipped += 1
+                    
+                    # Tracking de los que no se pudieron migrar
+                    if form_id not in details["by_form"]:
+                        details["by_form"][form_id] = {"migrated": 0, "skipped": 0}
+                    details["by_form"][form_id]["skipped"] += 1
+                    
+                    details["errors"].append({
+                        "answer_id": answer_id,
+                        "question_id": question_id,
+                        "form_id": form_id,
+                        "reason": "No se encontró elemento con linkExternalId o id_question coincidente"
+                    })
                 
+            except json.JSONDecodeError as e:
+                skipped += 1
+                details["errors"].append({
+                    "answer_id": answer_id,
+                    "question_id": question_id,
+                    "form_id": form_id,
+                    "reason": f"JSON inválido: {str(e)}"
+                })
+                continue
             except Exception as e:
-                print(f"❌ Error answer {answer_id}: {e}")
+                skipped += 1
+                details["errors"].append({
+                    "answer_id": answer_id,
+                    "question_id": question_id,
+                    "form_id": form_id,
+                    "reason": f"Error: {str(e)}"
+                })
                 continue
         
         db.commit()
         
+        # 3. Preparar mensaje detallado
+        message_parts = [f"✨ Migración completada: {migrated}/{total} actualizadas"]
+        if skipped > 0:
+            message_parts.append(f"⚠️ {skipped} omitidas (no se encontró UUID)")
+        
         return MigrationResponse(
-            status="success",
+            status="success" if migrated > 0 else "partial",
             total_to_migrate=total,
             migrated=migrated,
-            message=f"✨ {migrated}/{total} actualizadas"
+            skipped=skipped,
+            message=" | ".join(message_parts),
+            details=details
         )
     
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"❌ {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"❌ Error en migración: {str(e)}"
+        )
+
+
+# 🆕 ENDPOINT ADICIONAL: Ver estadísticas de migración
+@router.get("/migrate/stats")
+async def get_migration_stats(db: Session = Depends(get_db)):
+    """📊 Estadísticas de migración"""
+    
+    result = db.execute(
+        text("""
+            SELECT 
+                COUNT(*) as total_answers,
+                COUNT(form_design_element_id) as with_uuid,
+                COUNT(*) - COUNT(form_design_element_id) as without_uuid
+            FROM answers
+        """)
+    )
+    
+    row = result.fetchone()
+    
+    return {
+        "total_answers": row[0],
+        "with_uuid": row[1],
+        "without_uuid": row[2],
+        "percentage_complete": round((row[1] / row[0] * 100) if row[0] > 0 else 0, 2)
+    }
+
+
+# 🆕 ENDPOINT ADICIONAL: Ver answers problemáticos
+@router.get("/migrate/problematic")
+async def get_problematic_answers(
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """🔍 Ver answers que no se pudieron migrar"""
+    
+    result = db.execute(
+        text("""
+            SELECT 
+                a.id as answer_id,
+                a.question_id,
+                q.question_text,
+                f.id as form_id,
+                f.title as form_title,
+                f.form_design::text as form_design_preview
+            FROM answers a
+            JOIN responses r ON a.response_id = r.id
+            JOIN forms f ON r.form_id = f.id
+            LEFT JOIN questions q ON a.question_id = q.id
+            WHERE a.form_design_element_id IS NULL
+            ORDER BY a.id DESC
+            LIMIT :limit
+        """),
+        {"limit": limit}
+    )
+    
+    rows = result.fetchall()
+    
+    problematic = []
+    for row in rows:
+        # Parsear form_design para ver qué elementos tiene
+        try:
+            form_design = json.loads(row[5]) if row[5] else []
+            elements_with_links = [
+                {
+                    "id": item.get("id"),
+                    "type": item.get("type"),
+                    "linkExternalId": item.get("linkExternalId"),
+                    "id_question": item.get("id_question")
+                }
+                for item in form_design
+                if isinstance(item, dict) and item.get("linkExternalId")
+            ]
+        except:
+            elements_with_links = []
+        
+        problematic.append({
+            "answer_id": row[0],
+            "question_id": row[1],
+            "question_text": row[2],
+            "form_id": row[3],
+            "form_title": row[4],
+            "available_elements": elements_with_links
+        })
+    
+    return {
+        "total_problematic": len(problematic),
+        "answers": problematic
+    }
