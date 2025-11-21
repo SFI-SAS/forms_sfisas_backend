@@ -932,3 +932,14 @@ class FormResponseBitacora(BaseModel):
 
     class Config:
         from_attributes = True
+
+class PalabrasClaveOut(BaseModel):
+    id: int
+    form_id: int
+    keywords: str
+
+    class Config:
+        from_attributes = True
+
+class PalabrasClaveUpdate(BaseModel):
+    palabra: str

@@ -5937,3 +5937,7 @@ def obtener_conversacion_completa(db: Session, evento_id: int):
         }
 
     return build_tree(evento)
+
+
+def get_palabras_clave_by_form(db: Session, form_id: int):
+    return db.query(PalabrasClave).filter(PalabrasClave.form_id == form_id).first()

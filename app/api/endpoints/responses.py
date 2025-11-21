@@ -1,4 +1,5 @@
 
+from datetime import datetime
 import json
 import logging
 import os
@@ -9,9 +10,9 @@ from sqlalchemy import desc, inspect, text
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from app.api.controllers.mail import send_reconsideration_email
-from app.crud import crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, encrypt_object, finalizar_conversacion_completa, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
+from app.crud import crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, encrypt_object, finalizar_conversacion_completa, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, get_palabras_clave_by_form, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
 from app.database import get_db
-from app.schemas import AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, PalabrasClaveCreate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, RegisfacialAnswerResponse, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
+from app.schemas import AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, PalabrasClaveCreate, PalabrasClaveOut, PalabrasClaveUpdate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, RegisfacialAnswerResponse, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
 from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, ClasificacionBitacoraRelacion, Form, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, UserType
 from app.core.security import get_current_user
 from typing import Dict
@@ -1774,3 +1775,151 @@ def obtener_ultima_relacion(
             status_code=500,
             detail=f"Error al obtener la última relación: {e}"
         )
+
+@router.get(
+    "/forms/{form_id}/palabras-clave",
+    response_model=PalabrasClaveOut,
+    summary="Obtener palabras clave por form_id"
+)
+def obtener_palabras_clave(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if str(current_user.user_type.value) not in ["admin", "creator", "user"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permisos para crear relaciones."
+        )
+    palabras = get_palabras_clave_by_form(db, form_id)
+
+    if not palabras:
+        raise HTTPException(
+            status_code=404,
+            detail="No existen palabras clave para este formulario."
+        )
+
+    return palabras
+
+
+@router.delete(
+    "/forms/{form_id}/delete-palabra-clave/{keyword}",
+    summary="Eliminar una palabra clave del formulario"
+)
+def eliminar_palabra_clave(
+    form_id: int,
+    keyword: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if str(current_user.user_type.value) not in ["admin", "creator"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permisos para crear relaciones."
+            )
+    registro = db.query(PalabrasClave).filter(PalabrasClave.form_id == form_id).first()
+
+    if not registro:
+        raise HTTPException(404, "Este formulario no tiene palabras clave.")
+
+    palabras = registro.keywords.split(",")
+    
+    if keyword not in palabras:
+        raise HTTPException(404, "La palabra clave no existe en este formulario.")
+
+    palabras.remove(keyword)
+
+    registro.keywords = ",".join(palabras)
+    registro.updated_at = datetime.now()
+
+    db.commit()
+
+    return {"message": f"Palabra clave '{keyword}' eliminada."}
+
+
+@router.delete(
+    "/forms/{form_id}/delete-palabras-clave",
+    summary="Eliminar todas las palabras clave de un formulario"
+)
+def eliminar_todas_palabras_clave(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if str(current_user.user_type.value) not in ["admin", "creator"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permisos para eliminar palabras clave."
+            )
+    registro = db.query(PalabrasClave).filter(PalabrasClave.form_id == form_id).first()
+
+    if not registro:
+        raise HTTPException(404, "Este formulario no tiene palabras clave.")
+
+    db.delete(registro)
+    db.commit()
+
+    return {"message": "Todas las palabras clave fueron eliminadas."}
+
+
+@router.put("/forms/{form_id}/update-palabras-clave", summary="Agregar una palabra clave")
+def update_palabras_clave(
+    form_id: int,
+    data: PalabrasClaveUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Agrega UNA única palabra clave al formulario, evitando duplicados.
+    Si el registro no existe, lo crea.
+    """
+    # Validación de permisos
+    if str(current_user.user_type.value) not in ["admin", "creator"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permisos para modificar palabras clave."
+        )
+
+    # Normalizar palabra
+    nueva = data.palabra.strip().lower()
+
+    if not nueva:
+        raise HTTPException(status_code=400, detail="La palabra clave no es válida.")
+
+    # Buscar registro existente
+    registro = db.query(PalabrasClave).filter(PalabrasClave.form_id == form_id).first()
+
+    if registro:
+        # Convertir palabras actuales a lista
+        actuales = [
+            p.strip().lower()
+            for p in registro.keywords.split(",")
+            if p.strip()
+        ]
+
+        # Verificar duplicado
+        if nueva in actuales:
+            return {
+                "message": "La palabra clave ya existe.",
+                "keywords": registro.keywords
+            }
+
+        # Agregar palabra
+        actuales.append(nueva)
+        registro.keywords = ", ".join(actuales)
+
+    else:
+        # Crear nuevo registro con UNA sola palabra
+        registro = PalabrasClave(
+            form_id=form_id,
+            keywords=nueva
+        )
+        db.add(registro)
+
+    db.commit()
+
+    return {
+        "message": "Palabra clave agregada correctamente.",
+        "keywords": registro.keywords
+    }
+
