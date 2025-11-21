@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import Any, List, Optional
 from app.database import get_db
 from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormQuestion, FormSchedule, Question, Response, ResponseApproval, User, UserType
-from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, move_category, remove_moderator_from_form, remove_question_from_form, save_form_approvals, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
+from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, move_category, remove_moderator_from_form, remove_question_from_form, save_form_approvals, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
 from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormSchema, FormStatusUpdate, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, ResponseApprovalCreate, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
@@ -486,6 +486,88 @@ def get_responses_with_answers(
 
     return result
 
+# Endpoint para las estadisticas resumidas de las respuestas
+@router.get("/responses/summary")
+def get_responses_summary(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Obtiene un resumen de las respuestas del usuario autenticado para un formulario específico.
+    Solo devuelve campos básicos: información del formulario, estado de aprobación y datos mínimos.
+    
+    Ideal para listados rápidos donde no se necesitan las respuestas completas a las preguntas.
+
+    Args:
+        form_id (int): ID del formulario del cual se desean obtener las respuestas.
+        db (Session): Sesión activa de la base de datos.
+        current_user (User): Usuario autenticado.
+
+    Returns:
+        List[dict]: Lista resumida de respuestas con información básica de aprobación.
+
+    Raises:
+        HTTPException: 403 si no hay un usuario autenticado.
+        HTTPException: 404 si no se encuentran respuestas.
+    """
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to access responses",
+        )
+
+    # Query optimizado: solo traemos lo necesario
+    stmt = (
+        select(Response)
+        .where(Response.form_id == form_id, Response.user_id == current_user.id)
+        .options(
+            joinedload(Response.form).load_only(
+                Form.id,
+                Form.title,
+                Form.description
+            ),
+            joinedload(Response.approvals).joinedload(ResponseApproval.user).load_only(
+                User.id,
+                User.name,
+                User.email,
+                User.nickname,
+                User.num_document
+            )
+        )
+    )
+
+    responses = db.execute(stmt).unique().scalars().all()
+
+    if not responses:
+        raise HTTPException(status_code=404, detail="No se encontraron respuestas")
+
+    result = []
+    for r in responses:
+        approval_result = get_response_approval_status(r.approvals)
+
+        result.append({
+            "form_id": r.form.id,
+            "form_title": r.form.title,
+            "form_description": r.form.description,
+            "response_id": r.id,
+            "submitted_at": r.submitted_at,
+            "approvals": [
+                {
+                    "approval_id": ap.id,
+                    "sequence_number": ap.sequence_number,
+                    "is_mandatory": ap.is_mandatory,
+                    "user": {
+                        "id": ap.user.id,
+                        "name": ap.user.name
+
+                    }
+                }
+                for ap in r.approvals
+            ]
+        })
+
+    return result
 
 @router.get("/all/list", response_model=List[dict])
 def get_forms_endpoint(db: Session = Depends(get_db)):
@@ -530,7 +612,42 @@ def get_user_forms( db: Session = Depends(get_db), current_user: User = Depends(
             return forms
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/users/form_by_user/summary")
+def get_user_forms_summary(
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Retorna un resumen de los formularios asignados al usuario autenticado.
+    Solo devuelve campos básicos: id, title, description, created_at, user_id
     
+    Ideal para listados rápidos donde no se necesita información completa.
+    
+    - **Requiere autenticación.**
+    - **Código 200**: Lista resumida de formularios.
+    - **Código 403**: Usuario sin permisos.
+    - **Código 404**: No se encontraron formularios.
+    - **Código 500**: Error interno del servidor.
+    """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get forms"
+        )
+    
+    try:
+        forms = get_forms_by_user_summary(db, current_user.id)
+        if not forms:
+            raise HTTPException(
+                status_code=404, 
+                detail="No se encontraron formularios para este usuario"
+            )
+        return forms
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/users/completed_forms", response_model=List[FormSchema])
 def get_completed_forms_for_user(

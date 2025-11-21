@@ -7,7 +7,7 @@ import os
 import threading
 import pytz
 from sqlalchemy import and_, exists, func, not_, or_, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, defer
 from sqlalchemy.exc import IntegrityError
 from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
@@ -1073,16 +1073,47 @@ def create_form_schedule(
 
 
 def fetch_all_users(db: Session):
-    """Función para obtener todos los usuarios con su categoría."""
-    stmt = select(User).options(joinedload(User.category))
-    result = db.execute(stmt)
-    users = result.scalars().all()
+    """
+    Función para obtener un resumen de todos los usuarios.
+    Solo trae campos esenciales sin información sensible como contraseñas.
+    """
+    results = db.query(
+        User.id,
+        User.num_document,
+        User.name,
+        User.email,
+        User.telephone,
+        User.user_type,
+        User.nickname,
+        User.recognition_id,
+        User.asign_bitacora,
+        User.id_category,
+        UserCategory.id.label('category_id'),
+        UserCategory.name.label('category_name')
+    ).outerjoin(
+        UserCategory, User.id_category == UserCategory.id
+    ).all()
 
-    if not users:
+    if not results:
         raise HTTPException(status_code=404, detail="No se encontraron usuarios")
 
-    return users
-
+    # Convertir a diccionarios
+    return [
+        {
+            "id": r.id,
+            "num_document": r.num_document,
+            "email": r.email,
+            "user_type": r.user_type.value,
+            "asign_bitacora": r.asign_bitacora,
+            "name": r.name,
+            "telephone": r.telephone,
+            "category": {
+                "id": r.category_id,
+                "name": r.category_name
+            } if r.category_id else None
+        }
+        for r in results
+    ]
 def get_response_id(db: Session, form_id: int, user_id: int):
     """Obtiene el ID de Response basado en form_id y user_id."""
     stmt = select(Response.id).where(Response.form_id == form_id, Response.user_id == user_id)
@@ -1121,21 +1152,79 @@ def get_all_forms(db: Session):
     ]
 def get_forms_by_user(db: Session, user_id: int):
     """
-    Obtiene los formularios asociados al usuario a través de la relación con la tabla `form_moderators`,
-    incluyendo la información de la categoría asociada.
-
-    :param db: Sesión de base de datos activa.
-    :param user_id: ID del usuario autenticado.
-    :return: Lista de objetos Form con su categoría precargada.
+    Obtiene los formularios sin form_design y los convierte a diccionarios
+    para máxima velocidad de serialización.
     """
     forms = (
         db.query(Form)
-        .join(FormModerators)
-        .options(joinedload(Form.category))  # ← Esto precarga la info de la categoría
+        .join(FormModerators, Form.id == FormModerators.form_id)
+        .options(
+            defer(Form.form_design),
+            joinedload(Form.category)
+        )
         .filter(FormModerators.user_id == user_id)
         .all()
     )
-    return forms
+    
+    # Convertir a diccionarios manualmente (más rápido que la serialización automática)
+    result = []
+    for form in forms:
+        form_dict = {
+            "id": form.id,
+            "title": form.title,
+            "format_type": form.format_type.value,  # ← .value porque es un Enum
+            "is_enabled": form.is_enabled,
+            "user_id": form.user_id,
+            "description": form.description,
+            "created_at": form.created_at.isoformat(),  # ← Convertir a string ISO
+            "id_category": form.id_category,
+            "category": {
+                "id": form.category.id,
+                "parent_id": form.category.parent_id,
+                "is_expanded": form.category.is_expanded,
+                "color": form.category.color,
+                "updated_at": form.category.updated_at.isoformat() if form.category.updated_at else None,
+                "name": form.category.name,
+                "description": form.category.description,
+                "order": form.category.order,
+                "icon": form.category.icon,
+                "created_at": form.category.created_at.isoformat()
+            } if form.category else None
+        }
+        result.append(form_dict)
+    
+    return result
+
+def get_forms_by_user_summary(db: Session, user_id: int):
+    """
+    Obtiene un resumen de los formularios (solo campos básicos para listados).
+    La forma MÁS RÁPIDA posible.
+    """
+    results = (
+        db.query(
+            Form.id,
+            Form.title,
+            Form.description,
+            Form.created_at,
+            Form.user_id
+        )
+        .join(FormModerators, Form.id == FormModerators.form_id)
+        .filter(FormModerators.user_id == user_id)
+        .all()
+    )
+    
+    # Convertir tuplas a diccionarios
+    return [
+        {
+            "id": r.id,
+            "title": r.title,
+            "description": r.description,
+            "created_at": r.created_at.isoformat(),
+            "user_id": r.user_id
+        }
+        for r in results
+    ]
+
 
 def get_forms_by_approver(db: Session, user_id: int):
     """
@@ -3114,7 +3203,6 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 "form_id": form.id,
                 "form_title": form.title,
                 "form_description": form.description,
-                "form_design": form.form_design,
                 "submitted_by": {
                     "user_id": user_response.id,
                     "name": user_response.name,
