@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import Any, List, Optional
 from app.database import get_db
 from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormQuestion, FormSchedule, Question, Response, ResponseApproval, User, UserType
-from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, move_category, remove_moderator_from_form, remove_question_from_form, save_form_approvals, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
+from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, move_category, remove_moderator_from_form, remove_question_from_form, save_form_approvals, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
 from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormSchema, FormStatusUpdate, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, ResponseApprovalCreate, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
@@ -486,6 +486,41 @@ def get_responses_with_answers(
 
     return result
 
+
+@router.get("/users/completed_forms_with_responses")
+def get_completed_forms_with_responses(
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Retorna los formularios completados por el usuario autenticado junto con 
+    todas sus respuestas y aprobaciones en una sola llamada.
+    
+    Combina la información de:
+    - Lista de formularios completados
+    - Resumen de todas las respuestas de cada formulario con sus aprobaciones
+
+    - **Autenticación requerida**
+    - **Código 200**: Lista de formularios con sus respuestas y aprobaciones
+    - **Código 403**: Usuario no autenticado o sin permisos
+    - **Código 404**: No se encontraron formularios completados
+    """
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to access completed forms",
+        )
+
+    completed_forms_data = fetch_completed_forms_with_all_responses(db, current_user.id)
+    
+    if not completed_forms_data:
+        raise HTTPException(
+            status_code=404, 
+            detail="No completed forms found for this user"
+        )
+    
+    return completed_forms_data
+
 # Endpoint para las estadisticas resumidas de las respuestas
 @router.get("/responses/summary")
 def get_responses_summary(
@@ -589,27 +624,47 @@ def get_forms_endpoint(db: Session = Depends(get_db)):
     
 
 @router.get("/users/form_by_user")
-def get_user_forms( db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_user_forms(
+    page: int = 1,  # Número de página (empieza en 1)
+    page_size: int = 30,  # Cantidad de registros por página
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user)
+):
     """
-    Retorna los formularios asignados al usuario autenticado.
+    Retorna los formularios asignados al usuario autenticado con paginación.
 
+    - **page**: Número de página (por defecto 1)
+    - **page_size**: Cantidad de registros por página (por defecto 30, máximo 100)
     - **Requiere autenticación.**
-    - **Código 200**: Lista de formularios.
-    - **Código 403**: Usuario sin permisos (no autenticado).
-    - **Código 404**: No se encontraron formularios asignados.
+    - **Código 200**: Lista de formularios paginados.
+    - **Código 403**: Usuario sin permisos.
+    - **Código 404**: No se encontraron formularios.
     - **Código 500**: Error interno del servidor.
     """
     try:
-        if current_user == None:
+        if current_user is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User does not have permission to get all questions"
             )
-        else: 
-            forms = get_forms_by_user(db, current_user.id)
-            if not forms:
-                raise HTTPException(status_code=404, detail="No se encontraron formularios para este usuario")
-            return forms
+        
+        # Validar page_size máximo
+        if page_size > 100:
+            page_size = 100
+        
+        # Obtener formularios paginados
+        forms_data = get_forms_by_user(db, current_user.id, page, page_size)
+        
+        if not forms_data["items"]:
+            raise HTTPException(
+                status_code=404, 
+                detail="No se encontraron formularios para este usuario"
+            )
+        
+        return forms_data
+        
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

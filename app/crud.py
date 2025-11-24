@@ -1182,12 +1182,24 @@ def get_all_forms(db: Session):
         }
         for form in forms
     ]
-def get_forms_by_user(db: Session, user_id: int):
+def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int = 30):
     """
-    Obtiene los formularios sin form_design y los convierte a diccionarios
-    para máxima velocidad de serialización.
+    Obtiene los formularios paginados sin form_design.
+    
+    Args:
+        db: Sesión de base de datos
+        user_id: ID del usuario
+        page: Número de página (empieza en 1)
+        page_size: Cantidad de registros por página
+    
+    Returns:
+        Dict con items, total, page, page_size, total_pages
     """
-    forms = (
+    # Calcular offset
+    offset = (page - 1) * page_size
+    
+    # Query base
+    base_query = (
         db.query(Form)
         .join(FormModerators, Form.id == FormModerators.form_id)
         .options(
@@ -1195,20 +1207,30 @@ def get_forms_by_user(db: Session, user_id: int):
             joinedload(Form.category)
         )
         .filter(FormModerators.user_id == user_id)
+    )
+    
+    # Contar total de registros
+    total_count = base_query.count()
+    
+    # Obtener registros paginados
+    forms = (
+        base_query
+        .offset(offset)
+        .limit(page_size)
         .all()
     )
     
-    # Convertir a diccionarios manualmente (más rápido que la serialización automática)
+    # Convertir a diccionarios
     result = []
     for form in forms:
         form_dict = {
             "id": form.id,
             "title": form.title,
-            "format_type": form.format_type.value,  # ← .value porque es un Enum
+            "format_type": form.format_type.value,
             "is_enabled": form.is_enabled,
             "user_id": form.user_id,
             "description": form.description,
-            "created_at": form.created_at.isoformat(),  # ← Convertir a string ISO
+            "created_at": form.created_at.isoformat(),
             "id_category": form.id_category,
             "category": {
                 "id": form.category.id,
@@ -1225,8 +1247,16 @@ def get_forms_by_user(db: Session, user_id: int):
         }
         result.append(form_dict)
     
-    return result
-
+    # Calcular total de páginas
+    total_pages = (total_count + page_size - 1) // page_size
+    
+    return {
+        "items": result,
+        "total": total_count,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages
+    }
 def get_forms_by_user_summary(db: Session, user_id: int):
     """
     Obtiene un resumen de los formularios (solo campos básicos para listados).
@@ -1386,21 +1416,21 @@ def get_unrelated_questions(db: Session, form_id: int):
 
 
 def fetch_completed_forms_by_user(db: Session, user_id: int):
-    """
-    Recupera los formularios que el usuario ha completado.
+        """
+        Recupera los formularios que el usuario ha completado.
 
-    :param db: Sesión de la base de datos.
-    :param user_id: ID del usuario.
-    :return: Lista de formularios completados.
-    """
-    completed_forms = (
-        db.query(Form)
-        .join(Response)  # Unión entre formularios y respuestas
-        .filter(Response.user_id == user_id)  # Filtrar por el usuario
-        .distinct()  # Evitar duplicados si hay múltiples respuestas a un mismo formulario
-        .all()
-    )
-    return completed_forms
+        :param db: Sesión de la base de datos.
+        :param user_id: ID del usuario.
+        :return: Lista de formularios completados.
+        """
+        completed_forms = (
+            db.query(Form)
+            .join(Response)  # Unión entre formularios y respuestas
+            .filter(Response.user_id == user_id)  # Filtrar por el usuario
+            .distinct()  # Evitar duplicados si hay múltiples respuestas a un mismo formulario
+            .all()
+        )
+        return completed_forms
 
 
 def fetch_form_questions(form_id: int, db: Session):
@@ -4383,6 +4413,86 @@ Tu respuesta al formulario "{form.title}" ha sido COMPLETAMENTE APROBADA por tod
         print(f"❌ Error enviando correo final al usuario original: {str(e)}")
         return False
 
+def fetch_completed_forms_with_all_responses(db: Session, user_id: int):
+    """
+    Recupera los formularios completados por el usuario junto con todas 
+    sus respuestas y aprobaciones.
+
+    :param db: Sesión de la base de datos.
+    :param user_id: ID del usuario.
+    :return: Lista de formularios con todas sus respuestas y aprobaciones.
+    """
+    # Primero obtenemos los formularios completados (sin duplicados)
+    completed_forms = (
+        db.query(Form)
+        .join(Response)
+        .filter(Response.user_id == user_id)
+        .distinct()
+        .all()
+    )
+    
+    result = []
+    
+    for form in completed_forms:
+        # Para cada formulario, obtenemos todas sus respuestas con aprobaciones
+        stmt = (
+            select(Response)
+            .where(Response.form_id == form.id, Response.user_id == user_id)
+            .options(
+                joinedload(Response.form).load_only(
+                    Form.id,
+                    Form.title,
+                    Form.description
+                ),
+                joinedload(Response.approvals).joinedload(ResponseApproval.user).load_only(
+                    User.id,
+                    User.name,
+                    User.email,
+                    User.nickname,
+                    User.num_document
+                )
+            )
+        )
+        
+        responses = db.execute(stmt).unique().scalars().all()
+        
+        # Construir las respuestas en el formato del endpoint /responses/summary
+        responses_summary = []
+        for r in responses:
+            responses_summary.append({
+                "response_id": r.id,
+                "submitted_at": r.submitted_at,
+                "approvals": [
+                    {
+                        "approval_id": ap.id,
+                        "sequence_number": ap.sequence_number,
+                        "is_mandatory": ap.is_mandatory,
+                        "user": {
+                            "id": ap.user.id,
+                            "name": ap.user.name
+                        }
+                    }
+                    for ap in r.approvals
+                ]
+            })
+        
+        # Combinar información del formulario con sus respuestas
+        form_data = {
+            # Datos del formulario (del endpoint /users/completed_forms)
+            "form": {
+                "id": form.id,
+                "user_id": form.user_id,
+                "title": form.title,
+                "description": form.description,
+                "created_at": form.created_at,
+            },
+            # Resumen de respuestas (del endpoint /responses/summary)
+            "responses": responses_summary
+        }
+        
+        result.append(form_data)
+    
+    return result
 
 def get_response_approval_status(response_approvals: list) -> dict:
     """
