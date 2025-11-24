@@ -581,7 +581,7 @@ def get_email_configs(db: Session = Depends(get_db)):
     Obtiene todas las configuraciones de correo electrónico disponibles.
 
     Este endpoint devuelve una lista de todas las configuraciones de correo registradas
-    en el sistema.
+    en el sistema. Si no existen configuraciones, devuelve una lista vacía.
 
     Parámetros:
     -----------
@@ -591,19 +591,17 @@ def get_email_configs(db: Session = Depends(get_db)):
     Retorna:
     --------
     List[EmailConfigResponse]
-        Lista de configuraciones de correo electrónico existentes.
+        Lista de configuraciones de correo electrónico existentes, 
+        o una lista vacía si no hay configuraciones.
 
     Lanza:
     ------
     HTTPException:
-        - 404: Si no se encuentran configuraciones de correo.
         - 500: Si ocurre un error inesperado durante la consulta.
     """
     try:
         email_configs = get_all_email_configs(db)
-        if not email_configs:
-            raise HTTPException(status_code=404, detail="No se encontraron configuraciones de correo")
-        return email_configs
+        return email_configs if email_configs else []
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     

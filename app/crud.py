@@ -452,9 +452,41 @@ def create_question(db: Session, question: QuestionCreate):
 def get_question_by_id(db: Session, question_id: int) -> Question:
     return db.query(Question).filter(Question.id == question_id).first()
 
+def get_question_by_id_with_category(db: Session, question_id: int):
+    """
+    Obtiene una pregunta específica por su ID con su categoría relacionada.
+    """
+    return db.query(Question).options(joinedload(Question.category)).filter(Question.id == question_id).first()
+
 def get_questions(db: Session):
     return db.query(Question).options(joinedload(Question.category)).all()
 
+def get_questions_by_category_id(db: Session, category_id: Optional[int]):
+    """
+    Obtiene preguntas filtradas por categoría desde la base de datos.
+    
+    Parámetros:
+    -----------
+    db : Session
+        Sesión de base de datos.
+    category_id : Optional[int]
+        ID de la categoría. Si es None, filtra por preguntas sin categoría.
+    
+    Retorna:
+    --------
+    List[Question]:
+        Lista de preguntas filtradas.
+    """
+    query = db.query(Question).options(joinedload(Question.category))
+    
+    if category_id is None:
+        # Traer preguntas sin categoría (id_category es null)
+        questions = query.filter(Question.id_category == None).all()
+    else:
+        # Traer preguntas de la categoría específica
+        questions = query.filter(Question.id_category == category_id).all()
+    
+    return questions
 
 def update_question(db: Session, question_id: int, question: QuestionUpdate) -> Question:
     """
@@ -1478,8 +1510,8 @@ def fetch_form_users(form_id: int, db: Session):
 
     Returns:
         dict: Diccionario con:
-            - 'associated_users': Usuarios asociados como moderadores.
-            - 'unassociated_users': Resto de usuarios del sistema.
+            - 'associated_users': Usuarios asociados (id, name, num_document).
+            - 'unassociated_users': Resto de usuarios (id, name, num_document).
 
     Raises:
         HTTPException: Si el formulario no existe.
@@ -1494,16 +1526,21 @@ def fetch_form_users(form_id: int, db: Session):
     # Obtener IDs de usuarios asociados como moderadores
     associated_users_ids = {moderator.user_id for moderator in form.form_moderators}
 
-    # Separar usuarios en asociados y no asociados
-    associated_users = [user for user in all_users if user.id in associated_users_ids]
-    unassociated_users = [user for user in all_users if user.id not in associated_users_ids]
+    # Separar usuarios y extraer solo los campos necesarios
+    associated_users = [
+        {"id": user.id, "name": user.name, "num_document": user.num_document}
+        for user in all_users if user.id in associated_users_ids
+    ]
+    
+    unassociated_users = [
+        {"id": user.id, "name": user.name, "num_document": user.num_document}
+        for user in all_users if user.id not in associated_users_ids
+    ]
 
     return {
         "associated_users": associated_users,
         "unassociated_users": unassociated_users
     }
-    
-
 def link_moderator_to_form(form_id: int, user_id: int, db: Session):
     """
     Crea una relación entre un usuario y un formulario como moderador.

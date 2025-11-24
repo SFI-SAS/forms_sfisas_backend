@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.params import Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from app.database import get_db
 from app.models import Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, User, UserType
-from app.crud import create_question, create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_filtered_questions, get_related_or_filtered_answers, get_related_or_filtered_answers_with_forms, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
+from app.crud import create_question, create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers, get_related_or_filtered_answers_with_forms, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
 from app.schemas import AnswerSchema, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionWithCategory, UpdateQuestionCategory
 from app.core.security import get_current_user
 
@@ -149,7 +150,54 @@ def get_all_questions(
         # Traer todas las preguntas de la base de datos
         questions = get_questions(db)
         return questions
+
+@router.get("/get_question_by_id_with_category/{question_id}", response_model=QuestionWithCategory)
+def get_question_by_id_endpoint(
+    question_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Obtiene una pregunta específica por su ID.
+
+    Parámetros:
+    -----------
+    question_id : int
+        ID de la pregunta a consultar.
     
+    db : Session
+        Sesión de base de datos proporcionada por la dependencia `get_db`.
+
+    current_user : User
+        Usuario autenticado, extraído mediante `get_current_user`.
+
+    Retorna:
+    --------
+    QuestionWithCategory:
+        Objeto que representa la pregunta con su categoría.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 403: Si el usuario no está autenticado.
+        - 404: Si la pregunta no existe.
+    """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get this question"
+        )
+
+    
+    question = get_question_by_id_with_category(db, question_id)
+    
+    if question is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Question with id {question_id} not found"
+        )
+    
+    return question
     
 @router.post("/options/", response_model=List[OptionResponse])
 def create_multiple_options(options: List[OptionCreate], db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -727,3 +775,47 @@ def update_question_category(
         "question_id": question.id,
         "new_category_id": question.id_category
     }
+    
+@router.get("/get_questions_by_category/", response_model=List[QuestionWithCategory])
+def get_questions_by_category(
+    category_id: Optional[int] = Query(None, description="ID de la categoría. Si es null, trae preguntas sin categoría"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Obtiene las preguntas filtradas por categoría.
+
+    Este endpoint permite recuperar preguntas de una categoría específica.
+    - Si se proporciona category_id: trae preguntas de esa categoría
+    - Si category_id es null: trae preguntas sin categoría asignada
+
+    Parámetros:
+    -----------
+    category_id : Optional[int]
+        ID de la categoría para filtrar. Si es None, trae preguntas sin categoría.
+    
+    db : Session
+        Sesión de base de datos proporcionada por la dependencia `get_db`.
+
+    current_user : User
+        Usuario autenticado, extraído mediante `get_current_user`.
+
+    Retorna:
+    --------
+    List[QuestionWithCategory]:
+        Lista de preguntas filtradas según la categoría.
+
+    Lanza:
+    ------
+    HTTPException:
+        - 403: Si el usuario no está autenticado.
+    """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get questions"
+        )
+    
+    # Traer preguntas filtradas por categoría
+    questions = get_questions_by_category_id(db, category_id)
+    return questions
