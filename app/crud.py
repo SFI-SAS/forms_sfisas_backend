@@ -1231,6 +1231,7 @@ def get_all_forms(db: Session):
         }
         for form in forms
     ]
+    
 def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int = 30):
     """
     Obtiene los formularios paginados sin form_design.
@@ -1535,22 +1536,68 @@ def get_unrelated_questions(db: Session, form_id: int):
     return unrelated_questions
 
 
-def fetch_completed_forms_by_user(db: Session, user_id: int):
-        """
-        Recupera los formularios que el usuario ha completado.
+def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int = 30):
+    """
+    Recupera los formularios que el usuario ha completado con paginación.
 
-        :param db: Sesión de la base de datos.
-        :param user_id: ID del usuario.
-        :return: Lista de formularios completados.
-        """
-        completed_forms = (
-            db.query(Form)
-            .join(Response)  # Unión entre formularios y respuestas
-            .filter(Response.user_id == user_id)  # Filtrar por el usuario
-            .distinct()  # Evitar duplicados si hay múltiples respuestas a un mismo formulario
-            .all()
-        )
-        return completed_forms
+    :param db: Sesión de la base de datos.
+    :param user_id: ID del usuario.
+    :param page: Número de página.
+    :param page_size: Cantidad de registros por página.
+    :return: Diccionario con items paginados y metadata.
+    """
+    # Calcular offset
+    offset = (page - 1) * page_size
+    
+    # Query base
+    base_query = (
+        db.query(Form)
+        .join(Response)  # Unión entre formularios y respuestas
+        .filter(Response.user_id == user_id)  # Filtrar por el usuario
+        .distinct()  # Evitar duplicados si hay múltiples respuestas a un mismo formulario
+    )
+    
+    # Contar total de registros
+    total_count = base_query.count()
+    
+    # Obtener registros paginados
+    completed_forms = (
+        base_query
+        .offset(offset)
+        .limit(page_size)
+        .all()
+    )
+    
+    # Convertir a diccionarios
+    items = []
+    for form in completed_forms:
+        try:
+            form_dict = {
+                "id": form.id,
+                "title": form.title,
+                "description": form.description,
+                "format_type": form.format_type.value if hasattr(form.format_type, 'value') else str(form.format_type),
+                "is_enabled": form.is_enabled,
+                "user_id": form.user_id,
+                "created_at": form.created_at.isoformat() if form.created_at else None,
+                "id_category": form.id_category,
+                # Agrega más campos según tu FormSchema
+            }
+            items.append(form_dict)
+        except Exception as e:
+            print(f"Error procesando form {form.id}: {str(e)}")
+            continue
+    
+    # Calcular total de páginas
+    total_pages = (total_count + page_size - 1) // page_size
+    
+    return {
+        "items": items,
+        "total": total_count,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages
+    }
 
 
 def fetch_form_questions(form_id: int, db: Session):

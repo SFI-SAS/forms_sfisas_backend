@@ -3,17 +3,16 @@ import os
 import shutil
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, defer
 from typing import Any, List, Optional
 from app.database import get_db
-from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormQuestion, FormSchedule, Question, Response, ResponseApproval, User, UserType
+from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormQuestion, FormSchedule, Question, Response, ResponseApproval, User, UserType
 from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, move_category, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
 from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormSchema, FormStatusUpdate, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, ResponseApprovalCreate, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
 import pandas as pd
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-
 
 router = APIRouter()
 
@@ -735,15 +734,21 @@ def get_user_forms_summary(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/users/completed_forms", response_model=List[FormSchema])
+
+@router.get("/users/completed_forms")
 def get_completed_forms_for_user(
-    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+    page: int = 1,
+    page_size: int = 30,
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user)
 ):
     """
-    Retorna los formularios que han sido completados por el usuario autenticado.
+    Retorna los formularios que han sido completados por el usuario autenticado con paginación.
 
+    - **page**: Número de página (por defecto 1)
+    - **page_size**: Cantidad de registros por página (por defecto 30, máximo 100)
     - **Autenticación requerida**
-    - **Código 200**: Lista de formularios completados
+    - **Código 200**: Lista paginada de formularios completados
     - **Código 403**: Usuario no autenticado o sin permisos
     - **Código 404**: No se encontraron formularios completados
     """
@@ -753,11 +758,20 @@ def get_completed_forms_for_user(
             detail="User does not have permission to access completed forms",
         )
 
-    completed_forms = fetch_completed_forms_by_user(db, current_user.id)
-    if not completed_forms:
+    # Validar page_size máximo
+    if page_size > 100:
+        page_size = 100
+    
+    # Validar que page sea mayor a 0
+    if page < 1:
+        page = 1
+
+    completed_forms_data = fetch_completed_forms_by_user(db, current_user.id, page, page_size)
+    
+    if not completed_forms_data["items"]:
         raise HTTPException(status_code=404, detail="No completed forms found for this user")
     
-    return completed_forms
+    return completed_forms_data
 
 
 @router.get("/{form_id}/questions_associated_and_unassociated")
@@ -2191,6 +2205,101 @@ def get_forms_by_category_endpoint(
         "include_subcategories": include_subcategories
     }
 
+@router.get("/categories/{category_id}/user_forms")
+def get_user_forms_by_category_endpoint(
+    category_id: int,
+    page: int = 1,
+    page_size: int = 30,
+    include_subcategories: bool = Query(False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Retorna los formularios de una categoría que están ASIGNADOS al usuario autenticado.
+
+    - **category_id**: ID de la categoría
+    - **page**: Número de página (por defecto 1)
+    - **page_size**: Cantidad de registros por página (por defecto 30, máximo 100)
+    - **include_subcategories**: Incluir formularios de subcategorías (por defecto False)
+    - **Requiere autenticación.**
+    """
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to access forms"
+        )
+    
+    if page_size > 100:
+        page_size = 100
+    
+    offset = (page - 1) * page_size
+    
+    # Determinar IDs de categorías a buscar
+    if not include_subcategories:
+        category_ids = [category_id]
+    else:
+        def get_all_descendant_ids(cat_id):
+            ids = [cat_id]
+            children = db.query(FormCategory).filter(FormCategory.parent_id == cat_id).all()
+            for child in children:
+                ids.extend(get_all_descendant_ids(child.id))
+            return ids
+        
+        category_ids = get_all_descendant_ids(category_id)
+    
+    # Query base: Formularios asignados al usuario Y en la categoría
+    base_query = (
+        db.query(Form)
+        .join(FormModerators, Form.id == FormModerators.form_id)
+        .options(
+            defer(Form.form_design),
+            joinedload(Form.category)
+        )
+        .filter(FormModerators.user_id == current_user.id)  # ← Solo asignados al usuario
+        .filter(Form.id_category.in_(category_ids))  # ← Y en la categoría
+    )
+    
+    total_count = base_query.count()
+    forms = base_query.offset(offset).limit(page_size).all()
+    total_pages = (total_count + page_size - 1) // page_size
+    
+    # Convertir a diccionarios
+    items = []
+    for form in forms:
+        form_dict = {
+            "id": form.id,
+            "title": form.title,
+            "format_type": form.format_type.value if hasattr(form.format_type, 'value') else str(form.format_type),
+            "is_enabled": form.is_enabled,
+            "user_id": form.user_id,
+            "description": form.description,
+            "created_at": form.created_at.isoformat() if form.created_at else None,
+            "id_category": form.id_category,
+            "category": {
+                "id": form.category.id,
+                "parent_id": form.category.parent_id,
+                "is_expanded": form.category.is_expanded,
+                "color": form.category.color,
+                "updated_at": form.category.updated_at.isoformat() if form.category.updated_at else None,
+                "name": form.category.name,
+                "description": form.category.description,
+                "order": form.category.order,
+                "icon": form.category.icon,
+                "created_at": form.category.created_at.isoformat()
+            } if form.category else None
+        }
+        items.append(form_dict)
+    
+    return {
+        "items": items,
+        "total": total_count,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "category_id": category_id,
+        "include_subcategories": include_subcategories
+    }
+    
 @router.get("/api/forms/{form_id}/response/{response_id}/details")
 async def get_response_details_json(
     form_id: int,
