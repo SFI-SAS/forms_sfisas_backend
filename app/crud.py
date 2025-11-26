@@ -1155,7 +1155,56 @@ def get_response_id(db: Session, form_id: int, user_id: int):
         raise HTTPException(status_code=404, detail="No se encontró la respuesta")
 
     return {"response_id": result}
+def get_all_forms_paginated(db: Session, page: int = 1, page_size: int = 30):
+    """
+    Realiza una consulta paginada para obtener todos los formularios incluyendo su categoría.
 
+    :param db: Sesión activa de la base de datos
+    :param page: Número de página
+    :param page_size: Cantidad de registros por página
+    :return: Diccionario con items paginados y metadata
+    """
+    # Calcular offset
+    offset = (page - 1) * page_size
+    
+    # Query base
+    base_query = db.query(Form).options(joinedload(Form.category))
+    
+    # Contar total de registros
+    total_count = base_query.count()
+    
+    # Obtener registros paginados
+    forms = base_query.offset(offset).limit(page_size).all()
+    
+    # Convertir a diccionarios
+    items = [
+        {
+            "id": form.id,
+            "user_id": form.user_id,
+            "title": form.title,
+            "description": form.description,
+            "format_type": form.format_type.value,
+            "is_enabled": form.is_enabled,
+            "created_at": form.created_at.isoformat() if form.created_at else None,
+            "category": {
+                "id": form.category.id,
+                "name": form.category.name,
+                "description": form.category.description,
+            } if form.category else None
+        }
+        for form in forms
+    ]
+    
+    # Calcular total de páginas
+    total_pages = (total_count + page_size - 1) // page_size
+    
+    return {
+        "items": items,
+        "total": total_count,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages
+    }
 
 def get_all_forms(db: Session):
     """
@@ -1256,6 +1305,77 @@ def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int =
         "page": page,
         "page_size": page_size,
         "total_pages": total_pages
+    }
+    
+def search_forms_by_user(
+    db: Session, 
+    user_id: int, 
+    search: str,
+    page: int = 1, 
+    page_size: int = 30
+):
+    """
+    Busca formularios del usuario por término de búsqueda.
+    """
+    offset = (page - 1) * page_size
+    search_term = f"%{search}%"
+    
+    base_query = (
+        db.query(Form)
+        .join(FormModerators, Form.id == FormModerators.form_id)
+        .options(
+            defer(Form.form_design),
+            joinedload(Form.category)
+        )
+        .filter(FormModerators.user_id == user_id)
+        .filter(
+            or_(
+                Form.title.ilike(search_term),
+                Form.description.ilike(search_term),
+                Form.category.has(FormCategory.name.ilike(search_term))  # Buscar en categoría también
+            )
+        )
+    )
+    
+    total_count = base_query.count()
+    forms = base_query.offset(offset).limit(page_size).all()
+    
+    # Convertir a diccionarios (mismo código que arriba)
+    result = []
+    for form in forms:
+        form_dict = {
+            "id": form.id,
+            "title": form.title,
+            "format_type": form.format_type.value,
+            "is_enabled": form.is_enabled,
+            "user_id": form.user_id,
+            "description": form.description,
+            "created_at": form.created_at.isoformat(),
+            "id_category": form.id_category,
+            "category": {
+                "id": form.category.id,
+                "parent_id": form.category.parent_id,
+                "is_expanded": form.category.is_expanded,
+                "color": form.category.color,
+                "updated_at": form.category.updated_at.isoformat() if form.category.updated_at else None,
+                "name": form.category.name,
+                "description": form.category.description,
+                "order": form.category.order,
+                "icon": form.category.icon,
+                "created_at": form.category.created_at.isoformat()
+            } if form.category else None
+        }
+        result.append(form_dict)
+    
+    total_pages = (total_count + page_size - 1) // page_size
+    
+    return {
+        "items": result,
+        "total": total_count,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "search": search
     }
 def get_forms_by_user_summary(db: Session, user_id: int):
     """

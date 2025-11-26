@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import Any, List, Optional
 from app.database import get_db
 from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormQuestion, FormSchedule, Question, Response, ResponseApproval, User, UserType
-from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, get_all_forms, get_all_user_responses_by_form_id, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, move_category, remove_moderator_from_form, remove_question_from_form, save_form_approvals, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
+from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, move_category, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
 from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormSchema, FormStatusUpdate, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, ResponseApprovalCreate, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
@@ -622,6 +622,37 @@ def get_forms_endpoint(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
+@router.get("/all/list/paginated")
+def get_forms_paginated_endpoint(
+    page: int = 1,
+    page_size: int = 30,
+    db: Session = Depends(get_db)
+):
+    """
+    Retorna una lista paginada de todos los formularios registrados en la base de datos.
+
+    - **page**: Número de página (por defecto 1)
+    - **page_size**: Cantidad de registros por página (por defecto 30, máximo 100)
+    - **Retorna**: Diccionario con items paginados y metadata.
+    - **Código 200**: Éxito, formularios encontrados.
+    - **Código 404**: No se encontraron formularios.
+    - **Código 500**: Error interno del servidor.
+    """
+    try:
+        # Validar page_size máximo
+        if page_size > 100:
+            page_size = 100
+        
+        forms_data = get_all_forms_paginated(db, page, page_size)
+        
+        if not forms_data["items"]:
+            raise HTTPException(status_code=404, detail="No se encontraron formularios")
+        
+        return forms_data
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/users/form_by_user")
 def get_user_forms(
@@ -2030,6 +2061,58 @@ def update_category_endpoint(
 ):
     return update_form_category_1(db, category_id, category_update)
 
+
+@router.get("/users/form_by_user/search")
+def search_user_forms(
+    search: str,  # ← Obligatorio en búsqueda
+    page: int = 1,
+    page_size: int = 30,
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Busca formularios del usuario autenticado.
+
+    - **search**: Término de búsqueda (obligatorio, busca en title y description)
+    - **page**: Número de página (por defecto 1)
+    - **page_size**: Cantidad de registros por página (por defecto 30, máximo 100)
+    - **Requiere autenticación.**
+    """
+    try:
+        if current_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User does not have permission to search forms"
+            )
+        
+        if page_size > 100:
+            page_size = 100
+        
+        # Validar que el término de búsqueda no esté vacío
+        if not search or search.strip() == "":
+            raise HTTPException(
+                status_code=400,
+                detail="El término de búsqueda no puede estar vacío"
+            )
+        
+        forms_data = search_forms_by_user(db, current_user.id, search.strip(), page, page_size)
+        
+        if not forms_data["items"]:
+            return {
+                "items": [],
+                "total": 0,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": 0,
+                "search": search
+            }
+        
+        return forms_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 # Mover categoría
 @router.patch("/categories/{category_id}/move", response_model=FormCategoryResponse)
 def move_category_endpoint(
@@ -2051,17 +2134,23 @@ def delete_category_endpoint(
     return delete_form_category(db, category_id, force)
 
 # Obtener formularios de una categoría
-@router.get("/categories/{category_id}/forms", response_model=List[FormResponse])
+@router.get("/categories/{category_id}/forms")
 def get_forms_by_category_endpoint(
     category_id: int,
+    page: int = 1,
+    page_size: int = 30,
     include_subcategories: bool = Query(False),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    if page_size > 100:
+        page_size = 100
+    
+    offset = (page - 1) * page_size
+    
     if not include_subcategories:
-        forms = db.query(Form).filter(Form.id_category == category_id).all()
+        base_query = db.query(Form).filter(Form.id_category == category_id)
     else:
-        # Obtener todas las subcategorías recursivamente
         def get_all_descendant_ids(cat_id):
             ids = [cat_id]
             children = db.query(FormCategory).filter(FormCategory.parent_id == cat_id).all()
@@ -2070,9 +2159,37 @@ def get_forms_by_category_endpoint(
             return ids
         
         all_ids = get_all_descendant_ids(category_id)
-        forms = db.query(Form).filter(Form.id_category.in_(all_ids)).all()
+        base_query = db.query(Form).filter(Form.id_category.in_(all_ids))
     
-    return forms
+    total_count = base_query.count()
+    forms = base_query.offset(offset).limit(page_size).all()
+    total_pages = (total_count + page_size - 1) // page_size
+    
+    # Convertir a diccionarios manualmente
+    items = []
+    for form in forms:
+        form_dict = {
+            "id": form.id,
+            "title": form.title,
+            "format_type": form.format_type.value if hasattr(form.format_type, 'value') else form.format_type,
+            "is_enabled": form.is_enabled,
+            "user_id": form.user_id,
+            "description": form.description,
+            "created_at": form.created_at.isoformat() if form.created_at else None,
+            "id_category": form.id_category,
+            
+        }
+        items.append(form_dict)
+    
+    return {
+        "items": items,
+        "total": total_count,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "category_id": category_id,
+        "include_subcategories": include_subcategories
+    }
 
 @router.get("/api/forms/{form_id}/response/{response_id}/details")
 async def get_response_details_json(
