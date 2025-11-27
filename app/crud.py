@@ -1312,61 +1312,110 @@ def search_forms_by_user(
     db: Session, 
     user_id: int, 
     search: str,
+    filter_type: str = "all",
     page: int = 1, 
     page_size: int = 30
 ):
     """
-    Busca formularios del usuario por término de búsqueda.
+    Busca formularios del usuario por término de búsqueda con diferentes filtros.
+    
+    Args:
+        db: Sesión de base de datos
+        user_id: ID del usuario
+        search: Término de búsqueda
+        filter_type: Tipo de filtro ("all", "user", "response_user")
+        page: Número de página
+        page_size: Cantidad de registros por página
+    
+    Returns:
+        Dict con items paginados y metadata
     """
     offset = (page - 1) * page_size
     search_term = f"%{search}%"
     
-    base_query = (
-        db.query(Form)
-        .join(FormModerators, Form.id == FormModerators.form_id)
-        .options(
-            defer(Form.form_design),
-            joinedload(Form.category)
+    # Construir query base según el tipo de filtro
+    if filter_type == "response_user":
+        # Formularios que el usuario ha completado/respondido
+        base_query = (
+            db.query(Form)
+            .join(Response, Form.id == Response.form_id)
+            .options(
+                defer(Form.form_design),
+                joinedload(Form.category)
+            )
+            .filter(Response.user_id == user_id)
+            .filter(
+                or_(
+                    Form.title.ilike(search_term),
+                    Form.description.ilike(search_term),
+                    Form.category.has(FormCategory.name.ilike(search_term))
+                )
+            )
+            .distinct()  # Evitar duplicados
         )
-        .filter(FormModerators.user_id == user_id)
-        .filter(
-            or_(
-                Form.title.ilike(search_term),
-                Form.description.ilike(search_term),
-                Form.category.has(FormCategory.name.ilike(search_term))  # Buscar en categoría también
+    else:
+        # "all" o "user" - Formularios asignados al usuario
+        base_query = (
+            db.query(Form)
+            .join(FormModerators, Form.id == FormModerators.form_id)
+            .options(
+                defer(Form.form_design),
+                joinedload(Form.category)
+            )
+            .filter(FormModerators.user_id == user_id)
+            .filter(
+                or_(
+                    Form.title.ilike(search_term),
+                    Form.description.ilike(search_term),
+                    Form.category.has(FormCategory.name.ilike(search_term))
+                )
             )
         )
-    )
+        
+        # Si es "user", excluir los que ya ha completado
+        if filter_type == "user":
+            # Subconsulta para obtener IDs de formularios completados
+            completed_form_ids = (
+                db.query(Response.form_id)
+                .filter(Response.user_id == user_id)
+                .distinct()
+                .subquery()
+            )
+            base_query = base_query.filter(~Form.id.in_(completed_form_ids))
     
     total_count = base_query.count()
     forms = base_query.offset(offset).limit(page_size).all()
     
-    # Convertir a diccionarios (mismo código que arriba)
+    # Convertir a diccionarios
     result = []
     for form in forms:
-        form_dict = {
-            "id": form.id,
-            "title": form.title,
-            "format_type": form.format_type.value,
-            "is_enabled": form.is_enabled,
-            "user_id": form.user_id,
-            "description": form.description,
-            "created_at": form.created_at.isoformat(),
-            "id_category": form.id_category,
-            "category": {
-                "id": form.category.id,
-                "parent_id": form.category.parent_id,
-                "is_expanded": form.category.is_expanded,
-                "color": form.category.color,
-                "updated_at": form.category.updated_at.isoformat() if form.category.updated_at else None,
-                "name": form.category.name,
-                "description": form.category.description,
-                "order": form.category.order,
-                "icon": form.category.icon,
-                "created_at": form.category.created_at.isoformat()
-            } if form.category else None
-        }
-        result.append(form_dict)
+        try:
+            form_dict = {
+                "id": form.id,
+                "title": form.title,
+                "format_type": form.format_type.value if hasattr(form.format_type, 'value') else str(form.format_type),
+                "is_enabled": form.is_enabled,
+                "user_id": form.user_id,
+                "description": form.description,
+                "created_at": form.created_at.isoformat() if form.created_at else None,
+                "id_category": form.id_category,
+                "category": {
+                    "id": form.category.id,
+                    "parent_id": form.category.parent_id,
+                    "is_expanded": form.category.is_expanded,
+                    "color": form.category.color,
+                    "updated_at": form.category.updated_at.isoformat() if form.category.updated_at else None,
+                    "name": form.category.name,
+                    "description": form.category.description,
+                    "order": form.category.order,
+                    "icon": form.category.icon,
+                    "created_at": form.category.created_at.isoformat()
+                } if form.category else None
+            }
+            result.append(form_dict)
+        except Exception as e:
+            print(f"Error procesando form {form.id}: {str(e)}")
+            continue
     
     total_pages = (total_count + page_size - 1) // page_size
     
@@ -1376,7 +1425,8 @@ def search_forms_by_user(
         "page": page,
         "page_size": page_size,
         "total_pages": total_pages,
-        "search": search
+        "search": search,
+        "filter_type": filter_type
     }
 def get_forms_by_user_summary(db: Session, user_id: int):
     """

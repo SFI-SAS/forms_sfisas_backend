@@ -2078,16 +2078,21 @@ def update_category_endpoint(
 
 @router.get("/users/form_by_user/search")
 def search_user_forms(
-    search: str,  # ← Obligatorio en búsqueda
+    search: str,  # ← Término de búsqueda (obligatorio)
+    filter_type: str = Query("all", regex="^(all|user|response_user)$"),  # ← Nuevo parámetro
     page: int = 1,
     page_size: int = 30,
     db: Session = Depends(get_db), 
     current_user: User = Depends(get_current_user)
 ):
     """
-    Busca formularios del usuario autenticado.
+    Busca formularios del usuario autenticado según el tipo de filtro.
 
-    - **search**: Término de búsqueda (obligatorio, busca en title y description)
+    - **search**: Término de búsqueda (obligatorio, busca en title, description y category)
+    - **filter_type**: Tipo de filtro a aplicar:
+        - "all": Todos los formularios asignados al usuario (por defecto)
+        - "user": Solo formularios asignados que debe llenar
+        - "response_user": Solo formularios que ya ha completado/respondido
     - **page**: Número de página (por defecto 1)
     - **page_size**: Cantidad de registros por página (por defecto 30, máximo 100)
     - **Requiere autenticación.**
@@ -2109,7 +2114,14 @@ def search_user_forms(
                 detail="El término de búsqueda no puede estar vacío"
             )
         
-        forms_data = search_forms_by_user(db, current_user.id, search.strip(), page, page_size)
+        forms_data = search_forms_by_user(
+            db, 
+            current_user.id, 
+            search.strip(), 
+            filter_type,
+            page, 
+            page_size
+        )
         
         if not forms_data["items"]:
             return {
@@ -2118,7 +2130,8 @@ def search_user_forms(
                 "page": page,
                 "page_size": page_size,
                 "total_pages": 0,
-                "search": search
+                "search": search,
+                "filter_type": filter_type
             }
         
         return forms_data
@@ -2127,6 +2140,8 @@ def search_user_forms(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
 # Mover categoría
 @router.patch("/categories/{category_id}/move", response_model=FormCategoryResponse)
 def move_category_endpoint(
@@ -2264,6 +2279,102 @@ def get_user_forms_by_category_endpoint(
     total_pages = (total_count + page_size - 1) // page_size
     
     # Convertir a diccionarios
+    items = []
+    for form in forms:
+        form_dict = {
+            "id": form.id,
+            "title": form.title,
+            "format_type": form.format_type.value if hasattr(form.format_type, 'value') else str(form.format_type),
+            "is_enabled": form.is_enabled,
+            "user_id": form.user_id,
+            "description": form.description,
+            "created_at": form.created_at.isoformat() if form.created_at else None,
+            "id_category": form.id_category,
+            "category": {
+                "id": form.category.id,
+                "parent_id": form.category.parent_id,
+                "is_expanded": form.category.is_expanded,
+                "color": form.category.color,
+                "updated_at": form.category.updated_at.isoformat() if form.category.updated_at else None,
+                "name": form.category.name,
+                "description": form.category.description,
+                "order": form.category.order,
+                "icon": form.category.icon,
+                "created_at": form.category.created_at.isoformat()
+            } if form.category else None
+        }
+        items.append(form_dict)
+    
+    return {
+        "items": items,
+        "total": total_count,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "category_id": category_id,
+        "include_subcategories": include_subcategories
+    }
+   
+@router.get("/categories/{category_id}/user_completed_forms")
+def get_user_completed_forms_by_category_endpoint(
+    category_id: int,
+    page: int = 1,
+    page_size: int = 30,
+    include_subcategories: bool = Query(False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Retorna los formularios de una categoría que han sido COMPLETADOS/RESPONDIDOS por el usuario autenticado.
+
+    - **category_id**: ID de la categoría
+    - **page**: Número de página (por defecto 1)
+    - **page_size**: Cantidad de registros por página (por defecto 30, máximo 100)
+    - **include_subcategories**: Incluir formularios de subcategorías (por defecto False)
+    - **Requiere autenticación.**
+    """
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to access forms"
+        )
+    
+    if page_size > 100:
+        page_size = 100
+    
+    offset = (page - 1) * page_size
+    
+    # Determinar IDs de categorías a buscar
+    if not include_subcategories:
+        category_ids = [category_id]
+    else:
+        def get_all_descendant_ids(cat_id):
+            ids = [cat_id]
+            children = db.query(FormCategory).filter(FormCategory.parent_id == cat_id).all()
+            for child in children:
+                ids.extend(get_all_descendant_ids(child.id))
+            return ids
+        
+        category_ids = get_all_descendant_ids(category_id)
+    
+    # Query base: Formularios respondidos por el usuario Y en la categoría
+    base_query = (
+        db.query(Form)
+        .join(Response, Form.id == Response.form_id)  # ← Join con Response en lugar de FormModerators
+        .options(
+            defer(Form.form_design),
+            joinedload(Form.category)
+        )
+        .filter(Response.user_id == current_user.id)  # ← Solo respondidos por el usuario
+        .filter(Form.id_category.in_(category_ids))  # ← Y en la categoría
+        .distinct()  # ← Evitar duplicados si tiene múltiples respuestas al mismo form
+    )
+    
+    total_count = base_query.count()
+    forms = base_query.offset(offset).limit(page_size).all()
+    total_pages = (total_count + page_size - 1) // page_size
+    
+    # Convertir a diccionarios (mismo formato que user_forms)
     items = []
     for form in forms:
         form_dict = {
