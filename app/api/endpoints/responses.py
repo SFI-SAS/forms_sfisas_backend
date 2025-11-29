@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, HTTPExcepti
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import desc, inspect, text
 from sqlalchemy.orm import Session, joinedload
-from typing import List, Optional
+from typing import List, Optional, Union
 from app.api.controllers.mail import send_reconsideration_email
 from app.crud import crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, encrypt_object, finalizar_conversacion_completa, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, get_palabras_clave_by_form, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
 from app.database import get_db
@@ -90,14 +90,11 @@ async def save_response(  # 🆕 Ahora es async
 
 @router.post("/save-answers/")
 async def create_answer(
-        request: Request,
-    answer: PostCreate,
-    action: str = Query("send", enum=["send", "send_and_close"]),  # NUEVO
-
-
+    request: Request,
+    payload: Union[PostCreate, List[PostCreate]] = Body(...),  
+    action: str = Query("send", enum=["send", "send_and_close"]),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
-    
 ):
     """
     LÓGICA SIMPLE:
@@ -108,22 +105,33 @@ async def create_answer(
     if current_user == None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No permission")
 
-    # Obtener formato del formulario
-    response = db.query(Response).filter(Response.id == answer.response_id).first()
-    if not response:
-        raise HTTPException(status_code=404, detail="Response not found")
+    # ✅ CAMBIO 2: Convertir a lista si es objeto individual
+    answers_list = payload if isinstance(payload, list) else [payload]
     
-    form = db.query(Form).filter(Form.id == response.form_id).first()
-    if not form:
-        raise HTTPException(status_code=404, detail="Form not found")
+    # Procesar cada respuesta
+    for answer in answers_list:
+        # Obtener formato del formulario
+        response = db.query(Response).filter(Response.id == answer.response_id).first()
+        if not response:
+            raise HTTPException(status_code=404, detail="Response not found")
+        
+        form = db.query(Form).filter(Form.id == response.form_id).first()
+        if not form:
+            raise HTTPException(status_code=404, detail="Form not found")
 
-    # REGLA SIMPLE:
-    # - Cerrado = siempre enviar emails
-    # - Abierto/Semi_abierto = enviar solo si action="send_and_close"
-    send_emails = (form.format_type == FormatType.cerrado) or (action == "send_and_close")
+        # REGLA SIMPLE:
+        # - Cerrado = siempre enviar emails
+        # - Abierto/Semi_abierto = enviar solo si action="send_and_close"
+        send_emails = (form.format_type == FormatType.cerrado) or (action == "send_and_close")
 
-    new_answer = await create_answer_in_db(answer, db, current_user, request, send_emails)
-    return {"message": "Answer created", "answer": new_answer}
+        # ✅ CAMBIO 3: Llamar la función que ya tienes (sin cambiarla)
+        await create_answer_in_db(answer, db, current_user, request, send_emails)
+    
+    # Retornar respuesta
+    if isinstance(payload, list):
+        return {"message": f"{len(answers_list)} answers created", "count": len(answers_list)}
+    else:
+        return {"message": "Answer created", "answer": payload}
 
 @router.post("/close-response/{response_id}")
 async def close_response(

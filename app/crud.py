@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 from app.models import ApprovalStatus  # Asegúrate de importar esto
 from cryptography.fernet import Fernet
-
+from app.redis_client import redis_client
 import os
 import secrets
 import string
@@ -424,6 +424,51 @@ def get_form(db: Session, form_id: int, user_id: int):
     }
     
     
+def invalidate_form_cache(form_id: int):
+    """
+    Invalida todos los cachés relacionados con un formulario.
+    """
+    keys_to_delete = [
+        f"form_design:{form_id}",
+        f"form_questions:{form_id}",
+    ]
+    
+    deleted = redis_client.delete(*keys_to_delete)
+    print(f"🗑️ Invalidados {deleted} cachés del formulario {form_id}")
+    return deleted
+
+def process_regisfacial_answer(answer_text: str, question_type: str) -> str:
+    """
+    Procesa las respuestas de tipo regisfacial para mostrar texto descriptivo
+    en lugar del JSON completo de faceData.
+    """
+    if question_type != "regisfacial" or not answer_text:
+        return answer_text
+    
+    try:
+        face_data = json.loads(answer_text)
+        
+        # Buscar personName en diferentes estructuras
+        person_name = "Usuario"
+        success = False
+        
+        if isinstance(face_data, dict) and "faceData" in face_data:
+            face_info = face_data["faceData"]
+            if isinstance(face_info, dict):
+                success = face_info.get("success", False)
+                person_name = face_info.get("personName", "Usuario")
+        elif isinstance(face_data, dict):
+            success = face_data.get("success", False)
+            person_name = face_data.get("personName", face_data.get("person_name", "Usuario"))
+        
+        if success:
+            return f"Datos biométricos de {person_name} registrados"
+        else:
+            return f"Error en el registro de datos biométricos de {person_name}"
+            
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return "Datos biométricos procesados"
+
     
 def get_forms(db: Session, skip: int = 0, limit: int = 10):
     return db.query(Form).offset(skip).limit(limit).all()

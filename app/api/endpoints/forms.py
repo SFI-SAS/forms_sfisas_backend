@@ -5,9 +5,10 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload, defer
 from typing import Any, List, Optional
+from app.redis_client import redis_client
 from app.database import get_db
 from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormQuestion, FormSchedule, Question, Response, ResponseApproval, User, UserType
-from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, link_moderator_to_form, link_question_to_form, move_category, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
+from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
 from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormSchema, FormStatusUpdate, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, ResponseApprovalCreate, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
@@ -145,6 +146,254 @@ def get_form_endpoint(
     return form
 
 
+@router.get("/{form_id}/form_design")
+def get_form_design(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Obtener solo el diseño visual de un formulario (sin respuestas).
+    
+    Este endpoint es ultra-ligero y usa caché de Redis con TTL de 1 hora.
+    Ideal para renderizar la UI del formulario sin cargar respuestas.
+    
+    Returns:
+        dict: Diseño del formulario (id, title, description, version, form_design)
+    """
+    # PASO 1: Verificar caché Redis
+    cache_key = f"form_design:{form_id}"
+    cached = redis_client.get(cache_key)  # Ahora usa tu método .get()
+    
+    if cached:
+        print(f"✅ Cache HIT: {cache_key}")
+        return cached  # Ya viene deserializado por tu método
+    
+    # PASO 2: Cache MISS - Consultar BD
+    print(f"❌ Cache MISS: {cache_key}")
+    form = db.query(Form).filter(Form.id == form_id).first()
+    
+    if not form:
+        raise HTTPException(status_code=404, detail="Form not found")
+    
+    # PASO 3: Extraer solo el diseño
+    design_response = {
+        "id": form.id,
+        "title": form.title,
+        "description": form.description,
+        "created_at": form.created_at.isoformat() if hasattr(form, 'created_at') and form.created_at else None,
+        "format_type": form.format_type.name if hasattr(form, 'format_type') else None,
+        "form_design": form.form_design  # Componentes visuales
+    }
+    
+    # PASO 4: Guardar en Redis (TTL: 1 hora = 3600 segundos)
+    redis_client.set(cache_key, design_response, ttl=3600)  # Usa tu método .set()
+    
+    return design_response
+
+@router.get("/{form_id}/questions")
+def get_form_questions(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Obtener solo la metadata de preguntas (sin respuestas).
+    
+    Incluye: id, texto, tipo, opciones, validaciones, orden.
+    Caché de 1 hora en Redis.
+    
+    Returns:
+        dict: Metadata de todas las preguntas del formulario
+    """
+    # PASO 1: Verificar caché Redis
+    cache_key = f"form_questions:{form_id}"
+    cached = redis_client.get(cache_key)
+    
+    if cached:
+        print(f"✅ Cache HIT: {cache_key}")
+        return cached
+    
+    # PASO 2: Consultar BD (solo questions)
+    print(f"❌ Cache MISS: {cache_key}")
+    
+    # Obtener el formulario primero
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Form not found")
+    
+    # Obtener preguntas asociadas al formulario
+    form_questions = (
+        db.query(FormQuestion)
+        .filter(FormQuestion.form_id == form_id)
+        .all()
+    )
+    
+    if not form_questions:
+        raise HTTPException(status_code=404, detail="No questions found for this form")
+    
+    # Obtener los IDs de las preguntas
+    question_ids = [fq.question_id for fq in form_questions]
+    
+    # Obtener las preguntas con sus opciones
+    questions = (
+        db.query(Question)
+        .filter(Question.id.in_(question_ids))
+        .options(joinedload(Question.options))
+        .all()
+    )
+    
+    if not questions:
+        raise HTTPException(status_code=404, detail="Questions not found") 
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Form not found")
+    
+    # Obtener preguntas asociadas al formulario
+    form_questions = (
+        db.query(FormQuestion)
+        .filter(FormQuestion.form_id == form_id)
+        .all()
+    )
+    
+    if not form_questions:
+        # Si no hay FormQuestion, intentar obtener directamente de Question
+        questions = (
+            db.query(Question)
+            .join(FormQuestion, FormQuestion.question_id == Question.id)
+            .filter(FormQuestion.form_id == form_id)
+            .options(joinedload(Question.options))
+            .all()
+        )
+        
+        if not questions:
+            raise HTTPException(status_code=404, detail="No questions found for this form")
+        
+        questions_map = {q.id: q for q in questions}
+    else:
+        # Obtener los IDs de las preguntas
+        question_ids = [fq.question_id for fq in form_questions]
+        
+        # Obtener las preguntas con sus opciones
+        questions = (
+            db.query(Question)
+            .filter(Question.id.in_(question_ids))
+            .options(joinedload(Question.options))
+            .all()
+        )
+        
+        # Crear un mapa de preguntas por ID
+        questions_map = {q.id: q for q in questions}
+    
+    # PASO 3: Obtener globalConfig para resolver optionSets
+    global_config = {}
+    if hasattr(form, 'global_config') and form.global_config:
+        global_config = form.global_config
+    option_sets = global_config.get("optionSets", {})
+    
+    # PASO 4: Preparar respuesta (resolver referencias a optionSets)
+    questions_response = {
+        "form_id": form_id,
+        "optionSets": option_sets,
+        "questions": []
+    }
+    
+    # Procesar cada pregunta
+    for question in questions:
+        question_data = {
+            "id": question.id,
+            "question_text": question.question_text,
+            "question_type": question.question_type,
+            "required": question.required,
+            "root": question.root if hasattr(question, 'root') else False,
+            "options": [
+                {"id": opt.id, "option_text": opt.option_text}
+                for opt in question.options
+            ]
+        }
+        questions_response["questions"].append(question_data)
+    
+    # PASO 5: Guardar en Redis (TTL: 1 hora)
+    redis_client.set(cache_key, questions_response, ttl=3600)
+    
+    return questions_response
+
+@router.get("/{form_id}/responses/user")
+def get_user_responses(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Obtener solo las respuestas del usuario autenticado (sin joinedload innecesarios).
+    
+    Este endpoint usa caché porque las respuestas del usuario no cambian con frecuencia.
+    Optimizado para ser ultra-ligero y rápido.
+    
+    Returns:
+        dict: Respuestas del usuario al formulario
+    """
+    # PASO 1: Verificar caché Redis
+    cache_key = f"user_responses:{form_id}:{current_user.id}"
+    cached = redis_client.get(cache_key)
+    
+    if cached:
+        print(f"✅ Cache HIT: {cache_key}")
+        return cached
+    
+    # PASO 2: Consultar BD (con joinedload optimizado)
+    print(f"❌ Cache MISS: {cache_key}")
+    
+    responses = (
+        db.query(Response)
+        .filter(
+            Response.form_id == form_id,
+            Response.user_id == current_user.id
+        )
+        .options(joinedload(Response.answers))
+        .all()
+    )
+    
+    # PASO 3: Obtener preguntas UNA VEZ (para procesar regisfacial)
+    questions = db.query(Question).filter(
+        Question.id.in_([
+            answer.question_id 
+            for response in responses 
+            for answer in response.answers
+        ])
+    ).all()
+    questions_map = {q.id: q for q in questions}
+    
+    # PASO 4: Procesar respuestas (incluyendo regisfacial)
+    result = []
+    for response in responses:
+        response_data = {
+            "id": response.id,
+            "form_id": response.form_id,
+            "submitted_at": response.submitted_at.isoformat() if response.submitted_at else None,
+            "status": response.status if hasattr(response, 'status') else "completed",
+            "answers": []
+        }
+        
+        for answer in response.answers:
+            question = questions_map.get(answer.question_id)
+            answer_text = answer.answer_text
+            
+            # Procesar regisfacial
+            if question and question.question_type == "regisfacial":
+                answer_text = process_regisfacial_answer(answer_text, "regisfacial")
+            
+            response_data["answers"].append({
+                "question_id": answer.question_id,
+                "answer_text": answer_text
+            })
+        
+        result.append(response_data)
+    
+    # PASO 5: Guardar en Redis (TTL: 1 hora - raramente cambia)
+    redis_client.set(cache_key, result, ttl=3600)
+    
+    return result
 
 @router.get("/{form_id}/has-responses")
 def check_form_responses(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -177,6 +426,7 @@ def check_form_responses(form_id: int, db: Session = Depends(get_db), current_us
     else:    
         return check_form_data(db, form_id)
     
+
 @router.put("/{form_id}/questions")
 async def update_form_questions(
     form_id: int,
@@ -221,6 +471,9 @@ async def update_form_questions(
         
         db.commit()
         
+        # 🔥 INVALIDAR CACHÉ DE REDIS
+        invalidate_form_cache(form_id)
+        
         response = {
             "success": True,
             "message": "Preguntas actualizadas correctamente",
@@ -240,6 +493,7 @@ async def update_form_questions(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+    
     
 @router.get("/emails/all-emails")
 def get_all_emails(db: Session = Depends(get_db)):
@@ -1526,8 +1780,11 @@ def update_form_design(
             detail="User does not have permission to update form design"
         )
 
-    updated_forms = []
     updated_form = update_form_design_service(db, form_id, payload.form_design)
+    
+    # 🔥 INVALIDAR CACHÉ DE REDIS
+    invalidate_form_cache(form_id)
+    
     return [{
         "message": "Form design updated successfully",
         "form_id": updated_form.id
