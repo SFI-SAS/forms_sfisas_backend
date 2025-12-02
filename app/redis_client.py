@@ -12,9 +12,9 @@ class RedisClient:
         """
         Inicializa el cliente de Redis leyendo del .env
         """
-        self.host = os.getenv('REDIS_HOST', 'localhost')
-        self.port = int(os.getenv('REDIS_PORT', 6379))
-        self.password = os.getenv('REDIS_PASSWORD') or None
+        self.host = os.getenv('REDIS_HOST')
+        self.port = os.getenv('REDIS_PORT')
+        self.password = os.getenv('REDIS_PASSWORD')
         self.client = None
         self._connect()
     
