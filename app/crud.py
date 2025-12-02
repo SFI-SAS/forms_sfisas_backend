@@ -239,7 +239,37 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno del servidor: {str(e)}"
         )
+def get_form_id_users(db: Session, form_id: int, user_id: int):
+    """
+    Obtiene solo la información básica de un formulario.
+    
+    Retorna:
+    - id
+    - title
+    - description
+    - created_at
+    - format_type
+    
+    Para obtener más información usa los endpoints especializados:
+    - GET /{form_id}/design - para el diseño visual
+    - GET /{form_id}/questions - para las preguntas
+    - GET /{form_id}/responses/user - para las respuestas del usuario
+    """
+    # Consulta simple sin joinedload
+    form = db.query(Form).filter(Form.id == form_id).first()
 
+    if not form:
+        return None
+
+    # Retornar solo información básica
+    return {
+        "id": form.id,
+        "title": form.title,
+        "description": form.description,
+        "created_at": form.created_at.isoformat() if hasattr(form, 'created_at') and form.created_at else None,
+        "format_type": form.format_type.name if hasattr(form, 'format_type') else None,
+        "user_id": form.user_id if hasattr(form, 'user_id') else None
+    }
 
 def get_form(db: Session, form_id: int, user_id: int):
     # Cargar el formulario con preguntas y respuestas

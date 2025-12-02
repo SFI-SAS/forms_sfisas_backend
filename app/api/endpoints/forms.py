@@ -7,8 +7,8 @@ from sqlalchemy.orm import Session, joinedload, defer
 from typing import Any, List, Optional
 from app.redis_client import redis_client
 from app.database import get_db
-from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormQuestion, FormSchedule, Question, Response, ResponseApproval, User, UserType
-from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
+from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormQuestion, FormSchedule, Question, QuestionType, Response, ResponseApproval, User, UserType
+from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
 from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormSchema, FormStatusUpdate, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, ResponseApprovalCreate, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
@@ -140,7 +140,7 @@ def get_form_endpoint(
     Raises:
         HTTPException: Error 404 si el formulario no se encuentra o no pertenece al usuario.
     """
-    form = get_form(db, form_id, current_user.id)
+    form = get_form_id_users(db, form_id, current_user.id)
     if not form:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Form not found")
     return form
@@ -318,41 +318,54 @@ def get_form_questions(
     
     return questions_response
 
+
 @router.get("/{form_id}/responses/user")
 def get_user_responses(
     form_id: int,
+    response_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Obtener solo las respuestas del usuario autenticado (sin joinedload innecesarios).
+    Obtener solo las respuestas del usuario autenticado filtradas por response_id.
     
     Este endpoint usa caché porque las respuestas del usuario no cambian con frecuencia.
     Optimizado para ser ultra-ligero y rápido.
     
+    Args:
+        form_id (int): ID del formulario
+        response_id (int): ID de la respuesta específica
+        
     Returns:
         dict: Respuestas del usuario al formulario
     """
     # PASO 1: Verificar caché Redis
-    cache_key = f"user_responses:{form_id}:{current_user.id}"
+    cache_key = f"user_responses:{form_id}:{response_id}:{current_user.id}"
     cached = redis_client.get(cache_key)
     
     if cached:
         print(f"✅ Cache HIT: {cache_key}")
         return cached
     
-    # PASO 2: Consultar BD (con joinedload optimizado)
+    # PASO 2: Consultar BD (con joinedload optimizado + filtro por response_id)
     print(f"❌ Cache MISS: {cache_key}")
     
     responses = (
         db.query(Response)
         .filter(
             Response.form_id == form_id,
+            Response.id == response_id,
             Response.user_id == current_user.id
         )
         .options(joinedload(Response.answers))
         .all()
     )
+    
+    if not responses:
+        raise HTTPException(
+            status_code=404, 
+            detail="No se encontró la respuesta especificada"
+        )
     
     # PASO 3: Obtener preguntas UNA VEZ (para procesar regisfacial)
     questions = db.query(Question).filter(
@@ -695,13 +708,6 @@ def get_responses_with_answers(
             "submitted_at": r.submitted_at,
             "approval_status": approval_result["status"],
             "message": approval_result["message"],
-            "form": {
-                "form_id": r.form.id,
-                "title": r.form.title,
-                "description": r.form.description,
-                "format_type": r.form.format_type.value if r.form.format_type else None,
-                "form_design": r.form.form_design
-            },
             "answers": [
                 {
                     "id_answer": a.id,
@@ -711,7 +717,6 @@ def get_responses_with_answers(
                     "question_type": a.question.question_type,
                     "answer_text": process_regisfacial_answer(a.answer_text, a.question.question_type),
                     "file_path": a.file_path,
-                    # ✅ NUEVO: Incluir el UUID del elemento
                     "form_design_element_id": a.form_design_element_id
                 }
                 for a in current_answers

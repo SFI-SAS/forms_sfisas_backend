@@ -17,7 +17,7 @@ from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, 
 from app.core.security import get_current_user
 from typing import Dict
 from sqlalchemy import delete
-
+from app.redis_client import redis_client
 router = APIRouter()
 
 from fastapi import Body
@@ -837,7 +837,6 @@ def create_answer_history(data: AnswerHistoryCreate, db: Session = Depends(get_d
 
 from sqlalchemy import select
 
-
 @router.post("/create-answers", status_code=status.HTTP_201_CREATED)
 async def create_answers(
     response_id: int,
@@ -866,8 +865,10 @@ async def create_answers(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
         )
-    # Validar que existe el response_id
-    if not db.query(Response).filter(Response.id == response_id).first():
+    
+    # Validar que existe el response_id y obtener la respuesta para acceder al form_id
+    response = db.query(Response).filter(Response.id == response_id).first()
+    if not response:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Response with id {response_id} not found"
@@ -891,6 +892,11 @@ async def create_answers(
         db.add(new_answer)
         db.commit()
         db.refresh(new_answer)
+        
+        # ✅ INVALIDAR CACHÉ después de crear la respuesta
+        cache_key = f"user_responses:{response.form_id}:{current_user.id}"
+        redis_client.delete(cache_key)
+        print(f"🗑️ Cache invalidado: {cache_key}")
         
         return {"message": "Answer created successfully", "id": new_answer.id}
         
