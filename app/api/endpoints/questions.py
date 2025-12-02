@@ -3,8 +3,8 @@ from fastapi.params import Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.database import get_db
-from app.models import Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, User, UserType
-from app.crud import create_question, create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers, get_related_or_filtered_answers_with_forms, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
+from app.models import Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, User, UserType
+from app.crud import create_question, create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers, get_related_or_filtered_answers_optimized, get_related_or_filtered_answers_with_forms, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
 from app.schemas import AnswerSchema, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionWithCategory, UpdateQuestionCategory
 from app.core.security import get_current_user
 
@@ -554,26 +554,23 @@ def get_all_related_answers(
 
 # Endpoint actualizado
 @router.get("/question-table-relation/answers/{question_id}")
-def get_related_answers(question_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_related_answers(
+    question_id: int, 
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user)
+):
     """
     Obtiene respuestas dinámicas relacionadas o filtradas para una pregunta específica.
     
-    Ahora incluye información completa de los formularios donde aparecen las preguntas relacionadas,
-    permitiendo el auto-completado inteligente basado en respuestas previas.
-
-    Parámetros:
-    -----------
-    question_id : int
-        ID de la pregunta para la que se buscan respuestas relacionadas o filtradas.
+    OPTIMIZACIÓN: Solo retorna data esencial (respuestas únicas + correlaciones).
+    NO incluye formularios completos para reducir el payload drásticamente.
 
     Retorna:
     --------
     dict:
-        Diccionario con los campos:
-        - `source` (str): origen de los datos
-        - `data` (List[dict]): lista de respuestas únicas con el campo `name`
-        - `forms` (List[dict]): lista de formularios completos con sus respuestas (solo para preguntas relacionadas)
-        - `related_question` (dict): información de la pregunta relacionada (si aplica)
+        - `source`: origen de los datos
+        - `data`: lista de respuestas únicas con el campo `name`
+        - `correlations`: mapeo de correlaciones entre respuestas
     """
     if current_user is None:
         raise HTTPException(
@@ -581,7 +578,8 @@ def get_related_answers(question_id: int, db: Session = Depends(get_db), current
             detail="User does not have permission to get all questions"
         )
     
-    return get_related_or_filtered_answers_with_forms(db, question_id)
+    return get_related_or_filtered_answers_optimized(db, question_id)
+
 
 
 @router.post("/location-relation", status_code=201)
