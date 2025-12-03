@@ -2551,6 +2551,8 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
         "correlations": {}
     }
 
+
+
 def get_related_or_filtered_answers_optimized(
     db: Session, 
     question_id: int,
@@ -2561,52 +2563,77 @@ def get_related_or_filtered_answers_optimized(
 ):
     """
     Versión optimizada que permite retornar solo lo necesario.
+    MEJORADA: Ahora evalúa TODAS las respuestas, no solo la última.
     """
     # Verificar condición de filtro
     condition = db.query(QuestionFilterCondition).filter_by(filtered_question_id=question_id).first()
 
     if condition:
-        # [... tu código de condición existente sin cambios ...]
+        # 🔥 MEJORA: En lugar de iterar responses sin filtro, obtenemos todas las respuestas
+        # de todos los formularios que contienen la pregunta condicionada
         responses = db.query(Response).filter_by(form_id=condition.form_id).all()
         valid_answers = []
+        response_ids_matched = set()  # Track which responses matched the condition
 
         for response in responses:
-            answers_dict = {a.question_id: a.answer_text for a in response.answers}
-            source_val = answers_dict.get(condition.source_question_id)
-            condition_val = answers_dict.get(condition.condition_question_id)
-
-            if source_val is None or condition_val is None:
+            # Obtener TODAS las respuestas de esta respuesta
+            answers = db.query(Answer).filter_by(response_id=response.id).all()
+            
+            # 🔑 IMPORTANTE: Puede haber MÚLTIPLES Answer para la misma pregunta
+            # Por ejemplo: ["eps", "arl"] para pregunta de servicios
+            condition_values = []
+            source_values = []
+            
+            for answer in answers:
+                if answer.question_id == condition.condition_question_id and answer.answer_text:
+                    condition_values.append(answer.answer_text)
+                if answer.question_id == condition.source_question_id and answer.answer_text:
+                    source_values.append(answer.answer_text)
+            
+            # Si no hay valores, continuar
+            if not condition_values or not source_values:
                 continue
+            
+            # 🎯 Evaluar CADA combinación de condición con CADA source
+            response_matched = False
+            for condition_val in condition_values:
+                try:
+                    condition_val_converted = float(condition_val)
+                    expected_val = float(condition.expected_value)
+                except ValueError:
+                    condition_val_converted = str(condition_val)
+                    expected_val = str(condition.expected_value)
 
-            try:
-                condition_val = float(condition_val)
-                expected_val = float(condition.expected_value)
-            except ValueError:
-                condition_val = str(condition_val)
-                expected_val = str(condition.expected_value)
+                condition_met = False
+                if condition.operator == '==':
+                    condition_met = condition_val_converted == expected_val
+                elif condition.operator == '!=':
+                    condition_met = condition_val_converted != expected_val
+                elif condition.operator == '>':
+                    condition_met = condition_val_converted > expected_val
+                elif condition.operator == '<':
+                    condition_met = condition_val_converted < expected_val
+                elif condition.operator == '>=':
+                    condition_met = condition_val_converted >= expected_val
+                elif condition.operator == '<=':
+                    condition_met = condition_val_converted <= expected_val
 
-            condition_met = False
-            if condition.operator == '==':
-                condition_met = condition_val == expected_val
-            elif condition.operator == '!=':
-                condition_met = condition_val != expected_val
-            elif condition.operator == '>':
-                condition_met = condition_val > expected_val
-            elif condition.operator == '<':
-                condition_met = condition_val < expected_val
-            elif condition.operator == '>=':
-                condition_met = condition_val >= expected_val
-            elif condition.operator == '<=':
-                condition_met = condition_val <= expected_val
-
-            if condition_met:
-                valid_answers.append(source_val)
+                # Si la condición se cumple con CUALQUIER valor, agregar todos los source_values
+                if condition_met:
+                    response_matched = True
+                    for source_val in source_values:
+                        valid_answers.append(source_val)
+                    break  # Una vez cumplida, no necesitamos evaluar otros condition_values
+            
+            if response_matched:
+                response_ids_matched.add(response.id)
 
         filtered = list(filter(None, set(valid_answers)))
         return {
             "source": "condicion_filtrada",
             "data": [{"name": val} for val in filtered],
-            "correlations": {}
+            "correlations": {},
+            "matched_response_count": len(response_ids_matched)
         }
 
     # Si no hay condición, usar relación de tabla
@@ -2809,8 +2836,7 @@ def get_related_or_filtered_answers_optimized(
         "forms": [],
         "correlations": {}
     }
-    
-    
+
 def get_related_or_filtered_answers(db: Session, question_id: int):
     """
     Obtiene respuestas dinámicas relacionadas o filtradas para una pregunta.
