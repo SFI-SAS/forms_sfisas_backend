@@ -1020,3 +1020,17 @@ class ClasificacionBitacoraRelacion(Base):
     question_id = Column(BigInteger, nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    
+    
+class RelationOperationMath(Base):
+    __tablename__ = "relation_operation_math"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id_form = Column(BigInteger, ForeignKey("forms.id"), nullable=False)
+    id_questions = Column(AutoJSON, nullable=False)  # Almacena lista de IDs de preguntas
+    operations = Column(String(500), nullable=False)  # Fórmula u operación matemática
+    
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    form = relationship("Form", backref="math_operations")

@@ -843,6 +843,7 @@ async def create_answers(
     question_id: int,
     answer_text: Optional[str] = None,
     file_path: Optional[str] = None,
+    form_design_element_id: Optional[str] = None,  # ← NUEVO
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -854,6 +855,7 @@ async def create_answers(
     - question_id: ID de la pregunta que se está respondiendo.
     - answer_text: Texto de la respuesta (opcional).
     - file_path: Ruta del archivo adjunto, si aplica (opcional).
+    - form_design_element_id: ID del elemento del diseño del formulario (opcional).
     - db: Sesión de base de datos inyectada automáticamente.
     - current_user: Usuario autenticado que realiza la operación.
 
@@ -863,10 +865,10 @@ async def create_answers(
     if current_user == None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
+            detail="User does not have permission to create answers"
         )
     
-    # Validar que existe el response_id y obtener la respuesta para acceder al form_id
+    # Validar que existe el response_id
     response = db.query(Response).filter(Response.id == response_id).first()
     if not response:
         raise HTTPException(
@@ -882,30 +884,45 @@ async def create_answers(
         )
     
     try:
+        # Crear la nueva respuesta con todos los campos
         new_answer = Answer(
             response_id=response_id,
             question_id=question_id,
             answer_text=answer_text,
-            file_path=file_path
+            file_path=file_path,
+            form_design_element_id=form_design_element_id  # ← NUEVO
         )
         
         db.add(new_answer)
         db.commit()
         db.refresh(new_answer)
         
-        # ✅ INVALIDAR CACHÉ después de crear la respuesta
+        # Invalidar caché después de crear la respuesta
         cache_key = f"user_responses:{response.form_id}:{current_user.id}"
         redis_client.delete(cache_key)
         print(f"🗑️ Cache invalidado: {cache_key}")
         
-        return {"message": "Answer created successfully", "id": new_answer.id}
+        print(f"✅ Respuesta creada - ID: {new_answer.id}, "
+              f"Question: {question_id}, "
+              f"FormDesignElement: {form_design_element_id}")
+        
+        return {
+            "message": "Answer created successfully",
+            "id": new_answer.id,
+            "response_id": response_id,
+            "question_id": question_id,
+            "form_design_element_id": form_design_element_id
+        }
         
     except Exception as e:
         db.rollback()
+        print(f"❌ Error creando respuesta: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating answer: {str(e)}"
         )
+        
+        
 @router.put("/update_answer_text/")
 def update_answer_text(data: UpdateAnswertHistory, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
