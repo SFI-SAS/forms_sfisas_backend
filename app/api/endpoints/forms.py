@@ -1947,6 +1947,70 @@ def delete_notification(notification_id: int, db: Session = Depends(get_db),  cu
 
         return {"message": "Notificación eliminada correctamente"}
     
+@router.delete("/notifications/bulk/delete", status_code=status.HTTP_204_NO_CONTENT)
+def delete_notifications_bulk(
+    notification_ids: List[int],
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Elimina múltiples notificaciones de una sola vez.
+    
+    Este endpoint permite eliminar varios notificadores de forma masiva,
+    mejorando el rendimiento cuando hay muchos registros.
+    
+    Parámetros:
+    -----------
+    notification_ids : List[int]
+        Lista de IDs de notificaciones a eliminar
+        Ejemplo: [1, 2, 3, 4, 5]
+    
+    db : Session
+        Sesión de base de datos
+    
+    current_user : User
+        Usuario autenticado
+    
+    Retorna:
+    --------
+    dict:
+        Mensaje de confirmación con cantidad eliminada
+    """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to perform this action"
+        )
+    
+    # Validar que la lista no esté vacía
+    if not notification_ids or len(notification_ids) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La lista de notificaciones no puede estar vacía"
+        )
+    
+    # Contar cuántas existen antes de eliminar
+    existing_count = db.query(FormApprovalNotification).filter(
+        FormApprovalNotification.id.in_(notification_ids)
+    ).count()
+    
+    if existing_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No se encontraron notificaciones para eliminar"
+        )
+    
+    # ⭐ ELIMINAR TODO DE UNA SOLA VEZ
+    db.query(FormApprovalNotification).filter(
+        FormApprovalNotification.id.in_(notification_ids)
+    ).delete(synchronize_session=False)
+    
+    db.commit()
+    
+    return {
+        "message": f"{existing_count} notificaciones eliminadas correctamente",
+        "deleted_count": existing_count
+    }
 
 @router.delete("/forms/{form_id}")
 def delete_form_endpoint(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
