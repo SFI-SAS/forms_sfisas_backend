@@ -969,3 +969,19 @@ class RelationOperationMathOut(BaseModel):
 
     class Config:
         from_attributes = True
+        
+        
+class GetAnswersRequest(BaseModel):
+    response_id: int
+    question_ids: List[int]
+
+class AnswerValue(BaseModel):
+    question_id: int
+    question_text: str
+    answer_text: str | None
+    answer_value: float | None  # Para operaciones matemáticas
+
+class GetAnswersResponse(BaseModel):
+    response_id: int
+    form_id: int
+    answers: List[AnswerValue]

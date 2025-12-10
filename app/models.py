@@ -1034,3 +1034,6 @@ class RelationOperationMath(Base):
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     form = relationship("Form", backref="math_operations")
+    
+    
+    

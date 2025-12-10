@@ -12,7 +12,7 @@ from typing import List, Optional, Union
 from app.api.controllers.mail import send_reconsideration_email
 from app.crud import crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, encrypt_object, finalizar_conversacion_completa, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, get_palabras_clave_by_form, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
 from app.database import get_db
-from app.schemas import AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, PalabrasClaveCreate, PalabrasClaveOut, PalabrasClaveUpdate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, RegisfacialAnswerResponse, RelationOperationMathCreate, RelationOperationMathOut, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
+from app.schemas import AnswerHistoryChangeSchema, AnswerHistoryCreate, AnswerValue, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, GetAnswersRequest, GetAnswersResponse, PalabrasClaveCreate, PalabrasClaveOut, PalabrasClaveUpdate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, RegisfacialAnswerResponse, RelationOperationMathCreate, RelationOperationMathOut, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
 from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, ClasificacionBitacoraRelacion, Form, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionTableRelation, QuestionType, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, UserType
 from app.core.security import get_current_user
 from typing import Dict
@@ -2119,3 +2119,59 @@ async def update_answer(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error updating answer: {str(e)}"
         )
+        
+    
+@router.post(
+    "/get-answer-values",
+    response_model=GetAnswersResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Obtener valores de respuestas por IDs de preguntas"
+)
+def obtener_valores_respuestas(
+    data: GetAnswersRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Obtiene los valores de las respuestas para un conjunto de preguntas.
+    """
+    
+    # Verificar que la respuesta existe
+    response = db.query(Response).filter(Response.id == data.response_id).first()
+    if not response:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="La respuesta no existe."
+        )
+    
+    # Obtener las respuestas con sus preguntas
+    answers = db.query(Answer, Question).join(
+        Question, Answer.question_id == Question.id
+    ).filter(
+        Answer.response_id == data.response_id,
+        Answer.question_id.in_(data.question_ids)
+    ).all()
+    
+    # Construir la respuesta
+    answer_values = []
+    for answer, question in answers:
+        # Intentar convertir a número para operaciones matemáticas
+        numeric_value = None
+        if answer.answer_text:
+            try:
+                numeric_value = float(answer.answer_text)
+            except (ValueError, TypeError):
+                numeric_value = None
+        
+        answer_values.append(AnswerValue(
+            question_id=question.id,
+            question_text=question.question_text,
+            answer_text=answer.answer_text,
+            answer_value=numeric_value
+        ))
+    
+    return GetAnswersResponse(
+        response_id=response.id,
+        form_id=response.form_id,
+        answers=answer_values
+    )
