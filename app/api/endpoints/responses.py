@@ -12,8 +12,8 @@ from typing import List, Optional, Union
 from app.api.controllers.mail import send_reconsideration_email
 from app.crud import crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, encrypt_object, finalizar_conversacion_completa, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, get_palabras_clave_by_form, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
 from app.database import get_db
-from app.schemas import AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, PalabrasClaveCreate, PalabrasClaveOut, PalabrasClaveUpdate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, RegisfacialAnswerResponse, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
-from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, ClasificacionBitacoraRelacion, Form, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, UserType
+from app.schemas import AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, PalabrasClaveCreate, PalabrasClaveOut, PalabrasClaveUpdate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, RegisfacialAnswerResponse, RelationOperationMathCreate, RelationOperationMathOut, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
+from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, ClasificacionBitacoraRelacion, Form, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionTableRelation, QuestionType, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, UserType
 from app.core.security import get_current_user
 from typing import Dict
 from sqlalchemy import delete
@@ -1954,3 +1954,71 @@ def update_palabras_clave(
         "keywords": registro.keywords
     }
 
+@router.post(
+    "/{form_id}/math-operations",
+    response_model=RelationOperationMathOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Registrar una relación de operación matemática"
+)
+def crear_operacion_matematica(
+    form_id: int,
+    data: RelationOperationMathCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Crea una nueva relación de operación matemática para un formulario.
+    
+    **Parámetros:**
+    - form_id: ID del formulario (en la URL)
+    - id_questions: Lista de IDs de preguntas involucradas
+    - operations: Fórmula matemática (ej: "Q1 + Q2 * Q3")
+    """
+    
+    # Validación de permisos
+    if str(current_user.user_type.value) not in ["admin", "creator"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permisos para crear operaciones matemáticas."
+        )
+    
+    # Validar que form_id de la URL coincida con el del body
+    if data.id_form != form_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El id_form en la URL no coincide con el del cuerpo de la solicitud."
+        )
+    
+    # Verificar que el formulario existe
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="El formulario no existe."
+        )
+    
+    # Verificar que las preguntas existen y pertenecen al formulario
+    if data.id_questions:
+        preguntas = db.query(Question).filter(
+            Question.id.in_(data.id_questions),
+            Question.form_id == form_id
+        ).all()
+        
+        if len(preguntas) != len(data.id_questions):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Una o más preguntas no existen o no pertenecen a este formulario."
+            )
+    
+    # Crear nuevo registro
+    nueva_operacion = RelationOperationMath(
+        id_form=form_id,
+        id_questions=data.id_questions,
+        operations=data.operations.strip()
+    )
+    
+    db.add(nueva_operacion)
+    db.commit()
+    db.refresh(nueva_operacion)
+    
+    return nueva_operacion

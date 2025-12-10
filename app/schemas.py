@@ -944,3 +944,28 @@ class PalabrasClaveOut(BaseModel):
 
 class PalabrasClaveUpdate(BaseModel):
     palabra: str
+    
+    
+class RelationOperationMathCreate(BaseModel):
+    id_form: int = Field(..., gt=0, description="ID del formulario")
+    id_questions: List[int] = Field(..., min_items=1, description="Lista de IDs de preguntas")
+    operations: str = Field(..., min_length=1, max_length=500, description="Fórmula u operación matemática")
+
+    class Config:
+        example = {
+            "id_form": 1,
+            "id_questions": [1, 2, 3],
+            "operations": "Q1 + Q2 * Q3"
+        }
+
+
+class RelationOperationMathOut(BaseModel):
+    id: int
+    id_form: int
+    id_questions: List[int]
+    operations: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
