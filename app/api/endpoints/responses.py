@@ -1954,6 +1954,7 @@ def update_palabras_clave(
         "keywords": registro.keywords
     }
 
+
 @router.post(
     "/{form_id}/math-operations",
     response_model=RelationOperationMathOut,
@@ -1998,10 +1999,14 @@ def crear_operacion_matematica(
         )
     
     # Verificar que las preguntas existen y pertenecen al formulario
+    # ✅ FORMA 1: Usar join con la tabla intermedia form_questions
     if data.id_questions:
-        preguntas = db.query(Question).filter(
+        preguntas = db.query(Question).join(
+            FormQuestion,
+            FormQuestion.question_id == Question.id
+        ).filter(
             Question.id.in_(data.id_questions),
-            Question.form_id == form_id
+            FormQuestion.form_id == form_id
         ).all()
         
         if len(preguntas) != len(data.id_questions):
@@ -2022,3 +2027,95 @@ def crear_operacion_matematica(
     db.refresh(nueva_operacion)
     
     return nueva_operacion
+
+
+@router.put("/update-answer/{answer_id}", status_code=status.HTTP_200_OK)
+async def update_answer(
+    answer_id: int,
+    answer_text: str = Body(..., embed=True),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Actualiza el texto de una respuesta existente.
+    
+    Este endpoint se usa en formato "abierto" para modificar respuestas 
+    sin crear historial ni duplicados.
+    
+    Parámetros:
+    - answer_id: ID de la respuesta a actualizar
+    - answer_text: Nuevo texto de la respuesta
+    - db: Sesión de base de datos
+    - current_user: Usuario autenticado
+    
+    Retorna:
+    - Respuesta actualizada con mensaje de éxito
+    """
+    
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to update answers"
+        )
+    
+    try:
+        # 1️⃣ Buscar la respuesta
+        answer = db.query(Answer).filter(Answer.id == answer_id).first()
+        
+        if not answer:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Answer with id {answer_id} not found"
+            )
+        
+        # 2️⃣ Verificar permisos (que la respuesta pertenezca a una Response del usuario)
+        response = db.query(Response).filter(Response.id == answer.response_id).first()
+        
+        if not response:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Response with id {answer.response_id} not found"
+            )
+        
+        # Opcional: Verificar que el usuario sea dueño de la respuesta
+        if response.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to modify this answer"
+            )
+        
+        # 3️⃣ Actualizar el texto de la respuesta
+        old_text = answer.answer_text
+        answer.answer_text = answer_text
+        
+        db.commit()
+        db.refresh(answer)
+        
+        # 4️⃣ Invalidar caché
+        cache_key = f"user_responses:{response.form_id}:{current_user.id}"
+        redis_client.delete(cache_key)
+        print(f"🗑️ Cache invalidado: {cache_key}")
+        
+        print(f"✅ Respuesta actualizada - ID: {answer_id}")
+        print(f"   Texto anterior: '{old_text}'")
+        print(f"   Texto nuevo: '{answer_text}'")
+        
+        return {
+            "message": "Answer updated successfully",
+            "id": answer.id,
+            "question_id": answer.question_id,
+            "response_id": answer.response_id,
+            "form_design_element_id": answer.form_design_element_id,
+            "old_value": old_text,
+            "new_value": answer_text
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error actualizando respuesta {answer_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating answer: {str(e)}"
+        )
