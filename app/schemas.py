@@ -980,3 +980,19 @@ class QuestionTextValue(BaseModel):
 
 class GetQuestionTextsResponse(BaseModel):
     questions: List[QuestionTextValue]
+    
+class RelationOperationMathCreate(BaseModel):
+    id_form: int = Field(..., description="ID del formulario")
+    id_questions: List[int] = Field(..., description="Lista de IDs de preguntas")
+    operations: str = Field(..., description="Fórmula matemática")
+
+class RelationOperationMathOut(BaseModel):
+    id: int
+    id_form: int
+    id_questions: List[int]
+    operations: str
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True

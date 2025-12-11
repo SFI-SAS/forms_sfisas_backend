@@ -13,7 +13,7 @@ from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, PalabrasClave, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationBitacora, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, PalabrasClave, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationBitacora, RelationOperationMath, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
 from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, NotificationResponse, PalabrasClaveCreate, PostCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
@@ -27,6 +27,9 @@ import string
 
 import random
 
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 ENCRYPTION_KEY = 'OugiYqGaXdQElq1G5UtKD/jVwk4r/J041p9J7dHOFGo='
 # ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY')
@@ -5428,47 +5431,37 @@ def update_notification_status(notification_id: int, notify_on: str, db: Session
     return notification
 
 def delete_form(db: Session, form_id: int):
-    """
-    Elimina un formulario y todos sus registros relacionados, incluyendo respuestas si existen.
-    """
     form = db.query(Form).filter(Form.id == form_id).first()
     
     if not form:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Formulario no encontrado."
-        )
+        raise HTTPException(status_code=404, detail="No encontrado")
     
     try:
-        # 🔍 ANÁLISIS DE RELACIONES ANTES DE ELIMINAR
-        relations_info = analyze_form_relations(db, form_id)
-        
-        # Obtener todos los response_ids relacionados con el formulario
-        response_ids = db.query(Response.id).filter(Response.form_id == form_id).all()
-        response_ids = [r.id for r in response_ids]
+        # 1. Respuestas y sus datos
+        response_ids = [r.id for r in db.query(Response.id).filter(Response.form_id == form_id).all()]
         
         if response_ids:
-            # Eliminar registros relacionados en orden de dependencias
-            answer_ids = db.query(Answer.id).filter(Answer.response_id.in_(response_ids)).all()
-            answer_ids = [a.id for a in answer_ids]
+            answer_ids = [a.id for a in db.query(Answer.id).filter(Answer.response_id.in_(response_ids)).all()]
             
             if answer_ids:
-                # Eliminar primero en tablas que dependen de Answer
                 db.query(AnswerFileSerial).filter(AnswerFileSerial.answer_id.in_(answer_ids)).delete(synchronize_session=False)
                 db.query(AnswerHistory).filter(AnswerHistory.previous_answer_id.in_(answer_ids)).delete(synchronize_session=False)
+                db.query(AnswerHistory).filter(AnswerHistory.current_answer_id.in_(answer_ids)).delete(synchronize_session=False)
             
-            # 🔹 Borrar dependencias antes de Responses
             db.query(ResponseApproval).filter(ResponseApproval.response_id.in_(response_ids)).delete(synchronize_session=False)
             db.query(ResponseApprovalRequirement).filter(ResponseApprovalRequirement.response_id.in_(response_ids)).delete(synchronize_session=False)
-            
             db.query(Answer).filter(Answer.response_id.in_(response_ids)).delete(synchronize_session=False)
             db.query(Response).filter(Response.id.in_(response_ids)).delete(synchronize_session=False)
         
-        # 🔹 Eliminar approval_requirements relacionados al formulario
+        # 2. ⚠️ CRÍTICO: Eliminar relation_operation_math ANTES de otras cosas
+        db.query(RelationOperationMath).filter(
+            RelationOperationMath.id_form == form_id
+        ).delete(synchronize_session=False)
+        
+        # 3. Luego el resto de dependencias
         db.query(ApprovalRequirement).filter(ApprovalRequirement.form_id == form_id).delete(synchronize_session=False)
         db.query(ApprovalRequirement).filter(ApprovalRequirement.required_form_id == form_id).delete(synchronize_session=False)
         
-        # 🔹 Eliminar dependencias en otras tablas
         db.query(QuestionFilterCondition).filter(QuestionFilterCondition.form_id == form_id).delete(synchronize_session=False)
         db.query(FormAnswer).filter(FormAnswer.form_id == form_id).delete(synchronize_session=False)
         db.query(FormApproval).filter(FormApproval.form_id == form_id).delete(synchronize_session=False)
@@ -5478,21 +5471,15 @@ def delete_form(db: Session, form_id: int):
         db.query(FormQuestion).filter(FormQuestion.form_id == form_id).delete(synchronize_session=False)
         db.query(FormCloseConfig).filter(FormCloseConfig.form_id == form_id).delete(synchronize_session=False)
         
-        # 🔹 Finalmente eliminar el formulario
+        # 4. Finalmente: el formulario
         db.delete(form)
         db.commit()
         
+        return {"message": "Eliminado correctamente"}
+        
     except Exception as e:
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ocurrió un error al eliminar el formulario: {str(e)}"
-        )
-    
-    return {
-        "message": "Formulario, respuestas y registros relacionados eliminados correctamente.",
-        "relations_deleted": relations_info
-    }
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 def analyze_form_relations(db: Session, form_id: int):
     """
@@ -6753,3 +6740,298 @@ def obtener_conversacion_completa(db: Session, evento_id: int):
 
 def get_palabras_clave_by_form(db: Session, form_id: int):
     return db.query(PalabrasClave).filter(PalabrasClave.form_id == form_id).first()
+
+
+def get_all_user_responses_by_form_id_improved(db: Session, form_id: int):
+    """
+    Recupera respuestas estructuradas para Excel, manejando repetidores correctamente.
+    Devuelve dos estructuras:
+    - flat_data: Datos planos para tabla principal
+    - repeater_data: Datos agrupados para repetidores
+    """
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        return None
+
+    questions = db.query(Question).join(Form.questions).filter(Form.id == form_id).all()
+    question_map = {q.id: q for q in questions}
+
+    responses = db.query(Response).filter(Response.form_id == form_id)\
+        .options(
+            joinedload(Response.answers).joinedload(Answer.question),
+            joinedload(Response.user)
+        ).all()
+
+    response_ids = [response.id for response in responses]
+    histories = db.query(AnswerHistory).filter(AnswerHistory.response_id.in_(response_ids)).all()
+    
+    all_answer_ids = set()
+    for history in histories:
+        if history.previous_answer_id:
+            all_answer_ids.add(history.previous_answer_id)
+        all_answer_ids.add(history.current_answer_id)
+    
+    historical_answers = {}
+    if all_answer_ids:
+        historical_answer_list = (
+            db.query(Answer)
+            .options(joinedload(Answer.question))
+            .filter(Answer.id.in_(all_answer_ids))
+            .all()
+        )
+        for answer in historical_answer_list:
+            historical_answers[answer.id] = answer
+    
+    history_map = {}
+    previous_answer_ids = set()
+    
+    for history in histories:
+        history_map[history.current_answer_id] = history
+        if history.previous_answer_id:
+            previous_answer_ids.add(history.previous_answer_id)
+
+    # ✅ MEJORADO: Separar preguntas normales de preguntas repetidoras
+    flat_data = []
+    repeater_data = {}
+    counter = 1
+
+    for response in responses:
+        current_answers = [
+            answer for answer in response.answers 
+            if answer.id not in previous_answer_ids
+        ]
+        
+        # Separar respuestas normales y de repetidores
+        normal_answers = {}
+        repeater_answers_grouped = {}
+        
+        for answer in current_answers:
+            q_text = answer.question.question_text
+            question_type = answer.question.question_type
+            
+            # Verificar si es respuesta de un repetidor
+            # (Un repetidor tiene múltiples respuestas para la misma question_id en una response)
+            answer_count = sum(
+                1 for a in current_answers 
+                if a.question_id == answer.question_id
+            )
+            
+            is_repeater = answer_count > 1
+            
+            if is_repeater:
+                # Agrupar respuestas de repetidor
+                if q_text not in repeater_answers_grouped:
+                    repeater_answers_grouped[q_text] = []
+                repeater_answers_grouped[q_text].append({
+                    'text': answer.answer_text or answer.file_path or '',
+                    'type': question_type,
+                    'form_design_id': answer.form_design_element_id
+                })
+            else:
+                # Respuesta normal
+                answer_value = answer.answer_text or answer.file_path or ""
+                
+                if question_type == "location" and answer.answer_text:
+                    location_data = parse_location_answer(answer.answer_text)
+                    for key, value in location_data.items():
+                        column_name = f"{q_text} - {key.replace('_', ' ').title()}"
+                        normal_answers[column_name] = str(value)
+                else:
+                    normal_answers[q_text] = answer_value
+        
+        # Crear fila principal
+        row = {
+            "Registro #": counter,
+            "Nombre": response.user.name,
+            "Documento": response.user.num_document,
+        }
+        counter += 1
+        
+        # Agregar respuestas normales
+        row.update(normal_answers)
+        
+        # Agregar información de repetidores
+        repeater_summary = {}
+        for repeater_name, answers_list in repeater_answers_grouped.items():
+            repeater_summary[f"{repeater_name} (# registros)"] = len(answers_list)
+            repeater_data.setdefault(f"DETALLES: {repeater_name}", []).append({
+                'user_name': response.user.name,
+                'documento': response.user.num_document,
+                'registro_principal': row["Registro #"],
+                'datos': answers_list
+            })
+        
+        row.update(repeater_summary)
+        row["Fecha de Envío"] = response.submitted_at.strftime("%Y-%m-%d %H:%M:%S") if response.submitted_at else ""
+        
+        flat_data.append(row)
+
+    # Obtener todas las claves
+    fixed_keys = ["Registro #", "Nombre", "Documento"]
+    question_keys = sorted({key for row in flat_data for key in row if key not in fixed_keys + ["Fecha de Envío"]})
+    all_keys = fixed_keys + question_keys + ["Fecha de Envío"]
+
+    for row in flat_data:
+        for key in all_keys:
+            row.setdefault(key, "")
+
+    return {
+        "total_responses": len(flat_data),
+        "form_id": form.id,
+        "form_title": form.title,
+        "questions": all_keys,
+        "data": flat_data,
+        "repeater_data": repeater_data  # ✅ NUEVO
+    }
+
+
+def generate_excel_with_repeaters(data: dict) -> BytesIO:
+    """
+    Genera un Excel mejorado con:
+    - Hoja principal con respuestas normales
+    - Hojas adicionales para cada repetidor
+    
+    ✅ MANTIENE EL MISMO NOMBRE DE ENDPOINT
+    """
+    
+    # ===== FUNCIÓN HELPER PARA LIMPIAR NOMBRES DE HOJAS =====
+    def clean_sheet_name(name: str) -> str:
+        """
+        Limpia el nombre de la hoja removiendo caracteres inválidos de Excel
+        y limitando la longitud a 31 caracteres.
+        
+        Caracteres no permitidos: : \ / ? * [ ]
+        """
+        # Caracteres no permitidos en nombres de hojas de Excel
+        invalid_chars = [':', '\\', '/', '?', '*', '[', ']']
+        
+        # Reemplazar caracteres inválidos con guión bajo
+        cleaned_name = name
+        for char in invalid_chars:
+            cleaned_name = cleaned_name.replace(char, '_')
+        
+        # Remover espacios extras y limitar a 31 caracteres
+        cleaned_name = cleaned_name.strip()
+        
+        # Si el nombre queda vacío, usar un nombre por defecto
+        if not cleaned_name:
+            cleaned_name = "Hoja"
+        
+        # Limitar a 31 caracteres (límite de Excel)
+        return cleaned_name[:31]
+    
+    wb = Workbook()
+    wb.remove(wb.active)  # Eliminar hoja por defecto
+    
+    # ===== ESTILOS =====
+    header_fill = PatternFill(start_color="12A0AF", end_color="12A0AF", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    repeater_fill = PatternFill(start_color="E8F4F8", end_color="E8F4F8", fill_type="solid")
+    repeater_font = Font(bold=True, color="00498C", size=10)
+    border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    
+    # ===== HOJA PRINCIPAL =====
+    # CAMBIO: Usar clean_sheet_name para la hoja principal también
+    ws_main = wb.create_sheet(clean_sheet_name("Respuestas de Usuarios"), 0)
+    
+    # Escribir encabezados
+    for col_idx, header in enumerate(data["questions"], 1):
+        cell = ws_main.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+    
+    # Escribir datos
+    for row_idx, row_data in enumerate(data["data"], 2):
+        for col_idx, header in enumerate(data["questions"], 1):
+            value = row_data.get(header, "")
+            cell = ws_main.cell(row=row_idx, column=col_idx, value=value)
+            cell.border = border
+            cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    
+    # Ajustar ancho de columnas
+    for col_idx in range(1, len(data["questions"]) + 1):
+        ws_main.column_dimensions[get_column_letter(col_idx)].width = 20
+    
+    # Ajustar altura de encabezado
+    ws_main.row_dimensions[1].height = 40
+    
+    # ===== HOJAS PARA REPETIDORES =====
+    for repeater_name, repeater_list in data.get("repeater_data", {}).items():
+        if not repeater_list:
+            continue
+        
+        # CAMBIO CRÍTICO: Usar clean_sheet_name en lugar de solo [:31]
+        safe_sheet_name = clean_sheet_name(repeater_name)
+        ws_repeater = wb.create_sheet(safe_sheet_name)
+        
+        # Encabezado de la hoja de repetidor
+        ws_repeater.merge_cells('A1:E1')
+        title_cell = ws_repeater['A1']
+        title_cell.value = repeater_name  # Mantener el nombre completo en el título
+        title_cell.font = repeater_font
+        title_cell.fill = repeater_fill
+        title_cell.alignment = Alignment(horizontal="left", vertical="center")
+        
+        # Encabezados de tabla
+        headers = ["Usuario", "Documento", "Reg. Principal", "Campo", "Valor"]
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws_repeater.cell(row=2, column=col_idx, value=header)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = border
+        
+        # Datos del repetidor
+        row_idx = 3
+        for repeater_entry in repeater_list:
+            user_name = repeater_entry['user_name']
+            documento = repeater_entry['documento']
+            registro_principal = repeater_entry['registro_principal']
+            datos = repeater_entry['datos']
+            
+            # Una fila por cada dato en el repetidor
+            for idx, dato in enumerate(datos):
+                col_idx = 1
+                # Usuario
+                cell = ws_repeater.cell(row=row_idx, column=col_idx, value=user_name if idx == 0 else "")
+                cell.border = border
+                col_idx += 1
+                
+                # Documento
+                cell = ws_repeater.cell(row=row_idx, column=col_idx, value=documento if idx == 0 else "")
+                cell.border = border
+                col_idx += 1
+                
+                # Registro Principal
+                cell = ws_repeater.cell(row=row_idx, column=col_idx, value=registro_principal if idx == 0 else "")
+                cell.border = border
+                col_idx += 1
+                
+                # Campo (nombre del field)
+                cell = ws_repeater.cell(row=row_idx, column=col_idx, value=f"Campo {idx + 1}")
+                cell.border = border
+                col_idx += 1
+                
+                # Valor
+                cell = ws_repeater.cell(row=row_idx, column=col_idx, value=dato['text'])
+                cell.border = border
+                
+                row_idx += 1
+        
+        # Ajustar ancho de columnas
+        for col_idx in range(1, 6):
+            ws_repeater.column_dimensions[get_column_letter(col_idx)].width = 25
+    
+    # Guardar en BytesIO
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    
+    return output

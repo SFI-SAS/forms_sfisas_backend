@@ -2157,3 +2157,140 @@ def obtener_textos_preguntas(
     ]
     
     return GetQuestionTextsResponse(questions=question_values)
+
+
+
+@router.get(
+    "/{form_id}/math-operations/check",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="Verificar si un formulario tiene operaciones matemáticas"
+)
+def verificar_operaciones_matematicas(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Verifica si un formulario tiene operaciones matemáticas registradas.
+    
+    **Parámetros:**
+    - form_id: ID del formulario (en la URL)
+    
+    **Retorna:**
+    - has_operations: boolean indicando si tiene operaciones
+    - operations: lista de operaciones con sus id_questions si existen
+    """
+    
+    # Verificar que el formulario existe
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="El formulario no existe."
+        )
+    
+    # Buscar operaciones matemáticas para este formulario
+    operaciones = db.query(RelationOperationMath).filter(
+        RelationOperationMath.id_form == form_id
+    ).all()
+    
+    if not operaciones:
+        return {
+            "has_operations": False,
+            "operations": []
+        }
+    
+    # Formatear respuesta con las operaciones encontradas
+    operations_list = [
+        {
+            "id": op.id,
+            "id_questions": op.id_questions,
+            "operations": op.operations,
+            "created_at": op.created_at.isoformat() if op.created_at else None
+        }
+        for op in operaciones
+    ]
+    
+    return {
+        "has_operations": True,
+        "operations": operations_list
+    }
+
+
+@router.get(
+    "/{form_id}/math-operations/by-questions",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="Obtener operaciones matemáticas por IDs de preguntas"
+)
+def obtener_operaciones_por_preguntas(
+    form_id: int,
+    question_ids: str = Query(..., description="IDs de preguntas separados por comas (ej: 1,2,3)"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Obtiene las operaciones matemáticas que contengan las preguntas especificadas.
+    
+    **Parámetros:**
+    - form_id: ID del formulario (en la URL)
+    - question_ids: IDs de preguntas separados por comas en query params
+    
+    **Retorna:**
+    - operations: lista de operaciones que contienen esas preguntas
+    """
+    
+    # Verificar que el formulario existe
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="El formulario no existe."
+        )
+    
+    # Convertir string de IDs a lista de enteros
+    try:
+        ids_list = [int(id.strip()) for id in question_ids.split(",")]
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Los IDs de preguntas deben ser números válidos separados por comas."
+        )
+    
+    if not ids_list:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Debe proporcionar al menos un ID de pregunta."
+        )
+    
+    # Buscar todas las operaciones del formulario
+    todas_operaciones = db.query(RelationOperationMath).filter(
+        RelationOperationMath.id_form == form_id
+    ).all()
+    
+    # Filtrar operaciones que contengan AL MENOS UNA de las preguntas especificadas
+    operaciones_filtradas = []
+    for op in todas_operaciones:
+        # Verificar si alguno de los IDs buscados está en id_questions de la operación
+        if any(qid in op.id_questions for qid in ids_list):
+            operaciones_filtradas.append({
+                "id": op.id,
+                "id_questions": op.id_questions,
+                "operations": op.operations,
+                "created_at": op.created_at.isoformat() if op.created_at else None,
+                "updated_at": op.updated_at.isoformat() if op.updated_at else None
+            })
+    
+    if not operaciones_filtradas:
+        return {
+            "found": False,
+            "message": f"No se encontraron operaciones que incluyan las preguntas: {ids_list}",
+            "operations": []
+        }
+    
+    return {
+        "found": True,
+        "message": f"Se encontraron {len(operaciones_filtradas)} operación(es)",
+        "operations": operaciones_filtradas
+    }

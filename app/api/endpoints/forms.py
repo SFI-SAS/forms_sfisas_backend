@@ -8,7 +8,7 @@ from typing import Any, List, Optional
 from app.redis_client import redis_client
 from app.database import get_db
 from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormQuestion, FormSchedule, Question, QuestionType, Response, ResponseApproval, User, UserType
-from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
+from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
 from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormSchema, FormStatusUpdate, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, ResponseApprovalCreate, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
@@ -1466,26 +1466,21 @@ def download_all_user_responses_excel(
     db: Session = Depends(get_db)
 ):
     """
-    Descarga un archivo Excel con las respuestas de todos los usuarios para un formulario dado.
-
-    - **form_id**: ID del formulario.
-    - **db**: Sesión de base de datos.
-
-    Retorna un archivo Excel (`.xlsx`) con las respuestas de todos los usuarios, con columnas dinámicas según las preguntas del formulario.
+    Descarga mejorada con:
+    - Hoja principal con todas las respuestas
+    - Hojas adicionales para repetidores
     """
-    data = get_all_user_responses_by_form_id(db, form_id)
+    # ✅ Usa la función mejorada
+    data = get_all_user_responses_by_form_id_improved(db, form_id)
 
     if not data or not data["data"]:
         raise HTTPException(
             status_code=404,
             detail="No se encontraron respuestas para este formulario"
         )
-    # Convertir a DataFrame
-    df = pd.DataFrame(data["data"])
-
-    output = BytesIO()
-    df.to_excel(output, index=False, sheet_name="Respuestas de Usuarios")
-    output.seek(0)
+    
+    # ✅ Genera Excel mejorado
+    output = generate_excel_with_repeaters(data)
 
     return StreamingResponse(
         output,
@@ -1494,7 +1489,6 @@ def download_all_user_responses_excel(
             "Content-Disposition": f"attachment; filename=Respuestas_formulario_{form_id}_usuarios.xlsx"
         }
     )
-
 
 @router.get("/users/unanswered_forms",
     summary="Obtener formularios no respondidos",
