@@ -1,7 +1,9 @@
 import logging
 import os
+from pathlib import Path
 import shutil
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, UploadFile,Query,Request,  File, Body, status, Form as FastAPIForm
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload, defer
 from typing import Any, List, Optional
@@ -9,7 +11,7 @@ from app.redis_client import redis_client
 from app.database import get_db
 from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormQuestion, FormSchedule, Question, QuestionType, Response, ResponseApproval, User, UserType
 from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
-from app.schemas import BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormSchema, FormStatusUpdate, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, ResponseApprovalCreate, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
+from app.schemas import AlertMessageRequest, BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormSchema, FormStatusUpdate, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, ResponseApprovalCreate, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
 import pandas as pd
@@ -2935,3 +2937,342 @@ def get_forms_by_question(question_id: int, db: Session = Depends(get_db), curre
         raise HTTPException(status_code=404, detail="Esta pregunta no pertenece a ningún formulario.")
 
     return forms
+
+
+INSTRUCTIVOS_FOLDER = "./form_instructivos"
+os.makedirs(INSTRUCTIVOS_FOLDER, exist_ok=True)
+
+# ==================== SUBIR INSTRUCTIVO ====================
+@router.put("/{form_id}/upload-instructivos")
+async def upload_form_instructivos(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    files: List[UploadFile] = File(..., description="Archivos de instructivos (cualquier tipo)"),
+    descriptions: str = FastAPIForm(..., description="JSON array con descripciones para cada archivo")
+):
+    """
+    Sube múltiples archivos de instructivos para un formulario.
+    Acepta cualquier tipo de archivo (PDF, DOC, imágenes, videos, etc.) sin límite de tamaño.
+    
+    - **form_id**: ID del formulario
+    - **files**: Lista de archivos
+    - **descriptions**: JSON string con array de descripciones (una por archivo)
+    
+    Ejemplo de descriptions:
+    ["Guía de llenado en PDF", "Video tutorial", "Ejemplo en imagen"]
+    """
+    try:
+        # Verificar que el usuario está autenticado
+        if current_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User not authenticated"
+            )
+
+        # 1. Buscar el formulario
+        form = db.query(Form).filter(Form.id == form_id).first()
+        
+        if not form:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Form with id {form_id} not found"
+            )
+        
+        # 2. Verificar que el usuario es el dueño del formulario
+        if form.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to modify this form"
+            )
+
+        # 3. Parsear las descripciones
+        try:
+            descriptions_list = json.loads(descriptions)
+            if not isinstance(descriptions_list, list):
+                raise ValueError("Descriptions must be a JSON array")
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid JSON format for descriptions"
+            )
+
+        # 4. Validar que hay la misma cantidad de archivos y descripciones
+        if len(files) != len(descriptions_list):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Number of files ({len(files)}) must match number of descriptions ({len(descriptions_list)})"
+            )
+
+        # 5. Obtener la lista existente de instructivos (si hay)
+        existing_instructivos = []
+        if form.instructivo_url:
+            try:
+                # Si ya existe, intentar parsear como JSON
+                if isinstance(form.instructivo_url, str):
+                    existing_instructivos = json.loads(form.instructivo_url)
+                elif isinstance(form.instructivo_url, list):
+                    existing_instructivos = form.instructivo_url
+            except:
+                # Si falla, empezar con lista vacía
+                existing_instructivos = []
+
+        # 6. Procesar cada archivo
+        new_instructivos = []
+        uploaded_files_info = []
+
+        for idx, (file, description) in enumerate(zip(files, descriptions_list)):
+            # Validar que el archivo no esté vacío
+            if not file.filename:
+                continue
+
+            try:
+                # Generar nombre único para el archivo
+                file_extension = os.path.splitext(file.filename)[1]
+                unique_filename = f"instructivo_{form_id}_{uuid.uuid4()}{file_extension}"
+                file_path = os.path.join(INSTRUCTIVOS_FOLDER, unique_filename)
+                
+                # Guardar el archivo
+                content = await file.read()
+                with open(file_path, "wb") as f:
+                    f.write(content)
+                
+                # Crear objeto de instructivo
+                instructivo_obj = {
+                    "url": file_path,
+                    "description": description.strip() if description else "Sin descripción",
+                    "original_name": file.filename,
+                    "file_type": file.content_type or "unknown",
+                    "size": len(content)
+                }
+                
+                new_instructivos.append(instructivo_obj)
+                uploaded_files_info.append({
+                    "name": file.filename,
+                    "size": len(content),
+                    "type": file.content_type
+                })
+                
+                print(f"✅ Archivo {idx + 1} guardado: {file_path}")
+                
+            except Exception as e:
+                # Si falla la subida de un archivo, continuar con los demás
+                print(f"⚠️ Error al subir archivo {file.filename}: {str(e)}")
+                continue
+
+        # 7. Combinar instructivos existentes con los nuevos
+        all_instructivos = existing_instructivos + new_instructivos
+
+        # 8. Guardar en la base de datos como JSON
+        form.instructivo_url = json.dumps(all_instructivos, ensure_ascii=False)
+        db.commit()
+        db.refresh(form)
+
+        return {
+            "message": f"{len(new_instructivos)} instructivo(s) uploaded successfully",
+            "form_id": form_id,
+            "uploaded_count": len(new_instructivos),
+            "total_instructivos": len(all_instructivos),
+            "uploaded_files": uploaded_files_info,
+            "all_instructivos": all_instructivos
+        }
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected error: {str(e)}"
+        )
+
+# ==================== OBTENER INSTRUCTIVOS ====================
+
+@router.get("/{form_id}/instructivos")
+async def get_form_instructivos(
+    form_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Obtiene la lista de instructivos de un formulario.
+    """
+    try:
+        form = db.query(Form).filter(Form.id == form_id).first()
+        
+        if not form:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Form with id {form_id} not found"
+            )
+
+        instructivos = []
+        if form.instructivo_url:
+            try:
+                if isinstance(form.instructivo_url, str):
+                    instructivos = json.loads(form.instructivo_url)
+                elif isinstance(form.instructivo_url, list):
+                    instructivos = form.instructivo_url
+            except:
+                instructivos = []
+
+        return {
+            "form_id": form_id,
+            "instructivos": instructivos,
+            "count": len(instructivos)
+        }
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected error: {str(e)}"
+        )
+
+
+# ==================== ENDPOINT 2: GUARDAR MENSAJE DE ALERTA ====================
+
+@router.put("/{form_id}/update-alert-message")
+async def update_form_alert_message(
+    form_id: int,
+    request: AlertMessageRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Actualiza el mensaje de alerta de un formulario.
+    
+    - **form_id**: ID del formulario
+    - **alert_message**: Texto del mensaje de alerta
+    """
+    try:
+        # Verificar que el usuario está autenticado
+        if current_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User not authenticated"
+            )
+
+        # 1. Buscar el formulario
+        form = db.query(Form).filter(Form.id == form_id).first()
+        
+        if not form:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Form with id {form_id} not found"
+            )
+        
+        # 2. Verificar que el usuario es el dueño del formulario
+        if form.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to modify this form"
+            )
+
+        # 3. Validar que el mensaje no esté vacío (opcional, puedes quitarlo si quieres permitir vacío)
+        if not request.alert_message or request.alert_message.strip() == "":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Alert message cannot be empty"
+            )
+
+        # 4. Actualizar el mensaje de alerta
+        form.alert_message = request.alert_message.strip()
+        db.commit()
+        db.refresh(form)
+
+        print(f"✅ Mensaje de alerta actualizado para el form {form_id}")
+
+        return {
+            "message": "Alert message updated successfully",
+            "form_id": form_id,
+            "alert_message": form.alert_message
+        }
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected error: {str(e)}"
+        )
+
+@router.get("/files/download-instructivo")
+async def download_instructivo(
+    file_path: str = Query(..., description="Ruta del archivo a descargar"),
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        if current_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User not authenticated"
+            )
+
+        # 🔥 SOLO ESTO: Normalizar la ruta
+        file_path = file_path.replace('\\', '/')
+        
+        if not os.path.exists(file_path):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="File not found"
+            )
+
+        filename = os.path.basename(file_path)
+        
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type='application/octet-stream',
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error: {str(e)}"
+        )
+        
+@router.get("/{form_id}/alert-message")
+async def get_form_alert_message(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Obtiene el mensaje de alerta de un formulario.
+    
+    - **form_id**: ID del formulario
+    """
+    try:
+        # Verificar que el usuario está autenticado
+        if current_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User not authenticated"
+            )
+
+        # Buscar el formulario
+        form = db.query(Form).filter(Form.id == form_id).first()
+        
+        if not form:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Form with id {form_id} not found"
+            )
+
+        # Retornar el mensaje de alerta (puede ser None o vacío)
+        return {
+            "form_id": form_id,
+            "alert_message": form.alert_message,
+            "has_alert": bool(form.alert_message and form.alert_message.strip())
+        }
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected error: {str(e)}"
+        )

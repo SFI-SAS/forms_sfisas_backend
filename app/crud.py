@@ -2321,6 +2321,7 @@ def create_question_table_relation_logic(
     db.refresh(new_relation)
 
     return new_relation
+
 def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
     """
     Obtiene respuestas dinámicas relacionadas o filtradas para una pregunta,

@@ -996,3 +996,15 @@ class RelationOperationMathOut(BaseModel):
 
     class Config:
         from_attributes = True
+        
+class AlertMessageRequest(BaseModel):
+    alert_message: str
+
+class InstructivoFile(BaseModel):
+    """Modelo para cada archivo de instructivo"""
+    url: str
+    description: str
+    original_name: str
+    file_type: str
+    size: int
+
