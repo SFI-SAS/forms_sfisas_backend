@@ -2556,7 +2556,6 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
     }
 
 
-
 def get_related_or_filtered_answers_optimized(
     db: Session, 
     question_id: int,
@@ -2568,31 +2567,36 @@ def get_related_or_filtered_answers_optimized(
     """
     Versión optimizada que permite retornar solo lo necesario.
     MEJORADA: Ahora evalúa TODAS las respuestas, no solo la última.
+    ACTUALIZADA: Ahora incluye correlaciones también en condiciones filtradas.
     """
     # Verificar condición de filtro
     condition = db.query(QuestionFilterCondition).filter_by(filtered_question_id=question_id).first()
 
     if condition:
-        # 🔥 MEJORA: En lugar de iterar responses sin filtro, obtenemos todas las respuestas
-        # de todos los formularios que contienen la pregunta condicionada
+        # 🔥 MEJORA: Obtener todas las respuestas de todos los formularios que contienen la pregunta condicionada
         responses = db.query(Response).filter_by(form_id=condition.form_id).all()
         valid_answers = []
-        response_ids_matched = set()  # Track which responses matched the condition
+        correlations_map = {}  # 🆕 Agregamos el mapa de correlaciones
+        response_ids_matched = set()
 
         for response in responses:
             # Obtener TODAS las respuestas de esta respuesta
             answers = db.query(Answer).filter_by(response_id=response.id).all()
             
             # 🔑 IMPORTANTE: Puede haber MÚLTIPLES Answer para la misma pregunta
-            # Por ejemplo: ["eps", "arl"] para pregunta de servicios
             condition_values = []
             source_values = []
+            response_answers_map = {}  # 🆕 Mapear todas las respuestas para correlaciones
             
             for answer in answers:
                 if answer.question_id == condition.condition_question_id and answer.answer_text:
                     condition_values.append(answer.answer_text)
                 if answer.question_id == condition.source_question_id and answer.answer_text:
                     source_values.append(answer.answer_text)
+                
+                # 🆕 Guardar todas las respuestas para correlaciones
+                if answer.answer_text:
+                    response_answers_map[answer.question_id] = answer.answer_text
             
             # Si no hay valores, continuar
             if not condition_values or not source_values:
@@ -2627,6 +2631,18 @@ def get_related_or_filtered_answers_optimized(
                     response_matched = True
                     for source_val in source_values:
                         valid_answers.append(source_val)
+                        
+                        # 🆕 Agregar correlaciones para cada source_val
+                        if source_val not in correlations_map:
+                            correlations_map[source_val] = {}
+                        
+                        # Agregar correlaciones de otras preguntas
+                        for q_id, answer_text in response_answers_map.items():
+                            # No incluir la pregunta source en las correlaciones
+                            if q_id != condition.source_question_id:
+                                if q_id not in correlations_map[source_val]:
+                                    correlations_map[source_val][q_id] = answer_text
+                    
                     break  # Una vez cumplida, no necesitamos evaluar otros condition_values
             
             if response_matched:
@@ -2636,7 +2652,7 @@ def get_related_or_filtered_answers_optimized(
         return {
             "source": "condicion_filtrada",
             "data": [{"name": val} for val in filtered],
-            "correlations": {},
+            "correlations": correlations_map,  # 🆕 Ahora retorna las correlaciones
             "matched_response_count": len(response_ids_matched)
         }
 
