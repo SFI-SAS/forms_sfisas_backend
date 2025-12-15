@@ -152,6 +152,7 @@ class Question(Base):
     __tablename__ = 'questions'
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     question_text = Column(String(255), nullable=False)
+    description = Column(String, nullable=True)
     question_type = Column(Enum(QuestionType), default=QuestionType.text, nullable=False)
     required = Column(Boolean, nullable=False, default=True)
     root = Column(Boolean, nullable=False, default=False)

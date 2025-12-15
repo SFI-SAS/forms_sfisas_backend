@@ -69,6 +69,7 @@ class OptionResponse(BaseModel):
 # Schemas for Question
 class QuestionBase(BaseModel):
     question_text: str = Field(..., example="What is your favorite color?")
+    description: Optional[str] = None
     question_type: str = Field(..., example="multiple_choice")
     required: bool = Field(..., example=True) 
     root:bool =  Field(..., example=True) 
@@ -77,6 +78,7 @@ class QuestionBase(BaseModel):
 
 class QuestionBaseAll(BaseModel):
     question_text: str = Field(..., example="What is your favorite color?")
+    description: Optional[str] = None 
     question_type: str = Field(..., example="multiple_choice")
     required: bool = Field(..., example=True) 
     root:bool =  Field(..., example=True)
@@ -658,13 +660,17 @@ class CategorySchema(BaseModel):
 class QuestionWithCategory(BaseModel):
     id: int
     question_text: str
+    description: Optional[str] = None
     question_type: str
     required: bool
     root: bool
-    category: CategorySchema | None  # o directamente Optional[CategorySchema]
+    category: CategorySchema | None
+    related_question_id: Optional[int] = None
+    related_question: Optional[dict] = None  # ← CAMBIAR A dict, no a objeto
 
     class Config:
         from_attributes = True
+
         
 class UpdateQuestionCategory(BaseModel):
     id_category: int | None
@@ -1007,4 +1013,11 @@ class InstructivoFile(BaseModel):
     original_name: str
     file_type: str
     size: int
+
+class RelatedQuestionInfo(BaseModel):
+    id: int
+    question_text: str
+
+    class Config:
+        from_attributes = True
 

@@ -511,10 +511,11 @@ def create_question(db: Session, question: QuestionCreate):
     try:
         db_question = Question(
             question_text=question.question_text,
+            description=question.description,  # ← AGREGAR ESTA LÍNEA
             question_type=question.question_type,
             required=question.required, 
             root=question.root,
-            id_category=question.id_category  # <-- Aquí lo agregas
+            id_category=question.id_category
         )
         db.add(db_question)
         db.commit()
@@ -537,7 +538,28 @@ def get_question_by_id_with_category(db: Session, question_id: int):
     return db.query(Question).options(joinedload(Question.category)).filter(Question.id == question_id).first()
 
 def get_questions(db: Session):
-    return db.query(Question).options(joinedload(Question.category)).all()
+    questions = db.query(Question).options(joinedload(Question.category)).all()
+    
+    for question in questions:
+        relation = db.query(QuestionTableRelation).filter(
+            QuestionTableRelation.question_id == question.id
+        ).first()
+        
+        if relation and relation.related_question_id:
+            related_q = db.query(Question).filter(
+                Question.id == relation.related_question_id
+            ).first()
+            
+            if related_q:
+                question.related_question_id = relation.related_question_id
+                # ← CAMBIO: Convertir a diccionario, no asignar el objeto
+                question.related_question = {
+                    "id": related_q.id,
+                    "question_text": related_q.question_text
+                }
+    
+    return questions
+
 
 def get_questions_by_category_id(db: Session, category_id: Optional[int]):
     """
