@@ -2578,32 +2578,334 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
     }
 
 
+# def get_related_or_filtered_answers_optimized(
+#     db: Session, 
+#     question_id: int,
+#     include_forms: bool = False,
+#     page: int = 1,
+#     page_size: int = 50,
+#     only_unique_answers: bool = True
+# ):
+#     """
+#     Versión optimizada que permite retornar solo lo necesario.
+#     MEJORADA: Ahora evalúa TODAS las respuestas, no solo la última.
+#     ACTUALIZADA: Ahora incluye correlaciones también en condiciones filtradas.
+#     🔥 FIX: Resuelve el problema de preguntas sin datos retornadas
+#     """
+#     # Verificar condición de filtro
+#     condition = db.query(QuestionFilterCondition).filter_by(filtered_question_id=question_id).first()
+
+#     if condition:
+#         # 🔥 MEJORA: Obtener todas las respuestas de todos los formularios que contienen la pregunta condicionada
+#         responses = db.query(Response).filter_by(form_id=condition.form_id).all()
+#         valid_answers = []
+#         correlations_map = {}
+#         response_ids_matched = set()
+
+#         for response in responses:
+#             # Obtener TODAS las respuestas de esta response
+#             answers = db.query(Answer).filter_by(response_id=response.id).all()
+            
+#             condition_values = []
+#             source_values = []
+#             response_answers_map = {}
+            
+#             for answer in answers:
+#                 if answer.question_id == condition.condition_question_id and answer.answer_text:
+#                     condition_values.append(answer.answer_text)
+#                 if answer.question_id == condition.source_question_id and answer.answer_text:
+#                     source_values.append(answer.answer_text)
+                
+#                 if answer.answer_text:
+#                     response_answers_map[answer.question_id] = answer.answer_text
+            
+#             if not condition_values or not source_values:
+#                 continue
+            
+#             response_matched = False
+#             for condition_val in condition_values:
+#                 try:
+#                     condition_val_converted = float(condition_val)
+#                     expected_val = float(condition.expected_value)
+#                 except ValueError:
+#                     condition_val_converted = str(condition_val)
+#                     expected_val = str(condition.expected_value)
+
+#                 condition_met = False
+#                 if condition.operator == '==':
+#                     condition_met = condition_val_converted == expected_val
+#                 elif condition.operator == '!=':
+#                     condition_met = condition_val_converted != expected_val
+#                 elif condition.operator == '>':
+#                     condition_met = condition_val_converted > expected_val
+#                 elif condition.operator == '<':
+#                     condition_met = condition_val_converted < expected_val
+#                 elif condition.operator == '>=':
+#                     condition_met = condition_val_converted >= expected_val
+#                 elif condition.operator == '<=':
+#                     condition_met = condition_val_converted <= expected_val
+
+#                 if condition_met:
+#                     response_matched = True
+#                     for source_val in source_values:
+#                         valid_answers.append(source_val)
+                        
+#                         if source_val not in correlations_map:
+#                             correlations_map[source_val] = {}
+                        
+#                         for q_id, answer_text in response_answers_map.items():
+#                             if q_id != condition.source_question_id:
+#                                 if q_id not in correlations_map[source_val]:
+#                                     correlations_map[source_val][q_id] = answer_text
+                    
+#                     break
+            
+#             if response_matched:
+#                 response_ids_matched.add(response.id)
+
+#         filtered = list(filter(None, set(valid_answers)))
+#         return {
+#             "source": "condicion_filtrada",
+#             "data": [{"name": val} for val in filtered],
+#             "correlations": correlations_map,
+#             "matched_response_count": len(response_ids_matched)
+#         }
+
+#     # Si no hay condición, usar relación de tabla
+#     relation = db.query(QuestionTableRelation).filter_by(question_id=question_id).first()
+#     if not relation:
+#         raise HTTPException(status_code=404, detail="No se encontró relación para esta pregunta")
+
+#     if relation.related_question_id:
+#         # Obtener la pregunta relacionada
+#         related_question = db.query(Question).filter_by(id=relation.related_question_id).first()
+#         if not related_question:
+#             raise HTTPException(status_code=404, detail="Pregunta relacionada no encontrada")
+
+#         # 🔥 FIX: Buscar en TODAS las respuestas de la BD, no solo por form_id
+#         # Obtener los form_ids que contienen la pregunta relacionada
+#         form_questions = db.query(FormQuestion).filter_by(question_id=relation.related_question_id).all()
+        
+#         if not form_questions:
+#             return {
+#                 "source": "pregunta_relacionada",
+#                 "data": [],
+#                 "forms": [],
+#                 "correlations": {}
+#             }
+
+#         # 🔥 FIX CRÍTICO: Recolectar respuestas de TODOS los forms relacionados
+#         all_unique_answers = set()
+#         correlations_map = {}
+#         form_ids_to_search = [fq.form_id for fq in form_questions]
+
+#         # 🔥 MEJOR ENFOQUE: Buscar en todas las respuestas de los forms, sin filtrar por response.form_id
+#         all_responses_with_related_question = db.query(Response).filter(
+#             Response.form_id.in_(form_ids_to_search)
+#         ).all()
+
+#         # Mapear respuestas por response_id para acceso rápido
+#         response_map = {r.id: r for r in all_responses_with_related_question}
+
+#         # Obtener TODAS las respuestas (answers) de estos responses
+#         all_answers = db.query(Answer).filter(
+#             Answer.response_id.in_(list(response_map.keys()))
+#         ).all()
+
+#         # Agrupar answers por response_id
+#         answers_by_response = {}
+#         for answer in all_answers:
+#             if answer.response_id not in answers_by_response:
+#                 answers_by_response[answer.response_id] = []
+#             answers_by_response[answer.response_id].append(answer)
+
+#         # 🔥 Procesar cada response
+#         for response_id, answers in answers_by_response.items():
+#             related_answer_texts = []
+#             response_answers_map = {}
+            
+#             for answer in answers:
+#                 # Guardar respuestas de la pregunta relacionada
+#                 if answer.question_id == relation.related_question_id and answer.answer_text:
+#                     related_answer_texts.append(answer.answer_text)
+                
+#                 # Mapear todas las respuestas para correlaciones
+#                 if answer.answer_text:
+#                     response_answers_map[answer.question_id] = answer.answer_text
+
+#             # Procesar correlaciones
+#             for related_answer_text in related_answer_texts:
+#                 all_unique_answers.add(related_answer_text)
+                
+#                 if related_answer_text not in correlations_map:
+#                     correlations_map[related_answer_text] = {}
+                
+#                 # Agregar correlaciones con otras preguntas del mismo response
+#                 for q_id, answer_text in response_answers_map.items():
+#                     if q_id != relation.related_question_id:
+#                         if q_id not in correlations_map[related_answer_text]:
+#                             correlations_map[related_answer_text][q_id] = answer_text
+
+#         # 🎯 RESULTADO OPTIMIZADO
+#         result = {
+#             "source": "pregunta_relacionada",
+#             "related_question": {
+#                 "id": related_question.id,
+#                 "text": related_question.question_text,
+#                 "type": related_question.question_type.value
+#             },
+#             "data": [{"name": answer} for answer in sorted(all_unique_answers) if answer],
+#             "correlations": correlations_map
+#         }
+
+#         # 📦 SOLO SI SE SOLICITA: Agregar formularios completos con paginación
+#         if include_forms:
+#             total_forms = len(form_questions)
+#             start_idx = (page - 1) * page_size
+#             end_idx = start_idx + page_size
+#             paginated_form_questions = form_questions[start_idx:end_idx]
+
+#             forms_data = []
+#             for fq in paginated_form_questions:
+#                 form = db.query(Form).filter_by(id=fq.form_id).first()
+#                 if not form:
+#                     continue
+
+#                 form_question_relations = db.query(FormQuestion).filter_by(form_id=form.id).all()
+#                 form_questions_data = []
+                
+#                 for fqr in form_question_relations:
+#                     question = db.query(Question).filter_by(id=fqr.question_id).first()
+#                     if question:
+#                         form_questions_data.append({
+#                             "id": question.id,
+#                             "text": question.question_text,
+#                             "type": question.question_type.value
+#                         })
+
+#                 responses = db.query(Response).filter_by(form_id=form.id).all()
+#                 responses_data = []
+
+#                 for response in responses:
+#                     user = db.query(User).filter_by(id=response.user_id).first()
+                    
+#                     answers = db.query(Answer).filter_by(response_id=response.id).all()
+#                     answers_data = []
+                    
+#                     for answer in answers:
+#                         question = db.query(Question).filter_by(id=answer.question_id).first()
+#                         answer_data = {
+#                             "question_id": answer.question_id,
+#                             "question_text": question.question_text if question else "",
+#                             "answer_text": answer.answer_text or "",
+#                             "file_path": answer.file_path or ""
+#                         }
+#                         answers_data.append(answer_data)
+
+#                     latest_approval = db.query(ResponseApproval)\
+#                         .filter_by(response_id=response.id)\
+#                         .order_by(ResponseApproval.sequence_number.desc())\
+#                         .first()
+                    
+#                     approval_status = {
+#                         "status": latest_approval.status.value if latest_approval else "pendiente",
+#                         "message": latest_approval.message or "" if latest_approval else ""
+#                     }
+
+#                     response_data = {
+#                         "response_id": response.id,
+#                         "status": response.status.value,
+#                         "user": {
+#                             "id": user.id,
+#                             "name": user.name,
+#                             "email": user.email,
+#                             "num_document": user.num_document
+#                         } if user else None,
+#                         "submitted_at": response.submitted_at.isoformat(),
+#                         "answers": answers_data,
+#                         "approval_status": approval_status
+#                     }
+#                     responses_data.append(response_data)
+
+#                 form_data = {
+#                     "form_id": form.id,
+#                     "title": form.title,
+#                     "description": form.description,
+#                     "questions": form_questions_data,
+#                     "responses": responses_data
+#                 }
+#                 forms_data.append(form_data)
+
+#             result["forms"] = forms_data
+#             result["pagination"] = {
+#                 "page": page,
+#                 "page_size": page_size,
+#                 "total_items": total_forms,
+#                 "total_pages": (total_forms + page_size - 1) // page_size
+#             }
+
+#         return result
+
+#     # Si no hay pregunta relacionada, usar tabla externa
+#     name_table = relation.name_table
+#     field_name = relation.field_name
+
+#     valid_tables = {
+#         "answers": Answer,
+#         "users": User,
+#         "forms": Form,
+#         "options": Option,
+#     }
+
+#     table_translations = {
+#         "users": "usuarios",
+#         "forms": "formularios",
+#         "answers": "respuestas",
+#         "options": "opciones"
+#     }
+
+#     Model = valid_tables.get(name_table)
+#     if not Model:
+#         raise HTTPException(status_code=400, detail=f"Tabla '{name_table}' no soportada")
+
+#     if not hasattr(Model, field_name):
+#         raise HTTPException(status_code=400, detail=f"Campo '{field_name}' no existe en el modelo '{name_table}'")
+
+#     results = db.query(Model).all()
+
+#     def serialize(instance):
+#         return {"name": getattr(instance, field_name, None)}
+
+#     return {
+#         "source": table_translations.get(name_table, name_table),
+#         "data": [serialize(r) for r in results if getattr(r, field_name, None)],
+#         "forms": [],
+#         "correlations": {}
+#     }
+    
+
 def get_related_or_filtered_answers_optimized(
     db: Session, 
     question_id: int,
     include_forms: bool = False,
     page: int = 1,
     page_size: int = 50,
-    only_unique_answers: bool = True
+    only_unique_answers: bool = False  # ✅ Cambiado a False por defecto para traer TODO
 ):
     """
-    Versión optimizada que permite retornar solo lo necesario.
-    MEJORADA: Ahora evalúa TODAS las respuestas, no solo la última.
-    ACTUALIZADA: Ahora incluye correlaciones también en condiciones filtradas.
-    🔥 FIX: Resuelve el problema de preguntas sin datos retornadas
+    Versión optimizada que trae TODOS los datos incluyendo duplicados.
+    ✅ AHORA: Muestra todas las respuestas sin eliminar duplicados
     """
     # Verificar condición de filtro
     condition = db.query(QuestionFilterCondition).filter_by(filtered_question_id=question_id).first()
 
     if condition:
-        # 🔥 MEJORA: Obtener todas las respuestas de todos los formularios que contienen la pregunta condicionada
         responses = db.query(Response).filter_by(form_id=condition.form_id).all()
-        valid_answers = []
+        valid_answers = []  # Lista para mantener duplicados
         correlations_map = {}
         response_ids_matched = set()
 
         for response in responses:
-            # Obtener TODAS las respuestas de esta response
             answers = db.query(Answer).filter_by(response_id=response.id).all()
             
             condition_values = []
@@ -2648,7 +2950,7 @@ def get_related_or_filtered_answers_optimized(
                 if condition_met:
                     response_matched = True
                     for source_val in source_values:
-                        valid_answers.append(source_val)
+                        valid_answers.append(source_val)  # ✅ Mantiene duplicados
                         
                         if source_val not in correlations_map:
                             correlations_map[source_val] = {}
@@ -2663,7 +2965,9 @@ def get_related_or_filtered_answers_optimized(
             if response_matched:
                 response_ids_matched.add(response.id)
 
-        filtered = list(filter(None, set(valid_answers)))
+        # ✅ Sin filtrar duplicados
+        filtered = list(filter(None, valid_answers))
+        
         return {
             "source": "condicion_filtrada",
             "data": [{"name": val} for val in filtered],
@@ -2682,8 +2986,6 @@ def get_related_or_filtered_answers_optimized(
         if not related_question:
             raise HTTPException(status_code=404, detail="Pregunta relacionada no encontrada")
 
-        # 🔥 FIX: Buscar en TODAS las respuestas de la BD, no solo por form_id
-        # Obtener los form_ids que contienen la pregunta relacionada
         form_questions = db.query(FormQuestion).filter_by(question_id=relation.related_question_id).all()
         
         if not form_questions:
@@ -2694,59 +2996,49 @@ def get_related_or_filtered_answers_optimized(
                 "correlations": {}
             }
 
-        # 🔥 FIX CRÍTICO: Recolectar respuestas de TODOS los forms relacionados
-        all_unique_answers = set()
+        all_unique_answers = []  # ✅ Lista para mantener TODO incluyendo duplicados
         correlations_map = {}
         form_ids_to_search = [fq.form_id for fq in form_questions]
 
-        # 🔥 MEJOR ENFOQUE: Buscar en todas las respuestas de los forms, sin filtrar por response.form_id
         all_responses_with_related_question = db.query(Response).filter(
             Response.form_id.in_(form_ids_to_search)
         ).all()
 
-        # Mapear respuestas por response_id para acceso rápido
         response_map = {r.id: r for r in all_responses_with_related_question}
 
-        # Obtener TODAS las respuestas (answers) de estos responses
         all_answers = db.query(Answer).filter(
             Answer.response_id.in_(list(response_map.keys()))
         ).all()
 
-        # Agrupar answers por response_id
         answers_by_response = {}
         for answer in all_answers:
             if answer.response_id not in answers_by_response:
                 answers_by_response[answer.response_id] = []
             answers_by_response[answer.response_id].append(answer)
 
-        # 🔥 Procesar cada response
         for response_id, answers in answers_by_response.items():
             related_answer_texts = []
             response_answers_map = {}
             
             for answer in answers:
-                # Guardar respuestas de la pregunta relacionada
                 if answer.question_id == relation.related_question_id and answer.answer_text:
                     related_answer_texts.append(answer.answer_text)
                 
-                # Mapear todas las respuestas para correlaciones
                 if answer.answer_text:
                     response_answers_map[answer.question_id] = answer.answer_text
 
-            # Procesar correlaciones
             for related_answer_text in related_answer_texts:
-                all_unique_answers.add(related_answer_text)
+                all_unique_answers.append(related_answer_text)  # ✅ Agrega TODO
                 
                 if related_answer_text not in correlations_map:
                     correlations_map[related_answer_text] = {}
                 
-                # Agregar correlaciones con otras preguntas del mismo response
                 for q_id, answer_text in response_answers_map.items():
                     if q_id != relation.related_question_id:
                         if q_id not in correlations_map[related_answer_text]:
                             correlations_map[related_answer_text][q_id] = answer_text
 
-        # 🎯 RESULTADO OPTIMIZADO
+        # ✅ Devuelve TODO sin eliminar duplicados
         result = {
             "source": "pregunta_relacionada",
             "related_question": {
@@ -2754,7 +3046,7 @@ def get_related_or_filtered_answers_optimized(
                 "text": related_question.question_text,
                 "type": related_question.question_type.value
             },
-            "data": [{"name": answer} for answer in sorted(all_unique_answers) if answer],
+            "data": [{"name": answer} for answer in all_unique_answers if answer],
             "correlations": correlations_map
         }
 
@@ -2883,6 +3175,132 @@ def get_related_or_filtered_answers_optimized(
         "correlations": {}
     }
 
+def get_related_or_filtered_answers(db: Session, question_id: int):
+    """
+    Obtiene respuestas dinámicas relacionadas o filtradas para una pregunta.
+
+    Lógica:
+    -------
+    1. Si existe una condición en `QuestionFilterCondition`, evalúa cada respuesta del formulario
+       relacionado y filtra según el operador y valor esperado.
+    2. Si no hay condición, revisa si hay una relación con otra pregunta (`related_question_id`).
+    3. Si no hay `related_question_id`, obtiene los datos de una tabla externa (`name_table`)
+       usando un campo específico (`field_name`).
+
+    Parámetros:
+    -----------
+    db : Session
+        Sesión activa de base de datos.
+
+    question_id : int
+        ID de la pregunta para la que se buscan respuestas relacionadas.
+
+    Retorna:
+    --------
+    dict:
+        Diccionario con el origen (`source`) y una lista de valores (`data`) en formato:
+        - {"name": <valor>}
+
+    Lanza:
+    ------
+    HTTPException:
+        - 404: Si no se encuentra relación para la pregunta.
+        - 400: Si la tabla o campo especificado no es válido.
+    """
+    # Verificar si existe una condición de filtro
+    condition = db.query(QuestionFilterCondition).filter_by(filtered_question_id=question_id).first()
+
+    if condition:
+        # Obtener todas las respuestas del formulario relacionado
+        responses = db.query(Response).filter_by(form_id=condition.form_id).all()
+        valid_answers = []
+
+        for response in responses:
+            answers_dict = {a.question_id: a.answer_text for a in response.answers}
+            source_val = answers_dict.get(condition.source_question_id)
+            condition_val = answers_dict.get(condition.condition_question_id)
+
+            if source_val is None or condition_val is None:
+                continue
+
+            # Intentar convertir valores a número si es posible
+            try:
+                condition_val = float(condition_val)
+                expected_val = float(condition.expected_value)
+            except ValueError:
+                condition_val = str(condition_val)
+                expected_val = str(condition.expected_value)
+
+            if condition.operator == '==':
+                if condition_val == expected_val:
+                    valid_answers.append(source_val)
+            elif condition.operator == '!=':
+                if condition_val != expected_val:
+                    valid_answers.append(source_val)
+            elif condition.operator == '>':
+                if condition_val > expected_val:
+                    valid_answers.append(source_val)
+            elif condition.operator == '<':
+                if condition_val < expected_val:
+                    valid_answers.append(source_val)
+            elif condition.operator == '>=':
+                if condition_val >= expected_val:
+                    valid_answers.append(source_val)
+            elif condition.operator == '<=':
+                if condition_val <= expected_val:
+                    valid_answers.append(source_val)
+
+        filtered = list(filter(None, set(valid_answers)))
+        return {
+            "source": "condicion_filtrada",
+            "data": [{"name": val} for val in filtered]
+        }
+
+    # Si no hay condición, usar relación de tabla
+    relation = db.query(QuestionTableRelation).filter_by(question_id=question_id).first()
+    if not relation:
+        raise HTTPException(status_code=404, detail="No se encontró relación para esta pregunta")
+
+    if relation.related_question_id:
+        answers = db.query(Answer).filter_by(question_id=relation.related_question_id).all()
+        return {
+            "source": "pregunta_relacionada",
+            "data": [{"name": ans.answer_text} for ans in answers]
+        }
+
+    name_table = relation.name_table
+    field_name = relation.field_name
+
+    valid_tables = {
+        "answers": Answer,
+        "users": User,
+        "forms": Form,
+        "options": Option,
+    }
+
+    table_translations = {
+        "users": "usuarios",
+        "forms": "formularios",
+        "answers": "respuestas",
+        "options": "opciones"
+    }
+
+    Model = valid_tables.get(name_table)
+    if not Model:
+        raise HTTPException(status_code=400, detail=f"Tabla '{name_table}' no soportada")
+
+    if not hasattr(Model, field_name):
+        raise HTTPException(status_code=400, detail=f"Campo '{field_name}' no existe en el modelo '{name_table}'")
+
+    results = db.query(Model).all()
+
+    def serialize(instance):
+        return {"name": getattr(instance, field_name, None)}
+
+    return {
+        "source": table_translations.get(name_table, name_table),
+        "data": [serialize(r) for r in results if getattr(r, field_name, None)]
+    }
 
 
 def get_questions_and_answers_by_form_id(db: Session, form_id: int):
