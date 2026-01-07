@@ -13,7 +13,7 @@ from app.api.controllers.mail import send_reconsideration_email
 from app.crud import crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, encrypt_object, finalizar_conversacion_completa, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, get_palabras_clave_by_form, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
 from app.database import get_db
 from app.schemas import AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, GetQuestionTextsRequest, GetQuestionTextsResponse, PalabrasClaveCreate, PalabrasClaveOut, PalabrasClaveUpdate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, QuestionTextValue, RegisfacialAnswerResponse, RelationOperationMathCreate, RelationOperationMathOut, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
-from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, ClasificacionBitacoraRelacion, Form, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionTableRelation, QuestionType, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, UserType
+from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, ClasificacionBitacoraRelacion, Form, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionTableRelation, QuestionType, RelationBitacora, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, UserType
 from app.core.security import get_current_user
 from typing import Dict
 from sqlalchemy import delete
@@ -123,10 +123,28 @@ async def create_answer(
         # - Cerrado = siempre enviar emails
         # - Abierto/Semi_abierto = enviar solo si action="send_and_close"
         send_emails = (form.format_type == FormatType.cerrado) or (action == "send_and_close")
+                
+                # Obtener relation_bitacora asociada al response
+        relation_bitacora = db.query(RelationBitacora).filter(
+            RelationBitacora.id_response == response.id
+        ).first()
 
-        # ✅ CAMBIO 3: Llamar la función que ya tienes (sin cambiarla)
-        await create_answer_in_db(answer, db, current_user, request, send_emails)
-    
+        if not relation_bitacora:
+            raise HTTPException(
+                status_code=404,
+                detail="RelationBitacora not found for this response"
+            )
+
+        # Pasar id_relation_bitacora
+        await create_answer_in_db(
+            answer,
+            db,
+            current_user,
+            request,
+            send_emails,
+            relation_bitacora.id  # 👈 NUEVO
+        )
+
     # Retornar respuesta
     if isinstance(payload, list):
         return {"message": f"{len(answers_list)} answers created", "count": len(answers_list)}

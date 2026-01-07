@@ -925,6 +925,14 @@ async def post_create_response(
     db.add(response)
     db.commit()
     db.refresh(response)
+    
+    # ✅ Crear relación en bitácora
+    relation_bitacora = RelationBitacora(
+        id_response=response.id
+    )
+    db.add(relation_bitacora)
+    db.commit()
+    db.refresh(relation_bitacora)
 
     approvers_created = 0
     
@@ -975,6 +983,7 @@ async def post_create_response(
     return {
         "message": "Response saved successfully",
         "response_id": response.id,
+        "id_relation_bitacora": relation_bitacora.id, 
         "status": status.value if status else "draft",
         "mode": mode,
         "mode_sequence": new_mode_sequence,
@@ -983,7 +992,7 @@ async def post_create_response(
     }
 
 
-async def create_answer_in_db(answer, db: Session, current_user: User, request, send_emails: bool = True):
+async def create_answer_in_db(answer, db: Session, current_user: User, request, send_emails: bool = True, id_relation_bitacora: int = None):
     """
     ✅ MODIFICADO: Ya NO envía correos aquí, eso se hace en post_create_response
     """
@@ -1009,6 +1018,25 @@ async def create_answer_in_db(answer, db: Session, current_user: User, request, 
                 )
                 db.add(new_answer)
                 db.flush()
+                # 🆕 Crear bitácora pregunta-respuesta
+                question = db.query(Question).filter(Question.id == question_id).first()
+                response = db.query(Response).filter(Response.id == answer.response_id).first()
+                form = db.query(Form).filter(Form.id == response.form_id).first()
+                
+                if question and question.question_type == "file":
+                    bitacora_answer = answer.file_path
+                else:
+                    bitacora_answer = text
+                qa_bitacora = QuestionAndAnswerBitacora(
+                    id_relation_bitacora=id_relation_bitacora,
+                    name_format=form.title,
+                    name_user=f"{current_user.name}",
+                    question=question.question_text if question else "",
+                    answer=bitacora_answer
+                )
+
+                db.add(qa_bitacora)
+
                 created_answers.append(new_answer)
 
             db.commit()
@@ -1021,7 +1049,13 @@ async def create_answer_in_db(answer, db: Session, current_user: User, request, 
 
     # Caso 2: Respuesta simple
     elif isinstance(answer.question_id, int):
-        single_answer_result = save_single_answer(answer, db)
+        single_answer_result = save_single_answer(
+            answer,
+            db,
+            id_relation_bitacora,
+            current_user
+        )
+
         created_answers = [single_answer_result] if single_answer_result else []
     else:
         raise HTTPException(status_code=400, detail="Invalid question_id type")
@@ -1038,7 +1072,7 @@ async def create_answer_in_db(answer, db: Session, current_user: User, request, 
     else:
         return created_answers[0] if created_answers else None
 
-def save_single_answer(answer, db: Session):
+def save_single_answer(answer, db: Session, id_relation_bitacora: int, current_user: User):
     """
     ✅ MODIFICADO: Ahora guarda form_design_element_id
     """
@@ -1062,8 +1096,26 @@ def save_single_answer(answer, db: Session):
     )
     
     db.add(new_answer)
+
+    question = db.query(Question).filter(Question.id == answer.question_id).first()
+    response = db.query(Response).filter(Response.id == answer.response_id).first()
+    form = db.query(Form).filter(Form.id == response.form_id).first()
+    if question and question.question_type == "file":
+        bitacora_answer = answer.file_path
+    else:
+        bitacora_answer = answer.answer_text
+    qa_bitacora = QuestionAndAnswerBitacora(
+        id_relation_bitacora=id_relation_bitacora,
+        name_format=form.title,
+        name_user=f"{current_user.name}",
+        question=question.question_text if question else "",
+        answer=bitacora_answer
+    )
+
+    db.add(qa_bitacora)
     db.commit()
     db.refresh(new_answer)
+
     
     return {
         "message": "Respuesta guardada exitosamente", 
@@ -6847,6 +6899,8 @@ def get_all_bitacora_formatos(db: Session):
             "palabras_clave": palabras_clave, 
             "created_at": rel.created_at,
         })
+        
+        print(data)
 
     return data
 
