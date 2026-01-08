@@ -449,3 +449,29 @@ class RelationOperationMath(Base):
     
     
     
+
+# Agregar al archivo models.py
+
+class DownloadTemplate(Base):
+    __tablename__ = "download_templates"
+    
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    
+    # Configuración guardada como JSON
+    form_ids = Column(AutoJSON, nullable=False)  # Lista de IDs de formularios
+    selected_fields = Column(AutoJSON, nullable=False)  # Lista de IDs de campos
+    conditions = Column(AutoJSON, nullable=True, default=[])  # Condiciones de filtro
+    date_filter = Column(AutoJSON, nullable=True, default={})  # Filtro de fechas
+    preferred_format = Column(String(20), nullable=False, default='excel')  # excel, csv, pdf, word
+    
+    # Metadata
+    is_active = Column(Boolean, default=True, nullable=False)
+    last_used_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    
+    # Relación con usuario
+    user = relationship("User", backref="download_templates")

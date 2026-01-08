@@ -479,16 +479,36 @@ async def get_available_forms(db: Session = Depends(get_db)):
     
 @router.get("/forms/{form_id}/fields")
 async def get_form_fields(form_id: int, db: Session = Depends(get_db)):
-    """Obtiene todos los campos/preguntas de un formulario específico"""
+    """Obtiene todos los campos/preguntas de un formulario específico con sus labels desde form_design"""
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Formulario no encontrado")
     
+    # Parsear form_design para crear un mapa de id_question -> label
+    label_map = {}
+    if form.form_design:
+        # form_design ya está deserializado como dict/list gracias a AutoJSON
+        design_elements = form.form_design if isinstance(form.form_design, list) else []
+        
+        for element in design_elements:
+            # Verificar que sea un elemento válido con id_question
+            if isinstance(element, dict) and "id_question" in element:
+                question_id = element.get("id_question")
+                # Extraer el label desde props
+                props = element.get("props", {})
+                label = props.get("label", "")
+                
+                if question_id and label:
+                    label_map[question_id] = label
+    
     fields = []
     for question in form.questions:
+        # Usar el label desde form_design, o fallback al question_text original
+        display_label = label_map.get(question.id, question.question_text)
+        
         field_info = {
             "id": question.id,
-            "text": question.question_text,
+            "text": display_label,  # Ahora usa el label desde form_design
             "type": question.question_type.value,
             "required": question.required,
             "category": question.category.name if question.category else None
