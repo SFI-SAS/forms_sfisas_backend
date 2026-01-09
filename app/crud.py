@@ -850,9 +850,16 @@ def get_responses_by_project(db: Session, project_id: int):
 
     return result
 
-
-
 def delete_question_from_db(db: Session, question_id: int):
+    # Verificar si la pregunta está vinculada a algún formulario
+    form_links = db.query(FormQuestion).filter(FormQuestion.question_id == question_id).count()
+    
+    if form_links > 0:
+        raise ValueError(
+            f"No se puede eliminar la pregunta {question_id} porque está vinculada a {form_links} formulario(s). "
+            "Primero desvincúlela de todos los formularios."
+        )
+    
     # 1. Eliminar respuestas (answers)
     db.query(Answer).filter(Answer.question_id == question_id).delete()
 
@@ -862,26 +869,24 @@ def delete_question_from_db(db: Session, question_id: int):
     # 3. Eliminar opciones (options)
     db.query(Option).filter(Option.question_id == question_id).delete()
 
-    # 4. Eliminar relación en tabla intermedia form_questions
-    db.query(FormQuestion).filter(FormQuestion.question_id == question_id).delete()
-
-    # 5. Eliminar relaciones en question_table_relations
+    # 4. Eliminar relaciones en question_table_relations
     db.query(QuestionTableRelation).filter(
         (QuestionTableRelation.question_id == question_id) |
         (QuestionTableRelation.related_question_id == question_id)
     ).delete()
 
-    # 6. Eliminar filtros relacionados en question_filter_conditions
+    # 5. Eliminar filtros relacionados en question_filter_conditions
     db.query(QuestionFilterCondition).filter(
         (QuestionFilterCondition.filtered_question_id == question_id) |
         (QuestionFilterCondition.source_question_id == question_id) |
         (QuestionFilterCondition.condition_question_id == question_id)
     ).delete()
 
-    # 7. Finalmente, eliminar la pregunta
+    # 6. Finalmente, eliminar la pregunta
     db.query(Question).filter(Question.id == question_id).delete()
 
     db.commit()
+
 
 async def post_create_response(
     db,
@@ -3096,8 +3101,9 @@ def get_related_or_filtered_answers_optimized(
             "related_question": {
                 "id": related_question.id,
                 "text": related_question.question_text,
-                "type": related_question.question_type.value
+                "type": related_question.question_type.value,
             },
+            
             "data": [{"name": answer} for answer in all_unique_answers if answer],
             "correlations": correlations_map
         }
