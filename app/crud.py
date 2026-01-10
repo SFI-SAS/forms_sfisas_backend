@@ -1507,7 +1507,10 @@ def search_forms_by_user(
                 or_(
                     Form.title.ilike(search_term),
                     Form.description.ilike(search_term),
-                    Form.category.has(FormCategory.name.ilike(search_term))
+                    Form.category.has(FormCategory.name.ilike(search_term)),
+                    Form.category.has(
+                        FormCategory.parent.has(FormCategory.name.ilike(search_term))
+                    )
                 )
             )
             .distinct()  # Evitar duplicados
@@ -1526,7 +1529,10 @@ def search_forms_by_user(
                 or_(
                     Form.title.ilike(search_term),
                     Form.description.ilike(search_term),
-                    Form.category.has(FormCategory.name.ilike(search_term))
+                    Form.category.has(FormCategory.name.ilike(search_term)),
+                    Form.category.has(
+                        FormCategory.parent.has(FormCategory.name.ilike(search_term))
+                    )
                 )
             )
         )
