@@ -119,6 +119,29 @@ def get_all_forms_endpoint(
     
     return forms_data
 
+@router.get("/list")
+def get_forms_list(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Obtener solo id y título de los formatos del usuario autenticado.
+    """
+    forms = (
+        db.query(Form.id, Form.title)
+        .order_by(Form.created_at.desc())
+        .all()
+    )
+
+    return [
+        {
+            "id": form.id,
+            "title": form.title
+        }
+        for form in forms
+    ]
+
+
 @router.get("/{form_id}")
 def get_form_endpoint(
     form_id: int,
