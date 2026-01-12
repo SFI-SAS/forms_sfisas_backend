@@ -249,6 +249,7 @@ class QuestionTableRelationCreate(BaseModel):
     question_id: int
     name_table: str
     related_question_id: Optional[int] = None
+    related_form_id: Optional[int] = None
     field_name: Optional[str] = None 
     
     

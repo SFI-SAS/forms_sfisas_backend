@@ -2342,6 +2342,7 @@ def create_question_table_relation_logic(
     question_id: int,
     name_table: str,
     related_question_id: Optional[int] = None,
+    related_form_id: Optional[int] = None,
     field_name: Optional[str] = None  # <-- NUEVO
 ) -> QuestionTableRelation:
     """
@@ -2378,7 +2379,11 @@ def create_question_table_relation_logic(
         - 404: Si no se encuentra la pregunta o la relacionada.
         - 400: Si ya existe una relación para esta pregunta.
     """
-    
+    if related_form_id:
+        related_form = db.query(Form).filter(Form.id == related_form_id).first()
+        if not related_form:
+            raise HTTPException(status_code=404, detail="Related form not found")
+
     question = db.query(Question).filter(Question.id == question_id).first()
     if not question:
         raise HTTPException(status_code=404, detail="Question not found")
@@ -2400,6 +2405,7 @@ def create_question_table_relation_logic(
         question_id=question_id,
         name_table=name_table,
         related_question_id=related_question_id,
+        related_form_id=related_form_id,
         field_name=field_name  # <-- INCLUIDO
     )
 

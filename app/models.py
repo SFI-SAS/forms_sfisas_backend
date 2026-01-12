@@ -255,10 +255,12 @@ class QuestionTableRelation(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=False, unique=True)
     related_question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=True)
+    related_form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=True)
     name_table = Column(String(255), nullable=False)
     field_name = Column(String(255), nullable=True)
     question = relationship('Question', foreign_keys=[question_id], backref='table_relation', uselist=False)
     related_question = relationship('Question', foreign_keys=[related_question_id], backref='related_table_relations', uselist=False)
+    related_form = relationship('Form', foreign_keys=[related_form_id], backref='related_form_serial', uselist=False)
 
 class AnswerFileSerial(Base):
     __tablename__ = 'answer_file_serials'

@@ -341,6 +341,15 @@ def get_table_columns(table_name: str, db: Session = Depends(get_db)):
     HTTPException:
         - 404: Si la tabla no existe o no se puede inspeccionar.
     """
+        # 🔥 Tablas virtuales (NO existen en BD)
+    VIRTUAL_TABLES = {
+        "serials": ["serial"]
+    }
+
+    # ✅ Si es tabla virtual, retornar sin inspeccionar BD
+    if table_name in VIRTUAL_TABLES:
+        return {"columns": VIRTUAL_TABLES[table_name]}
+
     inspector = inspect(db.bind)
 
     # Mapear nombre de tabla en plural a nombre de tabla en base de datos si es necesario

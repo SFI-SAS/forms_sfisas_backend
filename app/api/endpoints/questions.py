@@ -469,6 +469,7 @@ def create_question_table_relation(
         question_id=relation_data.question_id,
         name_table=relation_data.name_table,
         related_question_id=relation_data.related_question_id,
+        related_form_id=relation_data.related_form_id,
         field_name=relation_data.field_name  # <-- NUEVO
     )
 
@@ -478,6 +479,7 @@ def create_question_table_relation(
             "id": relation.id,
             "question_id": relation.question_id,
             "related_question_id": relation.related_question_id,
+            "related_form_id": relation.related_form_id,
             "name_table": relation.name_table,
             "field_name": relation.field_name  # <-- NUEVO
         }
