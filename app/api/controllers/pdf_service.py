@@ -6,7 +6,7 @@ import base64
 import logging
 from jinja2 import Environment
 import qrcode
-# from weasyprint import HTML, CSS
+from weasyprint import HTML, CSS
 from typing import List, Dict, Any, Optional, Union
 from urllib.parse import urljoin, urlparse
 import requests
@@ -407,475 +407,475 @@ class PdfGeneratorService:
                         logging.info(f"  Has styleConfig: {bool(item.props.styleConfig)}")
         logging.info("=== END DEBUG ===")
 
-    # def generate_pdf(self, form_data: Union[FormData, Dict[str, Any]]) -> bytes:
-    #     """
-    #     Genera un documento PDF a partir de los datos del formulario.
-    #     Acepta tanto objetos FormData como diccionarios.
-    #     """
-    #     logging.info(f"Received request to generate PDF.")
+    def generate_pdf(self, form_data: Union[FormData, Dict[str, Any]]) -> bytes:
+        """
+        Genera un documento PDF a partir de los datos del formulario.
+        Acepta tanto objetos FormData como diccionarios.
+        """
+        logging.info(f"Received request to generate PDF.")
         
-    #     # Determinar si form_data es un objeto o un diccionario
-    #     if isinstance(form_data, dict):
-    #         # Si es un diccionario, acceder por claves
-    #         response_id = form_data.get('response_id')
-    #         form_info = form_data.get('form', {})
-    #         submitted_at = form_data.get('submitted_at', 'N/A')
-    #         approval_status = form_data.get('approval_status')
-    #         form_message = form_data.get('message')
-    #         answers = form_data.get('answers', [])
-    #         approvals = form_data.get('approvals', [])
-    #     else:
-    #         # Si es un objeto FormData, acceder por atributos
-    #         response_id = form_data.response_id
-    #         form_info = form_data.form
-    #         submitted_at = form_data.submitted_at if form_data.submitted_at else 'N/A'
-    #         approval_status = form_data.approval_status
-    #         form_message = form_data.message
-    #         answers = form_data.answers
-    #         approvals = form_data.approvals if hasattr(form_data, 'approvals') else []
+        # Determinar si form_data es un objeto o un diccionario
+        if isinstance(form_data, dict):
+            # Si es un diccionario, acceder por claves
+            response_id = form_data.get('response_id')
+            form_info = form_data.get('form', {})
+            submitted_at = form_data.get('submitted_at', 'N/A')
+            approval_status = form_data.get('approval_status')
+            form_message = form_data.get('message')
+            answers = form_data.get('answers', [])
+            approvals = form_data.get('approvals', [])
+        else:
+            # Si es un objeto FormData, acceder por atributos
+            response_id = form_data.response_id
+            form_info = form_data.form
+            submitted_at = form_data.submitted_at if form_data.submitted_at else 'N/A'
+            approval_status = form_data.approval_status
+            form_message = form_data.message
+            answers = form_data.answers
+            approvals = form_data.approvals if hasattr(form_data, 'approvals') else []
         
-    #     logging.info(f"Processing form response with ID: {response_id}")
+        logging.info(f"Processing form response with ID: {response_id}")
 
-    #     html_content = None # Inicializar html_content
+        html_content = None # Inicializar html_content
 
-    #     try:
-    #         logging.info(f"Starting PDF generation for response_id: {response_id}")
+        try:
+            logging.info(f"Starting PDF generation for response_id: {response_id}")
 
-    #         # 1. Cargar la plantilla Jinja2
-    #         template = self.templates_env.get_template('form_document.html')
-    #         logging.info(f"Jinja2 template 'form_document.html' loaded.")
+            # 1. Cargar la plantilla Jinja2
+            template = self.templates_env.get_template('form_document.html')
+            logging.info(f"Jinja2 template 'form_document.html' loaded.")
 
-    #         # Preparar datos para la plantilla
-    #         if isinstance(form_info, dict):
-    #             form_title = form_info.get('title', '')
-    #             form_description = form_info.get('description', '')
-    #             form_design = form_info.get('form_design', [])
-    #         else:
-    #             form_title = form_info.title
-    #             form_description = form_info.description
-    #             form_design = form_info.form_design
+            # Preparar datos para la plantilla
+            if isinstance(form_info, dict):
+                form_title = form_info.get('title', '')
+                form_description = form_info.get('description', '')
+                form_design = form_info.get('form_design', [])
+            else:
+                form_title = form_info.title
+                form_description = form_info.description
+                form_design = form_info.form_design
 
-    #         # Debug del form_design
-    #         self._debug_form_design(form_design)
+            # Debug del form_design
+            self._debug_form_design(form_design)
 
-    #         # Extraer la configuración del encabezado y el logo
-    #         header_table_config = {}
-    #         logo_url = None
+            # Extraer la configuración del encabezado y el logo
+            header_table_config = {}
+            logo_url = None
             
-    #         logging.info(f"Form design items count: {len(form_design) if form_design else 0}")
+            logging.info(f"Form design items count: {len(form_design) if form_design else 0}")
             
-    #         if form_design:
-    #             for idx, item in enumerate(form_design):
-    #                 logging.info(f"Processing form design item {idx}: {type(item)}")
+            if form_design:
+                for idx, item in enumerate(form_design):
+                    logging.info(f"Processing form design item {idx}: {type(item)}")
                     
-    #                 if isinstance(item, dict):
-    #                     props = item.get('props', {})
-    #                     style_config = props.get('styleConfig', {}) if props else {}
-    #                 else:
-    #                     props = item.props
-    #                     style_config = props.styleConfig if props and props.styleConfig else {}
+                    if isinstance(item, dict):
+                        props = item.get('props', {})
+                        style_config = props.get('styleConfig', {}) if props else {}
+                    else:
+                        props = item.props
+                        style_config = props.styleConfig if props and props.styleConfig else {}
                     
-    #                 if style_config:
-    #                     logging.info(f"Style config found in item {idx}")
+                    if style_config:
+                        logging.info(f"Style config found in item {idx}")
                         
-    #                     if isinstance(style_config, dict):
-    #                         # Buscar logo en la configuración
-    #                         logo_config = style_config.get('logo', {})
-    #                         if logo_config:
-    #                             potential_logo_url = logo_config.get('url') or logo_config.get('src') or logo_config.get('path')
-    #                             if potential_logo_url:
-    #                                 logo_url = str(potential_logo_url)
-    #                                 logging.info(f"✅ Logo URL found: {logo_url}")
-    #                             else:
-    #                                 logging.info(f"Logo config found but no URL/src/path: {logo_config.keys()}")
+                        if isinstance(style_config, dict):
+                            # Buscar logo en la configuración
+                            logo_config = style_config.get('logo', {})
+                            if logo_config:
+                                potential_logo_url = logo_config.get('url') or logo_config.get('src') or logo_config.get('path')
+                                if potential_logo_url:
+                                    logo_url = str(potential_logo_url)
+                                    logging.info(f"✅ Logo URL found: {logo_url}")
+                                else:
+                                    logging.info(f"Logo config found but no URL/src/path: {logo_config.keys()}")
                             
-    #                         # Buscar header table
-    #                         header_table = style_config.get('headerTable', {})
-    #                         if header_table and header_table.get('enabled'):
-    #                             header_table_config = header_table
-    #                             logging.info(f"✅ Header table config found and enabled")
+                            # Buscar header table
+                            header_table = style_config.get('headerTable', {})
+                            if header_table and header_table.get('enabled'):
+                                header_table_config = header_table
+                                logging.info(f"✅ Header table config found and enabled")
                                 
-    #                             # Debug: revisar si las celdas contienen [LOGO]
-    #                             cells = header_table.get('cells', [])
-    #                             for row_idx, row in enumerate(cells):
-    #                                 for col_idx, cell in enumerate(row):
-    #                                     cell_content = cell.get('content', '')
-    #                                     if '[LOGO]' in cell_content:
-    #                                         logging.info(f"✅ [LOGO] placeholder found in cell [{row_idx}][{col_idx}]: {cell_content}")
-    #                     else:
-    #                         # Manejo para objetos (no diccionarios)
-    #                         if hasattr(style_config, 'logo') and style_config.logo:
-    #                             if hasattr(style_config.logo, 'url') and style_config.logo.url:
-    #                                 logo_url = str(style_config.logo.url)
-    #                                 logging.info(f"✅ Logo URL found (object): {logo_url}")
+                                # Debug: revisar si las celdas contienen [LOGO]
+                                cells = header_table.get('cells', [])
+                                for row_idx, row in enumerate(cells):
+                                    for col_idx, cell in enumerate(row):
+                                        cell_content = cell.get('content', '')
+                                        if '[LOGO]' in cell_content:
+                                            logging.info(f"✅ [LOGO] placeholder found in cell [{row_idx}][{col_idx}]: {cell_content}")
+                        else:
+                            # Manejo para objetos (no diccionarios)
+                            if hasattr(style_config, 'logo') and style_config.logo:
+                                if hasattr(style_config.logo, 'url') and style_config.logo.url:
+                                    logo_url = str(style_config.logo.url)
+                                    logging.info(f"✅ Logo URL found (object): {logo_url}")
                             
-    #                         if hasattr(style_config, 'headerTable') and style_config.headerTable and style_config.headerTable.enabled:
-    #                             header_table_config = style_config.headerTable.dict()
-    #                             logging.info(f"✅ Header table config found (object)")
+                            if hasattr(style_config, 'headerTable') and style_config.headerTable and style_config.headerTable.enabled:
+                                header_table_config = style_config.headerTable.dict()
+                                logging.info(f"✅ Header table config found (object)")
                         
-    #                     # Si encontramos configuración, no necesitamos seguir buscando
-    #                     if header_table_config or logo_url:
-    #                         break
+                        # Si encontramos configuración, no necesitamos seguir buscando
+                        if header_table_config or logo_url:
+                            break
             
-    #         logging.info(f"Final logo URL: {logo_url}")
-    #         logging.info(f"Header table enabled: {bool(header_table_config.get('enabled'))}")
+            logging.info(f"Final logo URL: {logo_url}")
+            logging.info(f"Header table enabled: {bool(header_table_config.get('enabled'))}")
 
-    #         # Generar el HTML del encabezado
-    #         header_html = self._generate_header_html(header_table_config, logo_url)
-    #         logging.info(f"Generated header HTML (first 200 chars): {header_html[:200]}...")
+            # Generar el HTML del encabezado
+            header_html = self._generate_header_html(header_table_config, logo_url)
+            logging.info(f"Generated header HTML (first 200 chars): {header_html[:200]}...")
 
-    #         # Extraer texto del footer
-    #         footer_text = None
-    #         if form_design:
-    #             for item in form_design:
-    #                 if isinstance(item, dict):
-    #                     props = item.get('props', {})
-    #                     style_config = props.get('styleConfig', {}) if props else {}
-    #                 else:
-    #                     props = item.props
-    #                     style_config = props.styleConfig if props and props.styleConfig else {}
+            # Extraer texto del footer
+            footer_text = None
+            if form_design:
+                for item in form_design:
+                    if isinstance(item, dict):
+                        props = item.get('props', {})
+                        style_config = props.get('styleConfig', {}) if props else {}
+                    else:
+                        props = item.props
+                        style_config = props.styleConfig if props and props.styleConfig else {}
                     
-    #                 if style_config:
-    #                     if isinstance(style_config, dict):
-    #                         footer_config = style_config.get('footer', {})
-    #                         if footer_config and footer_config.get('show'):
-    #                             footer_text = footer_config.get('text')
-    #                             logging.info(f"Footer text found: '{footer_text}'")
-    #                     else:
-    #                         if style_config.footer and style_config.footer.show:
-    #                             footer_text = style_config.footer.text
-    #                             logging.info(f"Footer text found: '{footer_text}'")
-    #                     break
+                    if style_config:
+                        if isinstance(style_config, dict):
+                            footer_config = style_config.get('footer', {})
+                            if footer_config and footer_config.get('show'):
+                                footer_text = footer_config.get('text')
+                                logging.info(f"Footer text found: '{footer_text}'")
+                        else:
+                            if style_config.footer and style_config.footer.show:
+                                footer_text = style_config.footer.text
+                                logging.info(f"Footer text found: '{footer_text}'")
+                        break
 
-    #         # Procesar respuestas
-    #         processed_answers = []
-    #         for answer in answers:
-    #             if isinstance(answer, dict):
-    #                 processed_answers.append({
-    #                     'question_text': answer.get('question_text', ''),
-    #                     'answer_text': answer.get('answer_text', ''),
-    #                     'question_type': answer.get('question_type', ''),
-    #                     'file_path': answer.get('file_path', ''),
-    #                 })
-    #             else:
-    #                 processed_answers.append({
-    #                     'question_text': answer.question_text,
-    #                     'answer_text': answer.answer_text,
-    #                     'question_type': answer.question_type,
-    #                     'file_path': answer.file_path,
-    #                 })
-    #         logging.info(f"Processed {len(processed_answers)} answers.")
+            # Procesar respuestas
+            processed_answers = []
+            for answer in answers:
+                if isinstance(answer, dict):
+                    processed_answers.append({
+                        'question_text': answer.get('question_text', ''),
+                        'answer_text': answer.get('answer_text', ''),
+                        'question_type': answer.get('question_type', ''),
+                        'file_path': answer.get('file_path', ''),
+                    })
+                else:
+                    processed_answers.append({
+                        'question_text': answer.question_text,
+                        'answer_text': answer.answer_text,
+                        'question_type': answer.question_type,
+                        'file_path': answer.file_path,
+                    })
+            logging.info(f"Processed {len(processed_answers)} answers.")
 
-    #         # Procesar aprobaciones
-    #         processed_approvals = []
-    #         for approval in approvals:
-    #             if isinstance(approval, dict):
-    #                 user_info = approval.get('user', {})
-    #                 processed_approvals.append({
-    #                     'approval_id': approval.get('approval_id'),
-    #                     'sequence_number': approval.get('sequence_number'),
-    #                     'is_mandatory': approval.get('is_mandatory', False),
-    #                     'reconsideration_requested': approval.get('reconsideration_requested', False),
-    #                     'status': approval.get('status', ''),
-    #                     'reviewed_at': approval.get('reviewed_at', 'N/A'),
-    #                     'message': approval.get('message', ''),
-    #                     'user': {
-    #                         'name': user_info.get('name', ''),
-    #                         'email': user_info.get('email', ''),
-    #                         'nickname': user_info.get('nickname', ''),
-    #                         'num_document': user_info.get('num_document', ''),
-    #                     }
-    #                 })
-    #             else:
-    #                 # Si es un objeto, acceder por atributos
-    #                 processed_approvals.append({
-    #                     'approval_id': approval.approval_id if hasattr(approval, 'approval_id') else approval.id,
-    #                     'sequence_number': approval.sequence_number,
-    #                     'is_mandatory': approval.is_mandatory,
-    #                     'reconsideration_requested': approval.reconsideration_requested,
-    #                     'status': approval.status,
-    #                     'reviewed_at': approval.reviewed_at if approval.reviewed_at else 'N/A',
-    #                     'message': approval.message if approval.message else '',
-    #                     'user': {
-    #                         'name': approval.user.name if approval.user else '',
-    #                         'email': approval.user.email if approval.user else '',
-    #                         'nickname': approval.user.nickname if approval.user else '',
-    #                         'num_document': approval.user.num_document if approval.user else '',
-    #                     }
-    #                 })
+            # Procesar aprobaciones
+            processed_approvals = []
+            for approval in approvals:
+                if isinstance(approval, dict):
+                    user_info = approval.get('user', {})
+                    processed_approvals.append({
+                        'approval_id': approval.get('approval_id'),
+                        'sequence_number': approval.get('sequence_number'),
+                        'is_mandatory': approval.get('is_mandatory', False),
+                        'reconsideration_requested': approval.get('reconsideration_requested', False),
+                        'status': approval.get('status', ''),
+                        'reviewed_at': approval.get('reviewed_at', 'N/A'),
+                        'message': approval.get('message', ''),
+                        'user': {
+                            'name': user_info.get('name', ''),
+                            'email': user_info.get('email', ''),
+                            'nickname': user_info.get('nickname', ''),
+                            'num_document': user_info.get('num_document', ''),
+                        }
+                    })
+                else:
+                    # Si es un objeto, acceder por atributos
+                    processed_approvals.append({
+                        'approval_id': approval.approval_id if hasattr(approval, 'approval_id') else approval.id,
+                        'sequence_number': approval.sequence_number,
+                        'is_mandatory': approval.is_mandatory,
+                        'reconsideration_requested': approval.reconsideration_requested,
+                        'status': approval.status,
+                        'reviewed_at': approval.reviewed_at if approval.reviewed_at else 'N/A',
+                        'message': approval.message if approval.message else '',
+                        'user': {
+                            'name': approval.user.name if approval.user else '',
+                            'email': approval.user.email if approval.user else '',
+                            'nickname': approval.user.nickname if approval.user else '',
+                            'num_document': approval.user.num_document if approval.user else '',
+                        }
+                    })
             
-    #         # Ordenar aprobaciones por sequence_number
-    #         processed_approvals.sort(key=lambda x: x.get('sequence_number', 0))
-    #         logging.info(f"Processed {len(processed_approvals)} approvals.")
+            # Ordenar aprobaciones por sequence_number
+            processed_approvals.sort(key=lambda x: x.get('sequence_number', 0))
+            logging.info(f"Processed {len(processed_approvals)} approvals.")
 
-    #         template_data = {
-    #             'form_title': form_title,
-    #             'form_description': form_description,
-    #             'submitted_at': submitted_at,
-    #             'approval_status': approval_status,
-    #             'form_message': form_message,
-    #             'header_html': header_html,
-    #             'footer_text': footer_text,
-    #             'answers': processed_answers,
-    #             'approvals': processed_approvals,
-    #             'response_id': response_id,
-    #         }
-    #         logging.info(f"Template data prepared.")
+            template_data = {
+                'form_title': form_title,
+                'form_description': form_description,
+                'submitted_at': submitted_at,
+                'approval_status': approval_status,
+                'form_message': form_message,
+                'header_html': header_html,
+                'footer_text': footer_text,
+                'answers': processed_answers,
+                'approvals': processed_approvals,
+                'response_id': response_id,
+            }
+            logging.info(f"Template data prepared.")
 
-    #         # 3. Renderizar la plantilla con los datos
-    #         html_content = template.render(template_data)
-    #         logging.info(f"HTML content rendered successfully.")
+            # 3. Renderizar la plantilla con los datos
+            html_content = template.render(template_data)
+            logging.info(f"HTML content rendered successfully.")
             
-    #         # 4. Generar el PDF usando WeasyPrint con márgenes reducidos
-    #         pdf_buffer = io.BytesIO()
+            # 4. Generar el PDF usando WeasyPrint con márgenes reducidos
+            pdf_buffer = io.BytesIO()
             
-    #         # Crear CSS para márgenes reducidos
-    #         margin_css = CSS(string=self._get_reduced_margin_css())
+            # Crear CSS para márgenes reducidos
+            margin_css = CSS(string=self._get_reduced_margin_css())
             
-    #         # Generar PDF con CSS personalizado
-    #         HTML(string=html_content).write_pdf(pdf_buffer, stylesheets=[margin_css])
-    #         pdf_buffer.seek(0)
+            # Generar PDF con CSS personalizado
+            HTML(string=html_content).write_pdf(pdf_buffer, stylesheets=[margin_css])
+            pdf_buffer.seek(0)
 
-    #         pdf_bytes = pdf_buffer.getvalue()
+            pdf_bytes = pdf_buffer.getvalue()
             
-    #         if not pdf_bytes:
-    #             logging.warning("WeasyPrint generated empty PDF bytes.")
-    #         else:
-    #             logging.info(f"PDF generated successfully. Size: {len(pdf_bytes)} bytes.")
+            if not pdf_bytes:
+                logging.warning("WeasyPrint generated empty PDF bytes.")
+            else:
+                logging.info(f"PDF generated successfully. Size: {len(pdf_bytes)} bytes.")
             
-    #         return pdf_bytes
+            return pdf_bytes
 
-    #     except Exception as e:
-    #         logging.error(f"Error durante la generación del PDF: {e}", exc_info=True)
-    #         if html_content:
-    #             logging.error(f"HTML content before error (first 500 chars): {html_content[:500]}...")
-    #         else:
-    #             logging.error("HTML content was not generated before the error occurred.")
-    #         raise
+        except Exception as e:
+            logging.error(f"Error durante la generación del PDF: {e}", exc_info=True)
+            if html_content:
+                logging.error(f"HTML content before error (first 500 chars): {html_content[:500]}...")
+            else:
+                logging.error("HTML content was not generated before the error occurred.")
+            raise
 
 
 
-    # def generate_pdf_multi_responses(self, form_data: Dict[str, Any]) -> bytes:
-    #     """
-    #     Genera un documento PDF a partir de múltiples respuestas del formulario.
-    #     MODIFICADO: Incluye generación de códigos QR para detalles de respuesta.
-    #     """
-    #     logging.info(f"Received request to generate PDF for multiple responses.")
+    def generate_pdf_multi_responses(self, form_data: Dict[str, Any]) -> bytes:
+        """
+        Genera un documento PDF a partir de múltiples respuestas del formulario.
+        MODIFICADO: Incluye generación de códigos QR para detalles de respuesta.
+        """
+        logging.info(f"Received request to generate PDF for multiple responses.")
         
-    #     form_info = form_data.get('form_info', {})
-    #     responses = form_data.get('responses', [])
-    #     total_responses = form_data.get('total_responses', len(responses))
+        form_info = form_data.get('form_info', {})
+        responses = form_data.get('responses', [])
+        total_responses = form_data.get('total_responses', len(responses))
         
-    #     if not responses:
-    #         logging.error("No responses provided for PDF generation")
-    #         raise ValueError("No responses provided for PDF generation")
+        if not responses:
+            logging.error("No responses provided for PDF generation")
+            raise ValueError("No responses provided for PDF generation")
         
-    #     logging.info(f"Processing {total_responses} responses for PDF generation")
+        logging.info(f"Processing {total_responses} responses for PDF generation")
 
-    #     html_content = None
+        html_content = None
 
-    #     try:
-    #         # 1. Cargar la plantilla Jinja2
-    #         template = self.templates_env.get_template('form_document_multi_with_qr.html')
-    #         logging.info(f"Jinja2 template 'form_document_multi_with_qr.html' loaded.")
+        try:
+            # 1. Cargar la plantilla Jinja2
+            template = self.templates_env.get_template('form_document_multi_with_qr.html')
+            logging.info(f"Jinja2 template 'form_document_multi_with_qr.html' loaded.")
 
-    #         # Preparar datos para la plantilla
-    #         form_title = form_info.get('title', '')
-    #         form_description = form_info.get('description', '')
-    #         form_design = form_info.get('form_design', [])
-    #         form_id = form_data.get('form_id')
+            # Preparar datos para la plantilla
+            form_title = form_info.get('title', '')
+            form_description = form_info.get('description', '')
+            form_design = form_info.get('form_design', [])
+            form_id = form_data.get('form_id')
 
-    #         # Debug del form_design
-    #         self._debug_form_design(form_design)
+            # Debug del form_design
+            self._debug_form_design(form_design)
 
-    #         # Extraer la configuración del encabezado y el logo
-    #         header_table_config = {}
-    #         logo_url = None
+            # Extraer la configuración del encabezado y el logo
+            header_table_config = {}
+            logo_url = None
             
-    #         logging.info(f"Form design items count: {len(form_design) if form_design else 0}")
+            logging.info(f"Form design items count: {len(form_design) if form_design else 0}")
             
-    #         if form_design:
-    #             for idx, item in enumerate(form_design):
-    #                 logging.info(f"Processing form design item {idx}: {type(item)}")
+            if form_design:
+                for idx, item in enumerate(form_design):
+                    logging.info(f"Processing form design item {idx}: {type(item)}")
                     
-    #                 if isinstance(item, dict):
-    #                     props = item.get('props', {})
-    #                     style_config = props.get('styleConfig', {}) if props else {}
-    #                 else:
-    #                     props = item.props
-    #                     style_config = props.styleConfig if props and props.styleConfig else {}
+                    if isinstance(item, dict):
+                        props = item.get('props', {})
+                        style_config = props.get('styleConfig', {}) if props else {}
+                    else:
+                        props = item.props
+                        style_config = props.styleConfig if props and props.styleConfig else {}
                     
-    #                 if style_config:
-    #                     logging.info(f"Style config found in item {idx}")
+                    if style_config:
+                        logging.info(f"Style config found in item {idx}")
                         
-    #                     if isinstance(style_config, dict):
-    #                         # Buscar logo en la configuración
-    #                         logo_config = style_config.get('logo', {})
-    #                         if logo_config:
-    #                             potential_logo_url = logo_config.get('url') or logo_config.get('src') or logo_config.get('path')
-    #                             if potential_logo_url:
-    #                                 logo_url = str(potential_logo_url)
-    #                                 logging.info(f"✅ Logo URL found: {logo_url}")
+                        if isinstance(style_config, dict):
+                            # Buscar logo en la configuración
+                            logo_config = style_config.get('logo', {})
+                            if logo_config:
+                                potential_logo_url = logo_config.get('url') or logo_config.get('src') or logo_config.get('path')
+                                if potential_logo_url:
+                                    logo_url = str(potential_logo_url)
+                                    logging.info(f"✅ Logo URL found: {logo_url}")
                             
-    #                         # Buscar header table
-    #                         header_table = style_config.get('headerTable', {})
-    #                         if header_table and header_table.get('enabled'):
-    #                             header_table_config = header_table
-    #                             logging.info(f"✅ Header table config found and enabled")
-    #                     else:
-    #                         # Manejo para objetos (no diccionarios)
-    #                         if hasattr(style_config, 'logo') and style_config.logo:
-    #                             if hasattr(style_config.logo, 'url') and style_config.logo.url:
-    #                                 logo_url = str(style_config.logo.url)
-    #                                 logging.info(f"✅ Logo URL found (object): {logo_url}")
+                            # Buscar header table
+                            header_table = style_config.get('headerTable', {})
+                            if header_table and header_table.get('enabled'):
+                                header_table_config = header_table
+                                logging.info(f"✅ Header table config found and enabled")
+                        else:
+                            # Manejo para objetos (no diccionarios)
+                            if hasattr(style_config, 'logo') and style_config.logo:
+                                if hasattr(style_config.logo, 'url') and style_config.logo.url:
+                                    logo_url = str(style_config.logo.url)
+                                    logging.info(f"✅ Logo URL found (object): {logo_url}")
                             
-    #                         if hasattr(style_config, 'headerTable') and style_config.headerTable and style_config.headerTable.enabled:
-    #                             header_table_config = style_config.headerTable.dict()
-    #                             logging.info(f"✅ Header table config found (object)")
+                            if hasattr(style_config, 'headerTable') and style_config.headerTable and style_config.headerTable.enabled:
+                                header_table_config = style_config.headerTable.dict()
+                                logging.info(f"✅ Header table config found (object)")
                         
-    #                     # Si encontramos configuración, no necesitamos seguir buscando
-    #                     if header_table_config or logo_url:
-    #                         break
+                        # Si encontramos configuración, no necesitamos seguir buscando
+                        if header_table_config or logo_url:
+                            break
             
-    #         logging.info(f"Final logo URL: {logo_url}")
-    #         logging.info(f"Header table enabled: {bool(header_table_config.get('enabled'))}")
+            logging.info(f"Final logo URL: {logo_url}")
+            logging.info(f"Header table enabled: {bool(header_table_config.get('enabled'))}")
 
-    #         # Generar el HTML del encabezado
-    #         header_html = self._generate_header_html(header_table_config, logo_url)
-    #         logging.info(f"Generated header HTML (first 200 chars): {header_html[:200]}...")
+            # Generar el HTML del encabezado
+            header_html = self._generate_header_html(header_table_config, logo_url)
+            logging.info(f"Generated header HTML (first 200 chars): {header_html[:200]}...")
 
-    #         # Extraer texto del footer
-    #         footer_text = None
-    #         if form_design:
-    #             for item in form_design:
-    #                 if isinstance(item, dict):
-    #                     props = item.get('props', {})
-    #                     style_config = props.get('styleConfig', {}) if props else {}
-    #                 else:
-    #                     props = item.props
-    #                     style_config = props.styleConfig if props and props.styleConfig else {}
+            # Extraer texto del footer
+            footer_text = None
+            if form_design:
+                for item in form_design:
+                    if isinstance(item, dict):
+                        props = item.get('props', {})
+                        style_config = props.get('styleConfig', {}) if props else {}
+                    else:
+                        props = item.props
+                        style_config = props.styleConfig if props and props.styleConfig else {}
                     
-    #                 if style_config:
-    #                     if isinstance(style_config, dict):
-    #                         footer_config = style_config.get('footer', {})
-    #                         if footer_config and footer_config.get('show'):
-    #                             footer_text = footer_config.get('text')
-    #                             logging.info(f"Footer text found: '{footer_text}'")
-    #                     else:
-    #                         if style_config.footer and style_config.footer.show:
-    #                             footer_text = style_config.footer.text
-    #                             logging.info(f"Footer text found: '{footer_text}'")
-    #                     break
+                    if style_config:
+                        if isinstance(style_config, dict):
+                            footer_config = style_config.get('footer', {})
+                            if footer_config and footer_config.get('show'):
+                                footer_text = footer_config.get('text')
+                                logging.info(f"Footer text found: '{footer_text}'")
+                        else:
+                            if style_config.footer and style_config.footer.show:
+                                footer_text = style_config.footer.text
+                                logging.info(f"Footer text found: '{footer_text}'")
+                        break
 
-    #         # ✅ MODIFICADO: Procesar todas las respuestas con QR codes
-    #         processed_responses = []
-    #         for response in responses:
-    #             # Procesar respuestas de cada formulario
-    #             processed_answers = []
-    #             for answer in response.get('answers', []):
-    #                 processed_answers.append({
-    #                     'question_text': answer.get('question_text', ''),
-    #                     'answer_text': answer.get('answer_text', ''),
-    #                     'question_type': answer.get('question_type', ''),
-    #                     'file_path': answer.get('file_path', ''),
-    #                 })
+            # ✅ MODIFICADO: Procesar todas las respuestas con QR codes
+            processed_responses = []
+            for response in responses:
+                # Procesar respuestas de cada formulario
+                processed_answers = []
+                for answer in response.get('answers', []):
+                    processed_answers.append({
+                        'question_text': answer.get('question_text', ''),
+                        'answer_text': answer.get('answer_text', ''),
+                        'question_type': answer.get('question_type', ''),
+                        'file_path': answer.get('file_path', ''),
+                    })
 
-    #             # Procesar aprobaciones
-    #             processed_approvals = []
-    #             for approval in response.get('approvals', []):
-    #                 user_info = approval.get('user', {})
-    #                 processed_approvals.append({
-    #                     'approval_id': approval.get('approval_id'),
-    #                     'sequence_number': approval.get('sequence_number'),
-    #                     'is_mandatory': approval.get('is_mandatory', False),
-    #                     'reconsideration_requested': approval.get('reconsideration_requested', False),
-    #                     'status': approval.get('status', ''),
-    #                     'reviewed_at': approval.get('reviewed_at', 'N/A'),
-    #                     'message': approval.get('message', ''),
-    #                     'user': {
-    #                         'name': user_info.get('name', ''),
-    #                         'email': user_info.get('email', ''),
-    #                         'num_document': user_info.get('num_document', ''),
-    #                     }
-    #                 })
+                # Procesar aprobaciones
+                processed_approvals = []
+                for approval in response.get('approvals', []):
+                    user_info = approval.get('user', {})
+                    processed_approvals.append({
+                        'approval_id': approval.get('approval_id'),
+                        'sequence_number': approval.get('sequence_number'),
+                        'is_mandatory': approval.get('is_mandatory', False),
+                        'reconsideration_requested': approval.get('reconsideration_requested', False),
+                        'status': approval.get('status', ''),
+                        'reviewed_at': approval.get('reviewed_at', 'N/A'),
+                        'message': approval.get('message', ''),
+                        'user': {
+                            'name': user_info.get('name', ''),
+                            'email': user_info.get('email', ''),
+                            'num_document': user_info.get('num_document', ''),
+                        }
+                    })
                 
-    #             # Ordenar aprobaciones por sequence_number
-    #             processed_approvals.sort(key=lambda x: x.get('sequence_number', 0))
+                # Ordenar aprobaciones por sequence_number
+                processed_approvals.sort(key=lambda x: x.get('sequence_number', 0))
 
-    #             # ✅ NUEVO: Determinar si mostrar QR y generar URL
-    #             show_qr = self._should_show_qr_for_response(response)
-    #             qr_code_data = None
-    #             details_url = None
+                # ✅ NUEVO: Determinar si mostrar QR y generar URL
+                show_qr = self._should_show_qr_for_response(response)
+                qr_code_data = None
+                details_url = None
                             
-    #             if show_qr:
-    #                 # Generar URL para el frontend Astro
-    #                 response_id = response.get('response_id')
-    #                 details_url = urljoin(
-    #                     self.base_url, 
-    #                     f"/forms/{form_id}/response/{response_id}/details"  # ← Esta será tu página de Astro
-    #                 )
+                if show_qr:
+                    # Generar URL para el frontend Astro
+                    response_id = response.get('response_id')
+                    details_url = urljoin(
+                        self.base_url, 
+                        f"/forms/{form_id}/response/{response_id}/details"  # ← Esta será tu página de Astro
+                    )
                     
-    #                 # Generar código QR
-    #                 qr_code_data = self._generate_qr_code(details_url)
-    #                 logging.info(f"✅ QR code generated for response {response_id}: {details_url}")
+                    # Generar código QR
+                    qr_code_data = self._generate_qr_code(details_url)
+                    logging.info(f"✅ QR code generated for response {response_id}: {details_url}")
                 
 
-    #             # Agregar respuesta procesada
-    #             processed_responses.append({
-    #                 'response_id': response.get('response_id'),
-    #                 'repeated_id': response.get('repeated_id'),
-    #                 'submitted_at': response.get('submitted_at', 'N/A'),
-    #                 'approval_status': response.get('approval_status'),
-    #                 'message': response.get('message'),
-    #                 'responded_by': response.get('responded_by', {}),
-    #                 'answers': processed_answers,
-    #                 'approvals': processed_approvals,
-    #                 'show_qr': show_qr,  # ✅ NUEVO
-    #                 'qr_code_data': qr_code_data,  # ✅ NUEVO
-    #                 'details_url': details_url  # ✅ NUEVO
-    #             })
+                # Agregar respuesta procesada
+                processed_responses.append({
+                    'response_id': response.get('response_id'),
+                    'repeated_id': response.get('repeated_id'),
+                    'submitted_at': response.get('submitted_at', 'N/A'),
+                    'approval_status': response.get('approval_status'),
+                    'message': response.get('message'),
+                    'responded_by': response.get('responded_by', {}),
+                    'answers': processed_answers,
+                    'approvals': processed_approvals,
+                    'show_qr': show_qr,  # ✅ NUEVO
+                    'qr_code_data': qr_code_data,  # ✅ NUEVO
+                    'details_url': details_url  # ✅ NUEVO
+                })
 
-    #         logging.info(f"Processed {len(processed_responses)} responses with QR codes.")
+            logging.info(f"Processed {len(processed_responses)} responses with QR codes.")
 
-    #         # ✅ MODIFICADO: Template data para múltiples respuestas con QR
-    #         template_data = {
-    #             'form_title': form_title,
-    #             'form_description': form_description,
-    #             'header_html': header_html,
-    #             'footer_text': footer_text,
-    #             'responses': processed_responses,  # ✅ TODAS las respuestas con QR
-    #             'total_responses': total_responses,
-    #             'form_id': form_data.get('form_id'),
-    #         }
-    #         logging.info(f"Template data prepared for {len(processed_responses)} responses with QR codes.")
+            # ✅ MODIFICADO: Template data para múltiples respuestas con QR
+            template_data = {
+                'form_title': form_title,
+                'form_description': form_description,
+                'header_html': header_html,
+                'footer_text': footer_text,
+                'responses': processed_responses,  # ✅ TODAS las respuestas con QR
+                'total_responses': total_responses,
+                'form_id': form_data.get('form_id'),
+            }
+            logging.info(f"Template data prepared for {len(processed_responses)} responses with QR codes.")
 
-    #         # 3. Renderizar la plantilla con los datos
-    #         html_content = template.render(template_data)
-    #         logging.info(f"HTML content rendered successfully.")
+            # 3. Renderizar la plantilla con los datos
+            html_content = template.render(template_data)
+            logging.info(f"HTML content rendered successfully.")
             
-    #         # 4. Generar el PDF usando WeasyPrint con márgenes reducidos
-    #         pdf_buffer = io.BytesIO()
+            # 4. Generar el PDF usando WeasyPrint con márgenes reducidos
+            pdf_buffer = io.BytesIO()
             
-    #         # Crear CSS para márgenes reducidos
-    #         margin_css = CSS(string=self._get_reduced_margin_css())
+            # Crear CSS para márgenes reducidos
+            margin_css = CSS(string=self._get_reduced_margin_css())
             
-    #         # Generar PDF con CSS personalizado
-    #         HTML(string=html_content).write_pdf(pdf_buffer, stylesheets=[margin_css])
-    #         pdf_buffer.seek(0)
+            # Generar PDF con CSS personalizado
+            HTML(string=html_content).write_pdf(pdf_buffer, stylesheets=[margin_css])
+            pdf_buffer.seek(0)
 
-    #         pdf_bytes = pdf_buffer.getvalue()
+            pdf_bytes = pdf_buffer.getvalue()
             
-    #         if not pdf_bytes:
-    #             logging.warning("WeasyPrint generated empty PDF bytes.")
-    #         else:
-    #             logging.info(f"PDF generated successfully. Size: {len(pdf_bytes)} bytes.")
+            if not pdf_bytes:
+                logging.warning("WeasyPrint generated empty PDF bytes.")
+            else:
+                logging.info(f"PDF generated successfully. Size: {len(pdf_bytes)} bytes.")
             
-    #         return pdf_bytes
+            return pdf_bytes
 
-    #     except Exception as e:
-    #         logging.error(f"Error durante la generación del PDF: {e}", exc_info=True)
-    #         if html_content:
-    #             logging.error(f"HTML content before error (first 500 chars): {html_content[:500]}...")
-    #         else:
-    #             logging.error("HTML content was not generated before the error occurred.")
-    #         raise
+        except Exception as e:
+            logging.error(f"Error durante la generación del PDF: {e}", exc_info=True)
+            if html_content:
+                logging.error(f"HTML content before error (first 500 chars): {html_content[:500]}...")
+            else:
+                logging.error("HTML content was not generated before the error occurred.")
+            raise

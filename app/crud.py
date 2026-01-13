@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, joinedload, defer
 from sqlalchemy.exc import IntegrityError
 from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
-# from app.api.endpoints.pdf_router import generate_pdf_from_form_id
+from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
 from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, PalabrasClave, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationBitacora, RelationOperationMath, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
 from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, NotificationResponse, PalabrasClaveCreate, PostCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
@@ -4934,12 +4934,12 @@ async def send_form_action_emails_background(form_id: int, current_user_id: int,
         
         if needs_pdf:
             try:
-                # pdf_bytes = await generate_pdf_from_form_id(
-                #     form_id=form_id,
-                #     db=db,
-                #     current_user=current_user,
-                #     request=request
-                # )
+                pdf_bytes = await generate_pdf_from_form_id(
+                    form_id=form_id,
+                    db=db,
+                    current_user=current_user,
+                    request=request
+                )
                 print(f"✅ PDF generado exitosamente para el formulario {form_id}")
             except Exception as e:
                 print(f"❌ Error al generar PDF: {str(e)}")
@@ -5050,12 +5050,12 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
         
         if needs_pdf:
             try:
-                # pdf_bytes = await generate_pdf_from_form_id(
-                #     form_id=form_id,
-                #     db=db,
-                #     current_user=current_user,
-                #     request=request
-                # )
+                pdf_bytes = await generate_pdf_from_form_id(
+                    form_id=form_id,
+                    db=db,
+                    current_user=current_user,
+                    request=request
+                )
                 print(f"✅ PDF generado exitosamente para el formulario {form_id}")
             except Exception as e:
                 print(f"❌ Error al generar PDF: {str(e)}")
