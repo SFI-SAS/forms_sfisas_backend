@@ -3210,6 +3210,50 @@ def get_related_or_filtered_answers_optimized(
 
         return result
 
+    # 🔥 SERIALS = RESPONSES.ID (MISMA LÓGICA QUE ANSWERS)
+    if relation.related_form_id:
+        form = db.query(Form).filter_by(id=relation.related_form_id).first()
+        if not form:
+            raise HTTPException(
+                status_code=404,
+                detail="Formulario relacionado no encontrado"
+            )
+
+        responses = db.query(Response).filter_by(
+            form_id=relation.related_form_id
+        ).all()
+
+        serials = []               # ← puede tener duplicados
+        correlations_map = {}      # ← igual que answers
+
+        for response in responses:
+            serial_value = str(response.id)  # 🔑 EL SERIAL
+
+            serials.append(serial_value)
+
+            # 🔁 Correlaciones iguales a answers
+            answers = db.query(Answer).filter_by(
+                response_id=response.id
+            ).all()
+
+            response_answers_map = {}
+
+            for answer in answers:
+                if answer.answer_text:
+                    response_answers_map[answer.question_id] = answer.answer_text
+
+            correlations_map[serial_value] = response_answers_map
+
+        return {
+            "source": "serials",
+            "related_form": {
+                "id": form.id,
+                "title": form.title
+            },
+            "data": [{"name": s} for s in serials],  # 👈 IGUAL QUE ANSWERS
+            "correlations": correlations_map
+        }
+
     # Si no hay pregunta relacionada, usar tabla externa
     name_table = relation.name_table
     field_name = relation.field_name
