@@ -3299,3 +3299,217 @@ async def get_form_alert_message(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unexpected error: {str(e)}"
         )
+        
+# ==================== OBTENER UN FORMULARIO (para ver detalles) ====================
+
+@router.get("/get_form_details/{form_id}")
+async def get_form_details(
+    form_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Obtiene los detalles de un formulario específico.
+    Incluyendo: título, descripción, instructivos, alert_message, etc.
+    """
+    try:
+        form = db.query(Form).filter(Form.id == form_id).first()
+        
+        if not form:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Form with id {form_id} not found"
+            )
+
+        # Parsear instructivos si existen
+        instructivos = []
+        if form.instructivo_url:
+            try:
+                if isinstance(form.instructivo_url, str):
+                    instructivos = json.loads(form.instructivo_url)
+                elif isinstance(form.instructivo_url, list):
+                    instructivos = form.instructivo_url
+            except:
+                instructivos = []
+
+        return {
+            "id": form.id,
+            "title": form.title,
+            "description": form.description,
+            "alert_message": form.alert_message or "",
+            "instructivos": instructivos,
+            "created_at": form.created_at,
+            "user_id": form.user_id,
+            "is_enabled": form.is_enabled,
+            "format_type": form.format_type
+        }
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected error: {str(e)}"
+        )
+
+
+# ==================== ELIMINAR UN INSTRUCTIVO ESPECÍFICO ====================
+
+@router.delete("/{form_id}/instructivos/{instructivo_index}")
+async def delete_instructivo(
+    form_id: int,
+    instructivo_index: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Elimina un instructivo específico de un formulario.
+    
+    - **form_id**: ID del formulario
+    - **instructivo_index**: Índice del instructivo a eliminar (0, 1, 2, etc.)
+    """
+    try:
+        # Verificar que el usuario está autenticado
+        if current_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User not authenticated"
+            )
+
+        # 1. Buscar el formulario
+        form = db.query(Form).filter(Form.id == form_id).first()
+        
+        if not form:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Form with id {form_id} not found"
+            )
+        
+        # 2. Verificar que el usuario es el dueño
+        if form.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to modify this form"
+            )
+
+        # 3. Obtener instructivos actuales
+        instructivos = []
+        if form.instructivo_url:
+            try:
+                if isinstance(form.instructivo_url, str):
+                    instructivos = json.loads(form.instructivo_url)
+                elif isinstance(form.instructivo_url, list):
+                    instructivos = form.instructivo_url
+            except:
+                instructivos = []
+
+        # 4. Validar índice
+        if instructivo_index < 0 or instructivo_index >= len(instructivos):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Instructivo index {instructivo_index} out of range"
+            )
+
+        # 5. Obtener el archivo a eliminar
+        instructivo_to_delete = instructivos[instructivo_index]
+        file_path = instructivo_to_delete.get("url")
+
+        # 6. Eliminar el archivo del servidor (si existe)
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                print(f"✅ Archivo eliminado del servidor: {file_path}")
+            except Exception as e:
+                print(f"⚠️ Error al eliminar archivo: {str(e)}")
+                # No interrumpimos si falla la eliminación del archivo
+
+        # 7. Eliminar de la lista
+        instructivos.pop(instructivo_index)
+
+        # 8. Guardar cambios
+        form.instructivo_url = json.dumps(instructivos, ensure_ascii=False)
+        db.commit()
+        db.refresh(form)
+
+        print(f"✅ Instructivo {instructivo_index} eliminado del form {form_id}")
+
+        return {
+            "message": "Instructivo eliminado correctamente",
+            "form_id": form_id,
+            "instructivos_restantes": instructivos,
+            "total_instructivos": len(instructivos)
+        }
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected error: {str(e)}"
+        )
+
+
+# ==================== ELIMINAR MENSAJE DE ALERTA ====================
+
+@router.delete("/{form_id}/alert-message")
+async def delete_alert_message(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Elimina el mensaje de alerta de un formulario.
+    
+    - **form_id**: ID del formulario
+    """
+    try:
+        # Verificar que el usuario está autenticado
+        if current_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User not authenticated"
+            )
+
+        # 1. Buscar el formulario
+        form = db.query(Form).filter(Form.id == form_id).first()
+        
+        if not form:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Form with id {form_id} not found"
+            )
+        
+        # 2. Verificar que el usuario es el dueño
+        if form.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to modify this form"
+            )
+
+        # 3. Verificar que existe un mensaje
+        if not form.alert_message:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No alert message to delete"
+            )
+
+        # 4. Eliminar el mensaje
+        form.alert_message = None
+        db.commit()
+        db.refresh(form)
+
+        print(f"✅ Mensaje de alerta eliminado del form {form_id}")
+
+        return {
+            "message": "Alert message deleted successfully",
+            "form_id": form_id,
+            "alert_message": ""
+        }
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected error: {str(e)}"
+        )
+        
