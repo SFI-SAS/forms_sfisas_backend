@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from typing import Any, List, Optional
 from app import models
 from app.api.controllers.mail import send_welcome_email
-from app.api.endpoints.pdf_router import generate_pdf_from_form_id
+# from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.database import get_db
 from app.models import Answer, EmailConfig, Question, Response, User, UserCategory, UserType
 from app.crud import create_email_config, create_user, create_user_category, create_user_with_random_password, decrypt_object, delete_user_category_by_id, encrypt_object, fetch_all_users, get_all_email_configs, get_all_user_categories, get_response_details_logic, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
@@ -112,12 +112,12 @@ async def generate_pdf_endpoint(
     Endpoint para generar y descargar PDF de un formulario.
     """
     try:
-        pdf_bytes = await generate_pdf_from_form_id(
-            form_id=form_id,
-            db=db,
-            current_user=current_user,
-            request=request
-        )
+        # pdf_bytes = await generate_pdf_from_form_id(
+        #     form_id=form_id,
+        #     db=db,
+        #     current_user=current_user,
+        #     request=request
+        # )
         
         # Crear nombre del archivo
         filename = f"form_{form_id}_response.pdf"
