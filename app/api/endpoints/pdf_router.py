@@ -90,6 +90,7 @@ def get_response_approval_status(approvals: List[ResponseApproval]) -> Dict[str,
         "status": latest_approval.status.value,
         "message": latest_approval.message or "Sin mensaje"
     }
+
 async def generate_pdf_from_form_id(
     form_id: int,
     db: Session,

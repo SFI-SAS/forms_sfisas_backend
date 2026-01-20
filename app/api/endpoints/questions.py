@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.database import get_db
 from app.models import Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, User, UserType
-from app.crud import create_question, create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers_optimized, get_related_or_filtered_answers_with_forms, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
-from app.schemas import AnswerSchema, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionWithCategory, UpdateQuestionCategory
+from app.crud import create_question, create_question_table_relation_logic, create_relation_question_rule, delete_question_from_db, get_answers_by_question, get_answers_by_question_id, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers_optimized, get_related_or_filtered_answers_with_forms, get_rules_by_questions, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
+from app.schemas import AnswerByQuestionResponse, AnswerSchema, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionRulesRequest, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionWithCategory, RelationQuestionRuleCreate, UpdateQuestionCategory
 from app.core.security import get_current_user
 
 router = APIRouter()
@@ -819,3 +819,52 @@ def get_questions_by_category(
     # Traer preguntas filtradas por categoría
     questions = get_questions_by_category_id(db, category_id)
     return questions
+
+@router.post("/question_rules", status_code=201)
+def create_question_rule(
+    payload: RelationQuestionRuleCreate,
+    db: Session = Depends(get_db),
+):
+    rule = create_relation_question_rule(db, payload)
+
+    return {
+        "id": rule.id,
+        "message": "Regla creada correctamente"
+    }
+
+@router.post("/rules-by-questions")
+def get_question_rules(
+    payload: QuestionRulesRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get question rules"
+        )
+
+    return get_rules_by_questions(
+        db=db,
+        id_form=payload.id_form,
+        question_ids=payload.question_ids
+    )
+
+@router.get(
+    "/questions/{question_id}/answers",
+    response_model=List[AnswerByQuestionResponse]
+)
+def get_answers_by_question(
+    question_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to view answers"
+        )
+
+    answers = get_answers_by_question_id(db, question_id)
+
+    return answers
