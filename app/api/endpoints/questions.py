@@ -949,3 +949,52 @@ def detect_select_relations(
         "total_groups": len(autocomplete_groups),
         "autocomplete_groups": autocomplete_groups
     }
+
+@router.post("/question_rules", status_code=201)
+def create_question_rule(
+    payload: RelationQuestionRuleCreate,
+    db: Session = Depends(get_db),
+):
+    rule = create_relation_question_rule(db, payload)
+
+    return {
+        "id": rule.id,
+        "message": "Regla creada correctamente"
+    }
+
+@router.post("/rules-by-questions")
+def get_question_rules(
+    payload: QuestionRulesRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to get question rules"
+        )
+
+    return get_rules_by_questions(
+        db=db,
+        id_form=payload.id_form,
+        question_ids=payload.question_ids
+    )
+
+@router.get(
+    "/questions/{question_id}/answers",
+    response_model=List[AnswerByQuestionResponse]
+)
+def get_answers_by_question(
+    question_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to view answers"
+        )
+
+    answers = get_answers_by_question_id(db, question_id)
+
+    return answers

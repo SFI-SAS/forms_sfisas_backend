@@ -13,8 +13,8 @@ from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 # from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, PalabrasClave, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationBitacora, RelationOperationMath, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
-from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, NotificationResponse, PalabrasClaveCreate, PostCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, PalabrasClave, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, NotificationResponse, PalabrasClaveCreate, PostCreate, ProjectCreate, RelationQuestionRuleCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
@@ -7183,3 +7183,117 @@ def generate_excel_with_repeaters(data: dict) -> BytesIO:
     output.seek(0)
     
     return output
+
+
+def create_relation_question_rule(
+    db: Session,
+    payload: RelationQuestionRuleCreate
+) -> RelationQuestionRule:
+    # 1️⃣ Validar tipo de regla
+    if payload.rule_type not in ("EMAIL_NOTIFICATION", "DATE_ALERT", "UNIQUE_ANSWER"):
+        raise HTTPException(
+            status_code=400,
+            detail="rule_type debe ser 'EMAIL_NOTIFICATION', 'DATE_ALERT' o 'UNIQUE_ANSWER'"
+        )
+
+    # 2️⃣ Lógica por tipo de regla
+    if payload.rule_type == "EMAIL_NOTIFICATION":
+        date_notification = None
+        time_alert = None
+
+    elif payload.rule_type == "UNIQUE_ANSWER":
+        date_notification = None
+        time_alert = None
+
+    elif payload.rule_type == "DATE_ALERT":
+        if not payload.date_notification:
+            raise HTTPException(
+                status_code=400,
+                detail="date_notification es obligatorio cuando rule_type es DATE_ALERT"
+            )
+
+        date_notification = payload.date_notification
+        time_alert = payload.time_alert
+
+    # 3️⃣ Evitar duplicados
+    exists = db.query(RelationQuestionRule).filter(
+        RelationQuestionRule.id_form == payload.id_form,
+        RelationQuestionRule.id_question == payload.id_question,
+        RelationQuestionRule.rule_type == payload.rule_type
+    ).first()
+
+    if exists:
+        raise HTTPException(
+            status_code=400,
+            detail="Ya existe una regla de este tipo para esta pregunta"
+        )
+
+    # 4️⃣ Crear regla
+    rule = RelationQuestionRule(
+        id_form=payload.id_form,
+        id_question=payload.id_question,
+        rule_type=payload.rule_type,
+        date_notification=date_notification,
+        time_alert=time_alert,
+    )
+
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+
+    return rule
+
+def get_rules_by_questions(
+    db: Session,
+    id_form: int,
+    question_ids: List[int]
+) -> List[Dict]:
+    """
+    Retorna las reglas asociadas a cada pregunta del formulario
+    """
+
+    rules = (
+        db.query(RelationQuestionRule)
+        .filter(
+            RelationQuestionRule.id_form == id_form,
+            RelationQuestionRule.id_question.in_(question_ids)
+        )
+        .all()
+    )
+
+    # Mapa: question_id -> reglas
+    rules_map: Dict[int, List[str]] = {}
+
+    for rule in rules:
+        rules_map.setdefault(rule.id_question, []).append(rule.rule_type)
+
+    # Respuesta asegurando todas las preguntas
+    response = []
+    for q_id in question_ids:
+        response.append({
+            "id_question": q_id,
+            "rules": rules_map.get(q_id, [])
+        })
+
+    return response
+
+def get_answers_by_question_id(
+    db: Session,
+    question_id: int
+):
+    return (
+        db.query(
+            Answer.id.label("answer_id"),
+            Answer.question_id,
+            Answer.response_id,
+            Response.form_id,
+            Response.user_id,
+            Answer.answer_text,
+            Answer.file_path,
+            Response.submitted_at
+        )
+        .join(Response, Response.id == Answer.response_id)
+        .filter(Answer.question_id == question_id)
+        .order_by(Response.submitted_at.desc())
+        .all()
+    )
