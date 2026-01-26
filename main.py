@@ -132,7 +132,7 @@ from app.crud import get_response_details_logic, get_schedules_by_frequency
 from app.database import SessionLocal, engine
 from app.models import Base
 from app.api.endpoints import (
-    approvers, download_template, list_form, pdf_router, projects, responses, 
+    alias, approvers, download_template, list_form, pdf_router, projects, responses, 
     responsibilitytransfer, users, forms, auth, questions
 )
 
@@ -193,7 +193,7 @@ app.include_router(
     tags=["responsibility_transfer"]
 )
 app.include_router(download_template.router, prefix="/download_template", tags=["Download Templates"])
-
+app.include_router(alias.router, prefix="/alias", tags=["alias"])
 
 # ========================================
 # CREAR TABLAS

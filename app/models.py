@@ -1,4 +1,5 @@
 
+from datetime import datetime
 from sqlalchemy import (
     Boolean, Column, BigInteger, DateTime, Integer, LargeBinary, String, Text, 
     ForeignKey, TIMESTAMP, Enum, func, text
@@ -165,12 +166,14 @@ class Question(Base):
     required = Column(Boolean, nullable=False, default=True)
     root = Column(Boolean, nullable=False, default=False)
     id_category = Column(BigInteger, ForeignKey('question_categories.id'), nullable=True)
+    id_alias = Column(Integer, ForeignKey("alias.id"), nullable=True, index=True)
     
     category = relationship('QuestionCategory', back_populates='questions')
     forms = relationship('Form', secondary='form_questions', back_populates='questions')
     options = relationship('Option', back_populates='question')
     answers = relationship('Answer', back_populates='question')
     form_answers = relationship('FormAnswer', back_populates='question')
+    alias = relationship('Alias', backref='questions')
 
 class QuestionCategory(Base):
     __tablename__ = 'question_categories'
@@ -501,6 +504,22 @@ class RelationQuestionRule(Base):
 
     question = relationship('Question', foreign_keys=[id_question], backref='related_question_rule', uselist=False)
     related_form = relationship('Form', foreign_keys=[id_form], backref='related_form_rule', uselist=False)
+    
+class Alias(Base):
+    __tablename__ = "alias"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), unique=True, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+
+    def __repr__(self):
+        return f"<Alias(id={self.id}, name={self.name})>"
+
+
 
 class FormMovimientos(Base):
     __tablename__ = 'forms_movimientos'

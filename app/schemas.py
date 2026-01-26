@@ -74,6 +74,7 @@ class QuestionBase(BaseModel):
     required: bool = Field(..., example=True) 
     root:bool =  Field(..., example=True) 
     id_category: Optional[int] = None
+    id_alias: Optional[int] = Field(None, example=1)
 
 
 class QuestionBaseAll(BaseModel):
@@ -83,7 +84,7 @@ class QuestionBaseAll(BaseModel):
     required: bool = Field(..., example=True) 
     root:bool =  Field(..., example=True)
     id_category: int | None = None
-    
+    id_alias: Optional[int] = Field(None, example=1)
     
 class QuestionCreate(QuestionBase):
     pass # Allow creation without assignment
@@ -657,7 +658,13 @@ class CategorySchema(BaseModel):
     class Config:
         from_attributes = True
 
-
+class AliasSchema(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
 class QuestionWithCategory(BaseModel):
     id: int
     question_text: str
@@ -668,9 +675,12 @@ class QuestionWithCategory(BaseModel):
     category: CategorySchema | None
     related_question_id: Optional[int] = None
     related_question: Optional[dict] = None  # ← CAMBIAR A dict, no a objeto
-
+    
+    id_alias: Optional[int] = None
+    alias: Optional[AliasSchema] = None
     class Config:
         from_attributes = True
+
 
         
 class UpdateQuestionCategory(BaseModel):
@@ -1060,6 +1070,60 @@ class AnswerByQuestionResponse(BaseModel):
     answer_text: Optional[str]
     file_path: Optional[str]
     submitted_at: datetime
+
+    class Config:
+        from_attributes = True
+        
+class AliasBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255, example="nombre_completo")
+    description: Optional[str] = Field(None, max_length=500, example="Campo para el nombre completo")
+
+class AliasCreate(AliasBase):
+    pass
+
+class AliasUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=500)
+
+class AliasResponse(AliasBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class AliasList(BaseModel):
+    id: int
+    name: str
+    description: Optional[str]
+
+    class Config:
+        from_attributes = True
+        
+class AliasBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255, example="nombre_completo")
+    description: Optional[str] = Field(None, max_length=500, example="Campo para el nombre completo")
+
+class AliasCreate(AliasBase):
+    pass
+
+class AliasUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=500)
+
+class AliasResponse(AliasBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class AliasList(BaseModel):
+    id: int
+    name: str
+    description: Optional[str]
 
     class Config:
         from_attributes = True

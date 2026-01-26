@@ -7,15 +7,18 @@ import hashlib
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.params import Query
+from pymysql import IntegrityError
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.database import get_db
-from app.models import FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, User, UserType
-from app.crud import create_question, create_question_table_relation_logic, create_relation_question_rule, delete_question_from_db, get_answers_by_question, get_answers_by_question_id, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers_optimized, get_related_or_filtered_answers_with_forms, get_rules_by_questions, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
+from app.models import Alias, FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, User, UserType
+from app.crud import  create_question_table_relation_logic, create_relation_question_rule, delete_question_from_db, get_answers_by_question, get_answers_by_question_id, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers_optimized, get_related_or_filtered_answers_with_forms, get_rules_by_questions, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
 from app.schemas import AnswerByQuestionResponse, AnswerSchema, DetectSelectRelationsRequest, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionRulesRequest, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionWithCategory, RelationQuestionRuleCreate, UpdateQuestionCategory
 from app.core.security import get_current_user
 
 router = APIRouter()
+
+# En: app/routes/questions.py
 
 @router.post("/", response_model=QuestionResponse, status_code=status.HTTP_201_CREATED)
 def create_question_endpoint(
@@ -24,44 +27,43 @@ def create_question_endpoint(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Crea una nueva pregunta en el sistema.
-
-    Solo los usuarios con rol de **administrador** pueden crear preguntas.  
-    Este endpoint guarda una nueva pregunta en la base de datos, incluyendo el texto, tipo y configuración.
-
-    Parámetros:
-    -----------
-    question : QuestionCreate
-        Objeto con los datos de la nueva pregunta:
-        - `question_text` (str): Texto de la pregunta.
-        - `question_type` (str): Tipo de pregunta (por ejemplo: "text", "select").
-        - `required` (bool): Si la pregunta es obligatoria o no.
-        - `root` (bool): Si la pregunta es una pregunta raíz o no.
-
-    db : Session
-        Sesión de base de datos proporcionada por la dependencia `get_db`.
-
-    current_user : User
-        Usuario autenticado, extraído mediante `get_current_user`.
-
-    Retorna:
-    --------
-    QuestionResponse:
-        Objeto con los datos de la pregunta creada.
-
-    Lanza:
-    ------
-    HTTPException:
-        - 403: Si el usuario no tiene permisos para crear preguntas.
-        - 400: Si ocurre un error de integridad al guardar la pregunta.
+    Crea una nueva pregunta con alias opcional.
     """
-    # Restringir la creación de preguntas solo a usuarios permitidos (e.g., admin)
-    if current_user.user_type.name != UserType.admin.name:
+    if current_user.user_type.name != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create questions"
         )
-    return create_question(db=db, question=question)
+    
+    # ⭐ VALIDAR QUE EL ALIAS EXISTA
+    if question.id_alias:
+        alias = db.query(Alias).filter(Alias.id == question.id_alias).first()
+        if not alias:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El alias especificado no existe"
+            )
+    
+    try:
+        db_question = Question(
+            question_text=question.question_text,
+            description=question.description,
+            question_type=question.question_type,
+            required=question.required,
+            root=question.root,
+            id_category=question.id_category,
+            id_alias=question.id_alias  # ⭐ AGREGAR ESTA LÍNEA
+        )
+        db.add(db_question)
+        db.commit()
+        db.refresh(db_question)
+        return db_question
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Error to create a question with the provided information"
+        )
 
 @router.put("/{question_id}", response_model=QuestionResponse)
 def update_question_endpoint(
