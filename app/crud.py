@@ -506,27 +506,7 @@ def process_regisfacial_answer(answer_text: str, question_type: str) -> str:
 def get_forms(db: Session, skip: int = 0, limit: int = 10):
     return db.query(Form).offset(skip).limit(limit).all()
 
-# Question CRUD Operations
-def create_question(db: Session, question: QuestionCreate):
-    try:
-        db_question = Question(
-            question_text=question.question_text,
-            description=question.description,  # ← AGREGAR ESTA LÍNEA
-            question_type=question.question_type,
-            required=question.required, 
-            root=question.root,
-            id_category=question.id_category
-        )
-        db.add(db_question)
-        db.commit()
-        db.refresh(db_question)
-        return db_question
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Error to create a question with the provided information"
-        )
+
 
 def get_question_by_id(db: Session, question_id: int) -> Question:
     return db.query(Question).filter(Question.id == question_id).first()
@@ -538,7 +518,11 @@ def get_question_by_id_with_category(db: Session, question_id: int):
     return db.query(Question).options(joinedload(Question.category)).filter(Question.id == question_id).first()
 
 def get_questions(db: Session):
-    questions = db.query(Question).options(joinedload(Question.category)).all()
+    # ⭐ AGREGAR joinedload para alias
+    questions = db.query(Question).options(
+        joinedload(Question.category),
+        joinedload(Question.alias)  # ← NUEVA LÍNEA
+    ).all()
     
     for question in questions:
         relation = db.query(QuestionTableRelation).filter(
@@ -552,14 +536,12 @@ def get_questions(db: Session):
             
             if related_q:
                 question.related_question_id = relation.related_question_id
-                # ← CAMBIO: Convertir a diccionario, no asignar el objeto
                 question.related_question = {
                     "id": related_q.id,
                     "question_text": related_q.question_text
                 }
     
     return questions
-
 
 def get_questions_by_category_id(db: Session, category_id: Optional[int]):
     """
