@@ -13,8 +13,8 @@ from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_aprovall_next, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 # from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormSchedule, PalabrasClave, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
-from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, NotificationResponse, PalabrasClaveCreate, PostCreate, ProjectCreate, RelationQuestionRuleCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, PalabrasClave, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormMovimientoBase, NotificationResponse, PalabrasClaveCreate, PostCreate, ProjectCreate, RelationQuestionRuleCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, FormCreate, QuestionCreate, OptionCreate, ResponseCreate, AnswerCreate, UserType, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
@@ -7297,3 +7297,74 @@ def get_answers_by_question_id(
         .order_by(Response.submitted_at.desc())
         .all()
     )
+
+def create_form_movimiento(
+    db: Session,
+    movimiento: FormMovimientoBase,
+    user_id: int
+):
+    try:
+        # ✅ Validar formularios SOLO si vienen
+        if movimiento.form_ids:
+            existing_forms = db.query(Form.id).filter(
+                Form.id.in_(movimiento.form_ids)
+            ).all()
+
+            if len(existing_forms) != len(movimiento.form_ids):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Uno o más formularios no existen"
+                )
+
+        # ✅ Validar preguntas SOLO si vienen
+        if movimiento.question_ids:
+            existing_questions = db.query(Question.id).filter(
+                Question.id.in_(movimiento.question_ids)
+            ).all()
+
+            if len(existing_questions) != len(movimiento.question_ids):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Una o más preguntas no existen"
+                )
+
+        db_movimiento = FormMovimientos(
+            user_id=user_id,
+            form_ids=movimiento.form_ids or [],        # ✅ nunca NULL
+            question_ids=movimiento.question_ids or [],# ✅ nunca NULL
+            title=movimiento.title,
+            description=movimiento.description,
+            id_category=movimiento.id_category,
+            is_enabled=True
+        )
+
+        db.add(db_movimiento)
+        db.commit()
+        db.refresh(db_movimiento)
+
+        return {
+            "id": db_movimiento.id,
+            "user_id": db_movimiento.user_id,
+            "form_ids": db_movimiento.form_ids,
+            "question_ids": db_movimiento.question_ids,
+            "title": db_movimiento.title,
+            "description": db_movimiento.description,
+            "id_category": db_movimiento.id_category,
+            "is_enabled": db_movimiento.is_enabled,
+            "created_at": db_movimiento.created_at
+        }
+
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Error al crear el movimiento"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error interno del servidor: {str(e)}"
+        )

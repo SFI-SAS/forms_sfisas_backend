@@ -151,7 +151,11 @@ class FormCategory(Base):
     forms = relationship("Form", back_populates="category")
     parent = relationship("FormCategory", remote_side=[id], back_populates="children")
     children = relationship("FormCategory", back_populates="parent", cascade="all, delete-orphan", order_by="FormCategory.order")
-
+    forms_movimientos = relationship(
+            "FormMovimientos",
+            back_populates="category"
+        )
+    
 class Question(Base):
     __tablename__ = 'questions'
     id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -503,6 +507,7 @@ class FormMovimientos(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
     form_ids = Column(AutoJSON, nullable=False)  # Lista de IDs de formularios  
+    question_ids = Column(AutoJSON, nullable=False)  # Lista de IDs de preguntas
     title = Column(String(255), nullable=False)
     description = Column(String(255), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
@@ -511,7 +516,4 @@ class FormMovimientos(Base):
     is_enabled = Column(Boolean, nullable=False, default=True)
     
     user = relationship('User', back_populates='forms_movimientos')
-    questions = relationship("Question", secondary="form_questions", back_populates="forms_movimientos")
-    responses = relationship('Response', back_populates='form_movimientos')
-    form_answers = relationship('FormAnswer', back_populates='form_movimientos')
     category = relationship("FormCategory", back_populates="forms_movimientos")

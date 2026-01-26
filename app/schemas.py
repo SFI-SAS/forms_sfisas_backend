@@ -1063,3 +1063,22 @@ class AnswerByQuestionResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class FormMovimientoBase(BaseModel):
+    form_ids: List[int] = []
+    question_ids: List[int] = []
+    title: str
+    description: Optional[str] = None
+    id_category: Optional[int] = None
+
+
+class FormMovimientoResponse(BaseModel):
+    id: int
+    user_id: int
+    form_ids: List[int]
+    question_ids: List[int]
+    title: str
+    description: Optional[str]
+    id_category: Optional[int]
+    is_enabled: bool
+    created_at: datetime
