@@ -1,11 +1,18 @@
+
+# Changes to be committed:
+#	modified:   app/api/endpoints/questions.py
+#
+
+import hashlib
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.params import Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.database import get_db
-from app.models import Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, User, UserType
+from app.models import FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, User, UserType
 from app.crud import create_question, create_question_table_relation_logic, create_relation_question_rule, delete_question_from_db, get_answers_by_question, get_answers_by_question_id, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers_optimized, get_related_or_filtered_answers_with_forms, get_rules_by_questions, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
-from app.schemas import AnswerByQuestionResponse, AnswerSchema, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionRulesRequest, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionWithCategory, RelationQuestionRuleCreate, UpdateQuestionCategory
+from app.schemas import AnswerByQuestionResponse, AnswerSchema, DetectSelectRelationsRequest, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionRulesRequest, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionWithCategory, RelationQuestionRuleCreate, UpdateQuestionCategory
 from app.core.security import get_current_user
 
 router = APIRouter()
@@ -94,6 +101,7 @@ def update_question_endpoint(
 
     Lanza:
     ------
+    
     HTTPException:
         - 403: Si el usuario no tiene permisos para actualizar preguntas.
         - 404: Si la pregunta con el ID especificado no existe.
@@ -819,6 +827,134 @@ def get_questions_by_category(
     # Traer preguntas filtradas por categoría
     questions = get_questions_by_category_id(db, category_id)
     return questions
+
+
+def generate_deterministic_color(source_id: int) -> str:
+    """
+    Genera un color único y consistente basado en el ID del formato origen.
+    El mismo formato siempre tendrá el mismo color.
+    """
+    # Paleta de colores
+    color_palette = [
+        "#FF6B6B",  # Rojo coral
+        "#4ECDC4",  # Turquesa
+        "#45B7D1",  # Azul cielo
+         "#FFD93D",  # Amarillo brillante
+        "#FFA07A",  # Salmón
+        "#98D8C8",  # Verde menta
+        "#F7DC6F",  # Amarillo suave
+        "#BB8FCE",  # Púrpura
+        "#85C1E2",  # Azul claro
+        "#F8B195",  # Durazno
+        "#C06C84",  # Rosa oscuro
+        "#A8E6CF",  # Verde agua pastel
+       
+        "#6BCF7F",  # Verde lima
+        "#FF85A2",  # Rosa chicle
+        "#95E1D3",  # Turquesa claro
+    ]
+    
+    # Generar hash del ID y convertir a índice
+    hash_object = hashlib.md5(str(source_id).encode())
+    hash_int = int(hash_object.hexdigest(), 16)
+    color_index = hash_int % len(color_palette)
+    
+    return color_palette[color_index]
+
+@router.post("/detect-select-relations")
+def detect_select_relations(
+    payload: DetectSelectRelationsRequest,
+    db: Session = Depends(get_db)
+):
+    question_ids = payload.question_ids
+    
+    # 📊 PASO 1: Obtener preguntas TABLE y SELECT
+    questions = db.query(Question).filter(
+        Question.id.in_(question_ids),
+        Question.question_type.in_([
+            QuestionType.table.value,
+            QuestionType.one_choice.value
+        ])
+    ).all()
+
+    # 🗺️ PASO 2: Construir mapa de relaciones POR FORMATO ORIGEN
+    formats_map = {}
+    
+    for question in questions:
+        # Buscar la relación de esta pregunta
+        relation = db.query(QuestionTableRelation).filter(
+            QuestionTableRelation.question_id == question.id
+        ).first()
+
+        if not relation or not relation.related_question_id:
+            continue
+
+        # 🔍 VERIFICAR: ¿La pregunta relacionada está en OTRO formato?
+        form_question = db.query(FormQuestion).filter(
+            FormQuestion.question_id == relation.related_question_id
+        ).first()
+
+        if not form_question:
+            continue
+
+        # Obtener datos de la pregunta relacionada
+        related_question = db.query(Question).filter(
+            Question.id == relation.related_question_id
+        ).first()
+
+        if not related_question:
+            continue
+
+        # ✅ AGRUPAR POR FORMATO ORIGEN (form_id)
+        form_key = form_question.form_id
+        
+        if form_key not in formats_map:
+            formats_map[form_key] = []
+
+        # Evitar duplicados
+        field_data = {
+            "question_id": question.id,
+            "question_text": question.question_text,
+            "question_type": question.question_type,
+            "related_question_id": related_question.id,
+            "related_question_text": related_question.question_text
+        }
+        
+        # Verificar si ya existe este campo
+        exists = any(
+            f["question_id"] == question.id 
+            for f in formats_map[form_key]
+        )
+        
+        if not exists:
+            formats_map[form_key].append(field_data)
+
+    # 🎨 PASO 3: Crear grupos con colores DETERMINÍSTICOS
+    autocomplete_groups = []
+    
+    # Ordenar por form_id para consistencia
+    sorted_form_ids = sorted(formats_map.keys())
+    
+    for form_id in sorted_form_ids:
+        fields = formats_map[form_id]
+        
+        if len(fields) >= 2:
+            # ✅ Color determinístico basado en form_id
+            assigned_color = generate_deterministic_color(form_id)
+            
+            autocomplete_groups.append({
+                "relation_group_id": f"group_{form_id}",  # ID consistente
+                "source_form_id": form_id,
+                "color": assigned_color,
+                "total_fields": len(fields),
+                "fields": fields
+            })
+
+    return {
+        "can_autocomplete": bool(autocomplete_groups),
+        "total_groups": len(autocomplete_groups),
+        "autocomplete_groups": autocomplete_groups
+    }
 
 @router.post("/question_rules", status_code=201)
 def create_question_rule(

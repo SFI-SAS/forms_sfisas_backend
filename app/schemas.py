@@ -1022,7 +1022,23 @@ class RelatedQuestionInfo(BaseModel):
     class Config:
         from_attributes = True
 
+class RelatedSelectInfo(BaseModel):
+    question_id: int
+    question_text: str
+    related_question_id: int
+    related_question_text: str
+    related_form_id: Optional[int] = None
+    can_autocomplete: bool = False
 
+class AutocompleteRelation(BaseModel):
+    source_question_id: int
+    target_question_id: int
+    relation_group_id: str  # UUID único para agrupar campos relacionados
+    color: str  # Color hex para identificación visual
+    
+class DetectSelectRelationsRequest(BaseModel):
+    form_id: int
+    question_ids: List[int]
 
 class RelationQuestionRuleCreate(BaseModel):
     id_form: int
