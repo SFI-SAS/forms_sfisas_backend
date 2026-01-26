@@ -100,6 +100,10 @@ class User(Base):
     form_moderators = relationship('FormModerators', back_populates='user')
     forms = relationship('Form', back_populates='user')
     responses = relationship('Response', back_populates='user')
+    forms_movimientos = relationship(
+        'FormMovimientos',
+        back_populates='user',
+    )
 
 class UserCategory(Base):
     __tablename__ = 'user_categories'
