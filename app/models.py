@@ -478,12 +478,6 @@ class DownloadTemplate(Base):
     # Relación con usuario
     user = relationship("User", backref="download_templates")
 
-from enum import Enum
-
-class RuleTypeEnum(str, Enum):
-    EMAIL_NOTIFICATION = "email_notification"   # notificador correo
-    DATE_ALERT = "date_alert"                    # alerta por fecha
-
 class RelationQuestionRule(Base):
     __tablename__ = "relation_question_rule"
 
@@ -499,3 +493,21 @@ class RelationQuestionRule(Base):
 
     question = relationship('Question', foreign_keys=[id_question], backref='related_question_rule', uselist=False)
     related_form = relationship('Form', foreign_keys=[id_form], backref='related_form_rule', uselist=False)
+
+class FormMovimientos(Base):
+    __tablename__ = 'forms_movimientos'
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
+    form_ids = Column(AutoJSON, nullable=False)  # Lista de IDs de formularios  
+    title = Column(String(255), nullable=False)
+    description = Column(String(255), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    # ✅ USA AutoJSON EN LUGAR DE JSON O TEXT
+    id_category = Column(BigInteger, ForeignKey('form_categories.id'), nullable=True)
+    is_enabled = Column(Boolean, nullable=False, default=True)
+    
+    user = relationship('User', back_populates='forms_movimientos')
+    questions = relationship("Question", secondary="form_questions", back_populates="forms_movimientos")
+    responses = relationship('Response', back_populates='form_movimientos')
+    form_answers = relationship('FormAnswer', back_populates='form_movimientos')
+    category = relationship("FormCategory", back_populates="forms_movimientos")
