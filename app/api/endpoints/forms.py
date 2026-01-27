@@ -3571,6 +3571,27 @@ def get_form_movimientos_endpoint(
 
     return movimientos
 
+def get_question_labels_from_form_design(form_design: list) -> dict:
+    """
+    Retorna un dict:
+    {
+        question_id: label
+    }
+    """
+    labels = {}
+
+    if not form_design:
+        return labels
+
+    for element in form_design:
+        question_id = element.get("id_question")
+        props = element.get("props", {})
+
+        if question_id and "label" in props:
+            labels[question_id] = props["label"]
+
+    return labels
+
 @router.get(
     "/movimientos/{movement_id}/answers",
     status_code=status.HTTP_200_OK
@@ -3608,7 +3629,6 @@ def get_answers_by_movement(
             "forms": []
         }
 
-    # 🔍 Traer formularios
     forms = db.query(Form).filter(
         Form.id.in_(movimiento.form_ids)
     ).all()
@@ -3616,7 +3636,11 @@ def get_answers_by_movement(
     result = []
 
     for form in forms:
-        # Respuestas del formulario
+        # 🔑 Mapear labels desde el form_design
+        question_labels = get_question_labels_from_form_design(
+            form.form_design or []
+        )
+
         responses = db.query(Response).filter(
             Response.form_id == form.id,
             Response.status == ResponseStatus.submitted
@@ -3640,6 +3664,11 @@ def get_answers_by_movement(
                     {
                         "question_id": a.question.id,
                         "question_text": a.question.question_text,
+                        # 👇 ESTE ES EL NUEVO CAMPO CLAVE
+                        "question_label": question_labels.get(
+                            a.question.id,
+                            a.question.question_text  # fallback
+                        ),
                         "answer_text": a.answer_text,
                         "file_path": a.file_path
                     }
@@ -3659,4 +3688,32 @@ def get_answers_by_movement(
         "title": movimiento.title,
         "description": movimiento.description,
         "forms": result
+    }
+
+@router.delete("/movimientos/{movement_id}", status_code=status.HTTP_200_OK)
+def delete_movement(
+    movement_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    movement = (
+        db.query(FormMovimientos)
+        .filter(
+            FormMovimientos.id == movement_id,
+            FormMovimientos.user_id == current_user.id
+        )
+        .first()
+    )
+
+    if not movement:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Movimiento no encontrado"
+        )
+
+    db.delete(movement)
+    db.commit()
+
+    return {
+        "message": "Movimiento eliminado correctamente"
     }
