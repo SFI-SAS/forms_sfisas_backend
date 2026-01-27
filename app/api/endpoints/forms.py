@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session, joinedload, defer
 from typing import Any, List, Optional
 from app.redis_client import redis_client
 from app.database import get_db
-from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormQuestion, FormSchedule, Question, QuestionType, Response, ResponseApproval, User, UserType
-from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
+from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, Question, QuestionType, Response, ResponseApproval, ResponseStatus, User, UserType
+from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
 from app.schemas import AlertMessageRequest, BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormSchema, FormStatusUpdate, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, ResponseApprovalCreate, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
@@ -3539,3 +3539,124 @@ def create_form_movimiento_endpoint(
         movimiento=movimiento,
         user_id=current_user.id
     )
+
+
+@router.get("/movimientos/all", response_model=List[dict])
+def get_form_movimientos_endpoint(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Retorna una lista básica de movimientos de formularios.
+
+    - id
+    - title
+    - description
+    """
+
+    # 🔐 Validación de roles permitidos
+    if current_user.user_type.name not in [
+        UserType.creator.name,
+        UserType.admin.name
+    ]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to view movimientos"
+        )
+
+    movimientos = get_all_form_movimientos_basic(db)
+
+    if not movimientos:
+        return []  # 👈 mejor que 404 para listas
+
+    return movimientos
+
+@router.get(
+    "/movimientos/{movement_id}/answers",
+    status_code=status.HTTP_200_OK
+)
+def get_answers_by_movement(
+    movement_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    # 🔐 Validar roles
+    if current_user.user_type.name not in [
+        UserType.creator.name,
+        UserType.admin.name
+    ]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to view movement answers"
+        )
+
+    movimiento = db.query(FormMovimientos).filter(
+        FormMovimientos.id == movement_id,
+        FormMovimientos.is_enabled == True
+    ).first()
+
+    if not movimiento:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Movimiento no encontrado"
+        )
+
+    if not movimiento.form_ids or not movimiento.question_ids:
+        return {
+            "movement_id": movimiento.id,
+            "title": movimiento.title,
+            "forms": []
+        }
+
+    # 🔍 Traer formularios
+    forms = db.query(Form).filter(
+        Form.id.in_(movimiento.form_ids)
+    ).all()
+
+    result = []
+
+    for form in forms:
+        # Respuestas del formulario
+        responses = db.query(Response).filter(
+            Response.form_id == form.id,
+            Response.status == ResponseStatus.submitted
+        ).all()
+
+        form_responses = []
+
+        for response in responses:
+            answers = db.query(Answer).join(Question).filter(
+                Answer.response_id == response.id,
+                Answer.question_id.in_(movimiento.question_ids)
+            ).all()
+
+            if not answers:
+                continue
+
+            form_responses.append({
+                "response_id": response.id,
+                "submitted_at": response.submitted_at,
+                "answers": [
+                    {
+                        "question_id": a.question.id,
+                        "question_text": a.question.question_text,
+                        "answer_text": a.answer_text,
+                        "file_path": a.file_path
+                    }
+                    for a in answers
+                ]
+            })
+
+        if form_responses:
+            result.append({
+                "form_id": form.id,
+                "form_title": form.title,
+                "responses": form_responses
+            })
+
+    return {
+        "movement_id": movimiento.id,
+        "title": movimiento.title,
+        "description": movimiento.description,
+        "forms": result
+    }

@@ -7350,3 +7350,23 @@ def create_form_movimiento(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno del servidor: {str(e)}"
         )
+
+def get_all_form_movimientos_basic(db: Session):
+    movimientos = (
+        db.query(
+            FormMovimientos.id,
+            FormMovimientos.title,
+            FormMovimientos.description
+        )
+        .order_by(FormMovimientos.created_at.desc())
+        .all()
+    )
+
+    return [
+        {
+            "id": m.id,
+            "title": m.title,
+            "description": m.description
+        }
+        for m in movimientos
+    ]

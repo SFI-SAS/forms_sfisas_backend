@@ -519,8 +519,6 @@ class Alias(Base):
     def __repr__(self):
         return f"<Alias(id={self.id}, name={self.name})>"
 
-
-
 class FormMovimientos(Base):
     __tablename__ = 'forms_movimientos'
     id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -535,4 +533,4 @@ class FormMovimientos(Base):
     is_enabled = Column(Boolean, nullable=False, default=True)
     
     user = relationship('User', back_populates='forms_movimientos')
-    category = relationship("FormCategory", back_populates="forms_movimientos")
+    category = relationship("FormCategory", back_populates="forms_movimientos")            
