@@ -3591,7 +3591,6 @@ def get_question_labels_from_form_design(form_design: list) -> dict:
             labels[question_id] = props["label"]
 
     return labels
-
 @router.get(
     "/movimientos/{movement_id}/answers",
     status_code=status.HTTP_200_OK
@@ -3664,11 +3663,15 @@ def get_answers_by_movement(
                     {
                         "question_id": a.question.id,
                         "question_text": a.question.question_text,
-                        # 👇 ESTE ES EL NUEVO CAMPO CLAVE
                         "question_label": question_labels.get(
                             a.question.id,
-                            a.question.question_text  # fallback
+                            a.question.question_text
                         ),
+                        "alias": {
+                            "id": a.question.alias.id,
+                            "name": a.question.alias.name,
+                            "description": a.question.alias.description
+                        } if a.question.alias else None,  # 👈 NUEVO
                         "answer_text": a.answer_text,
                         "file_path": a.file_path
                     }
