@@ -3732,25 +3732,7 @@ def get_last_filtered_answer(
     Obtiene la última respuesta de una pregunta específica en un formulario,
     filtrada por el valor de otra pregunta.
     
-    Ejemplo:
-    - Formulario "Personal" tiene preguntas: Nombre, Apellido, Proyecto
-    - Quiero obtener la última respuesta de "Proyecto" donde "Nombre" = "Neider"
-    
-    Args:
-        request (LastAnswerFilterRequest): Objeto con los parámetros de búsqueda
-            - form_id: ID del formulario donde buscar
-            - target_question_id: ID de la pregunta cuya respuesta queremos obtener
-            - filter_question_id: ID de la pregunta para filtrar
-            - filter_value: Valor que debe tener la pregunta de filtro
-        db (Session): Sesión de base de datos
-        current_user (User): Usuario autenticado
-    
-    Returns:
-        LastAnswerResponse: Última respuesta encontrada con los datos del filtro
-    
-    Raises:
-        HTTPException 404: Si el formulario no existe o no se encuentra ninguna respuesta
-        HTTPException 403: Si el usuario no tiene acceso al formulario
+    MEJORADO: Ahora maneja mejor espacios en blanco y comillas
     """
     
     # 1. Verificar que el formulario existe
@@ -3761,7 +3743,7 @@ def get_last_filtered_answer(
             detail=f"Formulario con ID {request.form_id} no encontrado"
         )
     
-    # 2. Verificar acceso al formulario (el usuario es creador o admin)
+    # 2. Verificar acceso al formulario
     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         if form.user_id != current_user.id:
             raise HTTPException(
@@ -3769,7 +3751,7 @@ def get_last_filtered_answer(
                 detail="No tienes permiso para acceder a este formulario"
             )
     
-    # 3. Verificar que las preguntas existen y pertenecen al formulario
+    # 3. Verificar que las preguntas existen
     target_question = db.query(Question).filter(Question.id == request.target_question_id).first()
     filter_question = db.query(Question).filter(Question.id == request.filter_question_id).first()
     
@@ -3785,25 +3767,81 @@ def get_last_filtered_answer(
             detail=f"Pregunta de filtro con ID {request.filter_question_id} no encontrada"
         )
     
-    # 4. Buscar todas las respuestas del formulario donde la pregunta de filtro
-    #    tenga el valor especificado
+    # 4. DEBUGGING: Ver todos los valores posibles de la pregunta de filtro
+    all_filter_values = db.query(Answer.answer_text).filter(
+        and_(
+            Answer.question_id == request.filter_question_id,
+            Answer.response_id.in_(
+                db.query(Response.id).filter(Response.form_id == request.form_id)
+            )
+        )
+    ).distinct().all()
     
-    # Subconsulta para obtener los response_ids que cumplen con el filtro
+    available_values = [val[0] for val in all_filter_values if val[0]]
+    print(f"DEBUG - Valores disponibles para '{filter_question.question_text}': {available_values}")
+    print(f"DEBUG - Buscando valor: '{request.filter_value}'")
+    
+    # 5. BÚSQUEDA MEJORADA: Intentar con diferentes estrategias
+    
+    # Estrategia 1: Búsqueda exacta
     filter_responses = db.query(Answer.response_id).filter(
         and_(
             Answer.question_id == request.filter_question_id,
             Answer.answer_text == request.filter_value
         )
-    ).subquery()
+    ).all()
     
-    # 5. Buscar la última respuesta de la pregunta objetivo
-    #    en los responses que cumplen el filtro
+    print(f"DEBUG - Búsqueda exacta encontró: {len(filter_responses)} respuestas")
+    
+    # Estrategia 2: Si no hay resultados, buscar sin espacios
+    if not filter_responses:
+        filter_responses = db.query(Answer.response_id).filter(
+            and_(
+                Answer.question_id == request.filter_question_id,
+                func.replace(Answer.answer_text, ' ', '') == request.filter_value.replace(' ', '')
+            )
+        ).all()
+        print(f"DEBUG - Búsqueda sin espacios encontró: {len(filter_responses)} respuestas")
+    
+    # Estrategia 3: Si aún no hay resultados, buscar case-insensitive
+    if not filter_responses:
+        filter_responses = db.query(Answer.response_id).filter(
+            and_(
+                Answer.question_id == request.filter_question_id,
+                func.upper(Answer.answer_text) == request.filter_value.upper()
+            )
+        ).all()
+        print(f"DEBUG - Búsqueda case-insensitive encontró: {len(filter_responses)} respuestas")
+    
+    # Estrategia 4: Si aún no hay resultados, buscar con LIKE
+    if not filter_responses:
+        filter_responses = db.query(Answer.response_id).filter(
+            and_(
+                Answer.question_id == request.filter_question_id,
+                Answer.answer_text.ilike(f"%{request.filter_value}%")
+            )
+        ).all()
+        print(f"DEBUG - Búsqueda con LIKE encontró: {len(filter_responses)} respuestas")
+    
+    if not filter_responses:
+        # Dar más información al usuario sobre valores disponibles
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No se encontró ninguna respuesta para la pregunta '{target_question.question_text}' "
+                   f"donde '{filter_question.question_text}' = '{request.filter_value}'. "
+                   f"Valores disponibles: {', '.join(available_values[:10])}"  # Limitar a 10 para no sobrecargar
+        )
+    
+    # Extraer los IDs de respuesta
+    response_ids = [r[0] for r in filter_responses]
+    
+    # 6. Buscar la última respuesta de la pregunta objetivo
     last_answer = db.query(Answer, Response).join(
         Response, Answer.response_id == Response.id
     ).filter(
         and_(
             Answer.question_id == request.target_question_id,
-            Answer.response_id.in_(filter_responses),
+            Answer.response_id.in_(response_ids),
             Response.form_id == request.form_id
         )
     ).order_by(desc(Response.submitted_at)).first()
@@ -3811,13 +3849,23 @@ def get_last_filtered_answer(
     if not last_answer:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No se encontró ninguna respuesta para la pregunta '{target_question.question_text}' "
-                   f"donde '{filter_question.question_text}' = '{request.filter_value}'"
+            detail=f"Se encontraron respuestas con '{filter_question.question_text}' = '{request.filter_value}', "
+                   f"pero ninguna tiene respuesta para '{target_question.question_text}'"
         )
     
     answer, response = last_answer
     
-    # 6. Construir la respuesta
+    # 7. Obtener valores que coincidieron para debugging
+    matched_values = db.query(Answer.answer_text).filter(
+        and_(
+            Answer.question_id == request.filter_question_id,
+            Answer.response_id.in_(response_ids)
+        )
+    ).distinct().limit(5).all()
+    
+    matched_list = [val[0] for val in matched_values if val[0]]
+    
+    # 8. Construir la respuesta
     return LastAnswerResponse(
         response_id=response.id,
         answer_id=answer.id,
@@ -3826,5 +3874,7 @@ def get_last_filtered_answer(
         submitted_at=response.submitted_at.isoformat(),
         question_text=target_question.question_text,
         filter_question_text=filter_question.question_text,
-        filter_value_found=request.filter_value
+        filter_value_found=request.filter_value,
+        total_responses_found=len(response_ids),
+        filter_matches=matched_list
     )

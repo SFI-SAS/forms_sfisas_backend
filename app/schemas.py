@@ -1152,6 +1152,14 @@ class LastAnswerFilterRequest(BaseModel):
     target_question_id: int  # ID de la pregunta cuya respuesta queremos (ej: "proyecto")
     filter_question_id: int  # ID de la pregunta para filtrar (ej: "nombre")
     filter_value: str        # Valor con el que filtrar (ej: "Neider")
+    
+    @field_validator('filter_value')
+    def clean_filter_value(cls, v):
+        """Limpia el valor de filtro de comillas y espacios extra"""
+        if v:
+            # Remover comillas dobles si están al inicio y final
+            v = v.strip().strip('"').strip("'").strip()
+        return v
 
 # Schema para la respuesta
 class LastAnswerResponse(BaseModel):
@@ -1163,6 +1171,10 @@ class LastAnswerResponse(BaseModel):
     question_text: str
     filter_question_text: str
     filter_value_found: str
+    
+    # NUEVO: Para debugging
+    total_responses_found: int
+    filter_matches: list[str]  # Lista de valores que coincidieron
 
     class Config:
         from_attributes = True
