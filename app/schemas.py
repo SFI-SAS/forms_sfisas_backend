@@ -1,6 +1,6 @@
 import json
 from uuid import UUID
-from pydantic import BaseModel, EmailStr, Field, field_validator, validator
+from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Any, Literal, Optional, List, Dict, Union
 from datetime import date, datetime
 from enum import Enum
@@ -1147,6 +1147,12 @@ class FormMovimientoResponse(BaseModel):
     is_enabled: bool
     created_at: datetime
     
+class LastAnswerFilterRequest(BaseModel):
+    form_id: int
+    target_question_id: int  # ID de la pregunta cuya respuesta queremos (ej: "proyecto")
+    filter_question_id: int  # ID de la pregunta para filtrar (ej: "nombre")
+    filter_value: str        # Valor con el que filtrar (ej: "Neider")
+
 # Schema para la respuesta
 class LastAnswerResponse(BaseModel):
     response_id: int
@@ -1157,10 +1163,6 @@ class LastAnswerResponse(BaseModel):
     question_text: str
     filter_question_text: str
     filter_value_found: str
-    
-    # NUEVO: Para debugging
-    total_responses_found: int
-    filter_matches: list[str]  # Lista de valores que coincidieron
 
     class Config:
         from_attributes = True
