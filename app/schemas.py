@@ -1147,20 +1147,6 @@ class FormMovimientoResponse(BaseModel):
     is_enabled: bool
     created_at: datetime
     
-class LastAnswerFilterRequest(BaseModel):
-    form_id: int
-    target_question_id: int  # ID de la pregunta cuya respuesta queremos (ej: "proyecto")
-    filter_question_id: int  # ID de la pregunta para filtrar (ej: "nombre")
-    filter_value: str        # Valor con el que filtrar (ej: "Neider")
-    
-    @field_validator('filter_value')
-    def clean_filter_value(cls, v):
-        """Limpia el valor de filtro de comillas y espacios extra"""
-        if v:
-            # Remover comillas dobles si están al inicio y final
-            v = v.strip().strip('"').strip("'").strip()
-        return v
-
 # Schema para la respuesta
 class LastAnswerResponse(BaseModel):
     response_id: int
@@ -1178,3 +1164,12 @@ class LastAnswerResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+from pydantic import BaseModel
+
+class RelatedAnswerRequest(BaseModel):
+    form_id: int
+    question_id_base: int
+    value_base: str
+    question_id_match: int
+    question_id_lookup: int

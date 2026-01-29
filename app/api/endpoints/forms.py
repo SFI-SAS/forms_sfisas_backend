@@ -9,9 +9,9 @@ from sqlalchemy.orm import Session, joinedload, defer
 from typing import Any, List, Optional
 from app.redis_client import redis_client
 from app.database import get_db
-from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, Question, QuestionType, Response, ResponseApproval, ResponseStatus, User, UserType
-from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
-from app.schemas import AlertMessageRequest, BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormSchema, FormStatusUpdate, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, LastAnswerFilterRequest, LastAnswerResponse, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, ResponseApprovalCreate, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
+from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, User, UserType
+from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
+from app.schemas import AlertMessageRequest, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
 import pandas as pd
@@ -3722,159 +3722,67 @@ def delete_movement(
     }
     
 
-@router.post("/last-answer-filtered", response_model=LastAnswerResponse)
-def get_last_filtered_answer(
-    request: LastAnswerFilterRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+@router.post("/responses/related-last-answer")
+def get_related_last_answers(
+    payload: RelatedAnswerRequest,
+    db: Session = Depends(get_db)
 ):
-    """
-    Obtiene la última respuesta de una pregunta específica en un formulario,
-    filtrada por el valor de otra pregunta.
-    
-    MEJORADO: Ahora maneja mejor espacios en blanco y comillas
-    """
-    
-    # 1. Verificar que el formulario existe
-    form = db.query(Form).filter(Form.id == request.form_id).first()
-    if not form:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Formulario con ID {request.form_id} no encontrado"
+    # 1️⃣ Obtener response_id donde la pregunta MATCH tenga el valor dado
+    response_ids = (
+        db.query(Answer.response_id)
+        .join(Response, Response.id == Answer.response_id)
+        .filter(
+            Response.form_id == payload.form_id,
+            Answer.question_id == payload.question_id_match,
+            Answer.answer_text == payload.value_base
         )
-    
-    # 2. Verificar acceso al formulario
-    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
-        if form.user_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="No tienes permiso para acceder a este formulario"
-            )
-    
-    # 3. Verificar que las preguntas existen
-    target_question = db.query(Question).filter(Question.id == request.target_question_id).first()
-    filter_question = db.query(Question).filter(Question.id == request.filter_question_id).first()
-    
-    if not target_question:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Pregunta objetivo con ID {request.target_question_id} no encontrada"
-        )
-    
-    if not filter_question:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Pregunta de filtro con ID {request.filter_question_id} no encontrada"
-        )
-    
-    # 4. DEBUGGING: Ver todos los valores posibles de la pregunta de filtro
-    all_filter_values = db.query(Answer.answer_text).filter(
-        and_(
-            Answer.question_id == request.filter_question_id,
-            Answer.response_id.in_(
-                db.query(Response.id).filter(Response.form_id == request.form_id)
-            )
-        )
-    ).distinct().all()
-    
-    available_values = [val[0] for val in all_filter_values if val[0]]
-    print(f"DEBUG - Valores disponibles para '{filter_question.question_text}': {available_values}")
-    print(f"DEBUG - Buscando valor: '{request.filter_value}'")
-    
-    # 5. BÚSQUEDA MEJORADA: Intentar con diferentes estrategias
-    
-    # Estrategia 1: Búsqueda exacta
-    filter_responses = db.query(Answer.response_id).filter(
-        and_(
-            Answer.question_id == request.filter_question_id,
-            Answer.answer_text == request.filter_value
-        )
-    ).all()
-    
-    print(f"DEBUG - Búsqueda exacta encontró: {len(filter_responses)} respuestas")
-    
-    # Estrategia 2: Si no hay resultados, buscar sin espacios
-    if not filter_responses:
-        filter_responses = db.query(Answer.response_id).filter(
-            and_(
-                Answer.question_id == request.filter_question_id,
-                func.replace(Answer.answer_text, ' ', '') == request.filter_value.replace(' ', '')
-            )
-        ).all()
-        print(f"DEBUG - Búsqueda sin espacios encontró: {len(filter_responses)} respuestas")
-    
-    # Estrategia 3: Si aún no hay resultados, buscar case-insensitive
-    if not filter_responses:
-        filter_responses = db.query(Answer.response_id).filter(
-            and_(
-                Answer.question_id == request.filter_question_id,
-                func.upper(Answer.answer_text) == request.filter_value.upper()
-            )
-        ).all()
-        print(f"DEBUG - Búsqueda case-insensitive encontró: {len(filter_responses)} respuestas")
-    
-    # Estrategia 4: Si aún no hay resultados, buscar con LIKE
-    if not filter_responses:
-        filter_responses = db.query(Answer.response_id).filter(
-            and_(
-                Answer.question_id == request.filter_question_id,
-                Answer.answer_text.ilike(f"%{request.filter_value}%")
-            )
-        ).all()
-        print(f"DEBUG - Búsqueda con LIKE encontró: {len(filter_responses)} respuestas")
-    
-    if not filter_responses:
-        # Dar más información al usuario sobre valores disponibles
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No se encontró ninguna respuesta para la pregunta '{target_question.question_text}' "
-                   f"donde '{filter_question.question_text}' = '{request.filter_value}'. "
-                   f"Valores disponibles: {', '.join(available_values[:10])}"  # Limitar a 10 para no sobrecargar
-        )
-    
-    # Extraer los IDs de respuesta
-    response_ids = [r[0] for r in filter_responses]
-    
-    # 6. Buscar la última respuesta de la pregunta objetivo
-    last_answer = db.query(Answer, Response).join(
-        Response, Answer.response_id == Response.id
-    ).filter(
-        and_(
-            Answer.question_id == request.target_question_id,
-            Answer.response_id.in_(response_ids),
-            Response.form_id == request.form_id
-        )
-    ).order_by(desc(Response.submitted_at)).first()
-    
-    if not last_answer:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Se encontraron respuestas con '{filter_question.question_text}' = '{request.filter_value}', "
-                   f"pero ninguna tiene respuesta para '{target_question.question_text}'"
-        )
-    
-    answer, response = last_answer
-    
-    # 7. Obtener valores que coincidieron para debugging
-    matched_values = db.query(Answer.answer_text).filter(
-        and_(
-            Answer.question_id == request.filter_question_id,
-            Answer.response_id.in_(response_ids)
-        )
-    ).distinct().limit(5).all()
-    
-    matched_list = [val[0] for val in matched_values if val[0]]
-    
-    # 8. Construir la respuesta
-    return LastAnswerResponse(
-        response_id=response.id,
-        answer_id=answer.id,
-        answer_text=answer.answer_text,
-        file_path=answer.file_path,
-        submitted_at=response.submitted_at.isoformat(),
-        question_text=target_question.question_text,
-        filter_question_text=filter_question.question_text,
-        filter_value_found=request.filter_value,
-        total_responses_found=len(response_ids),
-        filter_matches=matched_list
+        .distinct()
+        .all()
     )
+
+    response_ids = [r.response_id for r in response_ids]
+
+    if not response_ids:
+        return []
+
+    # 2️⃣ Buscar relación de la pregunta lookup
+    relation = (
+        db.query(QuestionTableRelation)
+        .filter(
+            QuestionTableRelation.question_id == payload.question_id_lookup
+        )
+        .first()
+    )
+
+    if not relation or not relation.related_question_id:
+        raise HTTPException(
+            status_code=404,
+            detail="La pregunta no tiene relación definida en QuestionTableRelation"
+        )
+
+    related_question_id = relation.related_question_id
+
+    # 3️⃣ Para cada response_id traer la ÚLTIMA respuesta
+    results = []
+
+    for response_id in response_ids:
+        last_answer = (
+            db.query(Answer)
+            .filter(
+                Answer.response_id == response_id,
+                Answer.question_id == related_question_id
+            )
+            .order_by(Answer.id.desc())
+            .first()
+        )
+
+        if last_answer:
+            results.append({
+                "response_id": response_id,
+                "question_id": related_question_id,
+                "answer_id": last_answer.id,
+                "answer_text": last_answer.answer_text,
+                "file_path": last_answer.file_path
+            })
+
+    return results
