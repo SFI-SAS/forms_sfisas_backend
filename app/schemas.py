@@ -1,6 +1,6 @@
 import json
 from uuid import UUID
-from pydantic import BaseModel, EmailStr, Field, validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, validator
 from typing import Any, Literal, Optional, List, Dict, Union
 from datetime import date, datetime
 from enum import Enum
