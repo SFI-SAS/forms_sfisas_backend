@@ -1146,3 +1146,23 @@ class FormMovimientoResponse(BaseModel):
     id_category: Optional[int]
     is_enabled: bool
     created_at: datetime
+    
+class LastAnswerFilterRequest(BaseModel):
+    form_id: int
+    target_question_id: int  # ID de la pregunta cuya respuesta queremos (ej: "proyecto")
+    filter_question_id: int  # ID de la pregunta para filtrar (ej: "nombre")
+    filter_value: str        # Valor con el que filtrar (ej: "Neider")
+
+# Schema para la respuesta
+class LastAnswerResponse(BaseModel):
+    response_id: int
+    answer_id: int
+    answer_text: Optional[str]
+    file_path: Optional[str]
+    submitted_at: str
+    question_text: str
+    filter_question_text: str
+    filter_value_found: str
+
+    class Config:
+        from_attributes = True

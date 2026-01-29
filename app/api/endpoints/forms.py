@@ -4,14 +4,14 @@ from pathlib import Path
 import shutil
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile,Query,Request,  File, Body, status, Form as FastAPIForm
-from sqlalchemy import func, select
+from sqlalchemy import and_, desc, func, select
 from sqlalchemy.orm import Session, joinedload, defer
 from typing import Any, List, Optional
 from app.redis_client import redis_client
 from app.database import get_db
 from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, Question, QuestionType, Response, ResponseApproval, ResponseStatus, User, UserType
 from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
-from app.schemas import AlertMessageRequest, BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormSchema, FormStatusUpdate, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, ResponseApprovalCreate, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
+from app.schemas import AlertMessageRequest, BulkUpdateFormApprovals, FormAnswerCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormSchema, FormStatusUpdate, FormWithApproversResponse, FormWithResponsesSchema, GetFormBase, LastAnswerFilterRequest, LastAnswerResponse, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, ResponseApprovalCreate, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
 import pandas as pd
@@ -3720,3 +3720,111 @@ def delete_movement(
     return {
         "message": "Movimiento eliminado correctamente"
     }
+    
+
+@router.post("/last-answer-filtered", response_model=LastAnswerResponse)
+def get_last_filtered_answer(
+    request: LastAnswerFilterRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Obtiene la última respuesta de una pregunta específica en un formulario,
+    filtrada por el valor de otra pregunta.
+    
+    Ejemplo:
+    - Formulario "Personal" tiene preguntas: Nombre, Apellido, Proyecto
+    - Quiero obtener la última respuesta de "Proyecto" donde "Nombre" = "Neider"
+    
+    Args:
+        request (LastAnswerFilterRequest): Objeto con los parámetros de búsqueda
+            - form_id: ID del formulario donde buscar
+            - target_question_id: ID de la pregunta cuya respuesta queremos obtener
+            - filter_question_id: ID de la pregunta para filtrar
+            - filter_value: Valor que debe tener la pregunta de filtro
+        db (Session): Sesión de base de datos
+        current_user (User): Usuario autenticado
+    
+    Returns:
+        LastAnswerResponse: Última respuesta encontrada con los datos del filtro
+    
+    Raises:
+        HTTPException 404: Si el formulario no existe o no se encuentra ninguna respuesta
+        HTTPException 403: Si el usuario no tiene acceso al formulario
+    """
+    
+    # 1. Verificar que el formulario existe
+    form = db.query(Form).filter(Form.id == request.form_id).first()
+    if not form:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Formulario con ID {request.form_id} no encontrado"
+        )
+    
+    # 2. Verificar acceso al formulario (el usuario es creador o admin)
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
+        if form.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permiso para acceder a este formulario"
+            )
+    
+    # 3. Verificar que las preguntas existen y pertenecen al formulario
+    target_question = db.query(Question).filter(Question.id == request.target_question_id).first()
+    filter_question = db.query(Question).filter(Question.id == request.filter_question_id).first()
+    
+    if not target_question:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Pregunta objetivo con ID {request.target_question_id} no encontrada"
+        )
+    
+    if not filter_question:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Pregunta de filtro con ID {request.filter_question_id} no encontrada"
+        )
+    
+    # 4. Buscar todas las respuestas del formulario donde la pregunta de filtro
+    #    tenga el valor especificado
+    
+    # Subconsulta para obtener los response_ids que cumplen con el filtro
+    filter_responses = db.query(Answer.response_id).filter(
+        and_(
+            Answer.question_id == request.filter_question_id,
+            Answer.answer_text == request.filter_value
+        )
+    ).subquery()
+    
+    # 5. Buscar la última respuesta de la pregunta objetivo
+    #    en los responses que cumplen el filtro
+    last_answer = db.query(Answer, Response).join(
+        Response, Answer.response_id == Response.id
+    ).filter(
+        and_(
+            Answer.question_id == request.target_question_id,
+            Answer.response_id.in_(filter_responses),
+            Response.form_id == request.form_id
+        )
+    ).order_by(desc(Response.submitted_at)).first()
+    
+    if not last_answer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No se encontró ninguna respuesta para la pregunta '{target_question.question_text}' "
+                   f"donde '{filter_question.question_text}' = '{request.filter_value}'"
+        )
+    
+    answer, response = last_answer
+    
+    # 6. Construir la respuesta
+    return LastAnswerResponse(
+        response_id=response.id,
+        answer_id=answer.id,
+        answer_text=answer.answer_text,
+        file_path=answer.file_path,
+        submitted_at=response.submitted_at.isoformat(),
+        question_text=target_question.question_text,
+        filter_question_text=filter_question.question_text,
+        filter_value_found=request.filter_value
+    )
