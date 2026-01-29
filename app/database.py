@@ -11,6 +11,7 @@ load_dotenv()
 # Configuración de la base de datos
 DATABASE_URL = os.getenv("DATABASE_URL")
 # Crear el engine de SQLAlchemy
+
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
