@@ -488,22 +488,6 @@ class DownloadTemplate(Base):
     
     # Relación con usuario
     user = relationship("User", backref="download_templates")
-
-class RelationQuestionRule(Base):
-    __tablename__ = "relation_question_rule"
-
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
-    id_form = Column(BigInteger, ForeignKey("forms.id"), nullable=False)
-    id_question = Column(BigInteger, ForeignKey("questions.id"), nullable=False)
-    rule_type = Column(String(100), nullable=False)  # Tipo de regla
-    date_notification = Column(String(100), nullable=True)  # Tipo de regla
-    time_alert = Column(String(100), nullable=True)  # Hora para alerta o notificación
-
-    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-
-    question = relationship('Question', foreign_keys=[id_question], backref='related_question_rule', uselist=False)
-    related_form = relationship('Form', foreign_keys=[id_form], backref='related_form_rule', uselist=False)
     
 class Alias(Base):
     __tablename__ = "alias"

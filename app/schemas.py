@@ -1050,17 +1050,6 @@ class DetectSelectRelationsRequest(BaseModel):
     form_id: int
     question_ids: List[int]
 
-class RelationQuestionRuleCreate(BaseModel):
-    id_form: int
-    id_question: int
-    rule_type: str
-    date_notification: Optional[str] = None
-    time_alert: Optional[str] = None
-
-class QuestionRulesRequest(BaseModel):
-    id_form: int
-    question_ids: List[int]
-
 class AnswerByQuestionResponse(BaseModel):
     answer_id: int
     question_id: int
