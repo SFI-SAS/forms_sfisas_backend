@@ -9,11 +9,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuración de la base de datos
-DATABASE_URL = os.getenv("DATABASE_URL_LOCAL")
+DATABASE_URL = os.getenv("DATABASE_URL")
 # Crear el engine de SQLAlchemy
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,
+    pool_pre_ping=True, 
     pool_size=10,
     max_overflow=20,
     pool_timeout=30,
