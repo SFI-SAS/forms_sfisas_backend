@@ -1164,3 +1164,14 @@ class RelatedAnswerRequest(BaseModel):
     value_base: str
     question_id_match: int
     question_id_lookup: int
+
+class EmailAnswerItem(BaseModel):
+    question_text: str
+    answer_text: Optional[str] = None
+    file_path: Optional[str] = None
+
+class SendResponseEmailRequest(BaseModel):
+    email_to: List[str]   # 🔥 antes era string
+    form_title: str
+    response_id: int
+    answers: List[EmailAnswerItem]

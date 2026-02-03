@@ -498,8 +498,6 @@ class Alias(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-
-
     def __repr__(self):
         return f"<Alias(id={self.id}, name={self.name})>"
 
