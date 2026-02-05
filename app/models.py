@@ -211,6 +211,13 @@ class Response(Base):
     user = relationship('User', back_populates='responses')
     answers = relationship('Answer', back_populates='response')
     approvals = relationship("ResponseApproval", back_populates="response")
+    question_rules = relationship(
+        "RelationQuestionRule",
+        foreign_keys="RelationQuestionRule.id_response",
+        back_populates="related_response",
+        cascade="all, delete-orphan"    
+    )
+
 
 class Answer(Base):
     __tablename__ = 'answers'
@@ -516,3 +523,26 @@ class FormMovimientos(Base):
     
     user = relationship('User', back_populates='forms_movimientos')
     category = relationship("FormCategory", back_populates="forms_movimientos")            
+
+class RelationQuestionRule(Base):
+    __tablename__ = "relation_question_rule"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id_form = Column(BigInteger, ForeignKey("forms.id"), nullable=False)
+    id_question = Column(BigInteger, ForeignKey("questions.id"), nullable=False)
+    id_response = Column(BigInteger, ForeignKey("responses.id"), nullable=True)
+    date_notification = Column(DateTime(timezone=True))# Tipo de regla
+    time_alert = Column(String(100), nullable=True)  # Hora para alerta o notificación
+    enabled = Column(Boolean, default=True, nullable=False)
+
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    question = relationship('Question', foreign_keys=[id_question], backref='related_question_rule', uselist=False)
+    related_form = relationship('Form', foreign_keys=[id_form], backref='related_form_rule', uselist=False)
+    related_response = relationship(
+        "Response",
+        foreign_keys=[id_response],
+        back_populates="question_rules"
+    )
+
