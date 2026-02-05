@@ -7,11 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile,Query,Request,
 from sqlalchemy import and_, desc, func, select
 from sqlalchemy.orm import Session, joinedload, defer
 from typing import Any, List, Optional
+from app.api.controllers.mail import send_response_answers_email
 from app.redis_client import redis_client
 from app.database import get_db
 from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, User, UserType
 from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
-from app.schemas import AlertMessageRequest, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
+from app.schemas import AlertMessageRequest, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
 import pandas as pd
@@ -3762,27 +3763,62 @@ def get_related_last_answers(
 
     related_question_id = relation.related_question_id
 
-    # 3️⃣ Para cada response_id traer la ÚLTIMA respuesta
-    results = []
-
-    for response_id in response_ids:
-        last_answer = (
-            db.query(Answer)
-            .filter(
-                Answer.response_id == response_id,
-                Answer.question_id == related_question_id
-            )
-            .order_by(Answer.id.desc())
-            .first()
+    # 3️⃣ Obtener TODAS las últimas respuestas en UNA SOLA QUERY (optimizado)
+    # Subquery para obtener el máximo ID de Answer por cada response_id
+    max_answer_subquery = (
+        db.query(
+            Answer.response_id,
+            func.max(Answer.id).label('max_id')
         )
+        .filter(
+            Answer.response_id.in_(response_ids),
+            Answer.question_id == related_question_id
+        )
+        .group_by(Answer.response_id)
+        .subquery()
+    )
 
-        if last_answer:
-            results.append({
-                "response_id": response_id,
-                "question_id": related_question_id,
-                "answer_id": last_answer.id,
-                "answer_text": last_answer.answer_text,
-                "file_path": last_answer.file_path
-            })
+    # Query principal que obtiene las respuestas usando la subquery
+    last_answers = (
+        db.query(Answer)
+        .join(
+            max_answer_subquery,
+            Answer.id == max_answer_subquery.c.max_id
+        )
+        .all()
+    )
+
+    # Construir resultados
+    results = [
+        {
+            "response_id": answer.response_id,
+            "question_id": related_question_id,
+            "answer_id": answer.id,
+            "answer_text": answer.answer_text,
+            "file_path": answer.file_path
+        }
+        for answer in last_answers
+    ]
 
     return results
+
+@router.post("/send-answers-by-email")
+def send_answers_by_email(payload: SendResponseEmailRequest):
+
+    ok = send_response_answers_email(
+        to_emails=payload.email_to,
+        form_title=payload.form_title,
+        response_id=payload.response_id,
+        answers=payload.answers
+    )
+
+    if not ok:
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo enviar el correo"
+        )
+
+    return {
+        "status": "ok",
+        "sent_to": payload.email_to
+    }

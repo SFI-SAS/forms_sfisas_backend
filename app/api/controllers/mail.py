@@ -9,6 +9,9 @@ from typing import List, Dict
 
 from fastapi import UploadFile
 
+from app.models import Response, Form
+from app.schemas import EmailAnswerItem
+
 
 # Configuración del servidor SMTP alternativo
 MAIL_HOST_ALT = os.getenv("MAIL_HOST_ALT")
@@ -919,3 +922,191 @@ def generate_report_table_html(form_data):
     """
     
     return table_html
+
+def send_response_answers_email(
+    to_emails: list[str],
+    form_title: str,
+    response_id: int,
+    answers: list[EmailAnswerItem],
+):
+    try:
+        current_date = datetime.now().strftime("%d de %B de %Y")
+        current_time = datetime.now().strftime("%H:%M")
+
+        answers_html = ""
+        for idx, item in enumerate(answers):
+            value = item.answer_text or '<span style="color:#94a3b8;font-style:italic;">Sin respuesta</span>'
+
+            if item.file_path:
+                value += f'''
+                    <br>
+                    <a href="{item.file_path}" 
+                       style="display:inline-flex;align-items:center;gap:6px;margin-top:8px;padding:6px 12px;background:#3b82f6;color:white;text-decoration:none;border-radius:6px;font-size:13px;font-weight:500;">
+                        <span>📎</span>
+                        <span>Ver archivo adjunto</span>
+                    </a>
+                '''
+
+            # Fila con alternancia de colores
+            row_bg = "#f8fafc" if idx % 2 == 0 else "#ffffff"
+            
+            answers_html += f'''
+                <tr style="background-color:{row_bg};">
+                    <td style="padding:16px 20px;border-bottom:1px solid #e2e8f0;font-weight:500;color:#334155;width:40%;vertical-align:top;">
+                        {item.question_text}
+                    </td>
+                    <td style="padding:16px 20px;border-bottom:1px solid #e2e8f0;color:#475569;width:60%;vertical-align:top;">
+                        {value}
+                    </td>
+                </tr>
+            '''
+
+        html_content = f'''
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Respuestas del Formulario</title>
+        </head>
+        <body style="margin:0;padding:0;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background-color:#f1f5f9;">
+            
+            <!-- Contenedor principal -->
+            <div style="max-width:800px;margin:40px auto;background-color:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+                
+                <!-- Header con gradiente -->
+                <div style="background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);padding:40px 30px;text-align:center;">
+                    <div style="background-color:rgba(255,255,255,0.2);width:64px;height:64px;border-radius:50%;margin:0 auto 20px;display:flex;align-items:center;justify-content:center;font-size:32px;">
+                        📋
+                    </div>
+                    <h1 style="margin:0;color:#ffffff;font-size:28px;font-weight:600;letter-spacing:-0.5px;">
+                        Nueva Respuesta de Formulario
+                    </h1>
+                    <p style="margin:12px 0 0;color:#e0e7ff;font-size:16px;">
+                        {form_title}
+                    </p>
+                </div>
+
+                <!-- Información del formulario -->
+                <div style="padding:30px;background-color:#f8fafc;border-bottom:1px solid #e2e8f0;">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+                        <div style="background-color:#ffffff;padding:20px;border-radius:8px;border-left:4px solid #3b82f6;">
+                            <div style="color:#64748b;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">
+                                ID de Respuesta
+                            </div>
+                            <div style="color:#1e293b;font-size:20px;font-weight:700;">
+                                #{response_id}
+                            </div>
+                        </div>
+                        <div style="background-color:#ffffff;padding:20px;border-radius:8px;border-left:4px solid #10b981;">
+                            <div style="color:#64748b;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">
+                                Fecha y Hora
+                            </div>
+                            <div style="color:#1e293b;font-size:16px;font-weight:600;">
+                                {current_date}
+                            </div>
+                            <div style="color:#64748b;font-size:14px;margin-top:4px;">
+                                {current_time}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Título de la tabla -->
+                <div style="padding:30px 30px 20px;">
+                    <h2 style="margin:0;color:#1e293b;font-size:20px;font-weight:600;display:flex;align-items:center;gap:10px;">
+                        <span style="display:inline-block;width:4px;height:24px;background:#3b82f6;border-radius:2px;"></span>
+                        Respuestas Detalladas
+                    </h2>
+                </div>
+
+                <!-- Tabla de respuestas -->
+                <div style="padding:0 30px 30px;">
+                    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:0;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0;">
+                        <thead>
+                            <tr style="background:linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);">
+                                <th style="padding:16px 20px;text-align:left;font-size:13px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #cbd5e1;">
+                                    Pregunta
+                                </th>
+                                <th style="padding:16px 20px;text-align:left;font-size:13px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #cbd5e1;">
+                                    Respuesta
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {answers_html}
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Footer -->
+                <div style="padding:30px;background-color:#f8fafc;border-top:1px solid #e2e8f0;text-align:center;">
+                    <div style="margin-bottom:16px;">
+                        <img src="https://via.placeholder.com/120x40/3b82f6/ffffff?text=SafeMetrics" alt="SafeMetrics" style="height:32px;">
+                    </div>
+                    <p style="margin:0 0 8px;color:#64748b;font-size:14px;">
+                        Este correo fue generado automáticamente por SafeMetrics
+                    </p>
+                    <p style="margin:0;color:#94a3b8;font-size:12px;">
+                        © 2024 SafeMetrics. Todos los derechos reservados.
+                    </p>
+                </div>
+
+            </div>
+
+            <!-- Nota de confidencialidad -->
+            <div style="max-width:800px;margin:20px auto;padding:20px;text-align:center;">
+                <p style="margin:0;color:#94a3b8;font-size:12px;line-height:1.6;">
+                    <strong>Aviso de confidencialidad:</strong> Este mensaje y sus archivos adjuntos están dirigidos exclusivamente 
+                    a su destinatario y pueden contener información privilegiada o confidencial. Si no es el destinatario previsto, 
+                    elimínelo de inmediato.
+                </p>
+            </div>
+
+        </body>
+        </html>
+        '''
+
+        for email in to_emails:
+            msg = EmailMessage()
+            msg["Subject"] = f"✓ Nueva Respuesta: {form_title}"
+            msg["From"] = formataddr(("SafeMetrics Platform", MAIL_FROM_ADDRESS_ALT))
+            msg["To"] = email
+
+            # Texto plano alternativo
+            plain_text = f'''
+NUEVA RESPUESTA DE FORMULARIO
+════════════════════════════════
+
+Formulario: {form_title}
+ID de Respuesta: #{response_id}
+Fecha: {current_date} - {current_time}
+
+RESPUESTAS:
+────────────────────────────────
+'''
+            for item in answers:
+                plain_text += f'\n{item.question_text}\n'
+                plain_text += f'→ {item.answer_text or "Sin respuesta"}\n'
+                if item.file_path:
+                    plain_text += f'  📎 Archivo: {item.file_path}\n'
+                plain_text += '\n'
+
+            plain_text += '''
+────────────────────────────────
+Este correo fue generado automáticamente por SafeMetrics.
+© 2024 SafeMetrics. Todos los derechos reservados.
+'''
+
+            msg.set_content(plain_text)
+            msg.add_alternative(html_content, subtype="html")
+
+            with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
+                smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
+                smtp.send_message(msg)
+
+        return True
+
+    except Exception as e:
+        print(f"❌ Error al enviar correo: {str(e)}")
+        return False
