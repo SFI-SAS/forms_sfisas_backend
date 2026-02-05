@@ -3763,28 +3763,42 @@ def get_related_last_answers(
 
     related_question_id = relation.related_question_id
 
-    # 3️⃣ Para cada response_id traer la ÚLTIMA respuesta
-    results = []
-
-    for response_id in response_ids:
-        last_answer = (
-            db.query(Answer)
-            .filter(
-                Answer.response_id == response_id,
-                Answer.question_id == related_question_id
-            )
-            .order_by(Answer.id.desc())
-            .first()
+    # 3️⃣ Obtener TODAS las últimas respuestas en UNA SOLA QUERY (optimizado)
+    # Subquery para obtener el máximo ID de Answer por cada response_id
+    max_answer_subquery = (
+        db.query(
+            Answer.response_id,
+            func.max(Answer.id).label('max_id')
         )
+        .filter(
+            Answer.response_id.in_(response_ids),
+            Answer.question_id == related_question_id
+        )
+        .group_by(Answer.response_id)
+        .subquery()
+    )
 
-        if last_answer:
-            results.append({
-                "response_id": response_id,
-                "question_id": related_question_id,
-                "answer_id": last_answer.id,
-                "answer_text": last_answer.answer_text,
-                "file_path": last_answer.file_path
-            })
+    # Query principal que obtiene las respuestas usando la subquery
+    last_answers = (
+        db.query(Answer)
+        .join(
+            max_answer_subquery,
+            Answer.id == max_answer_subquery.c.max_id
+        )
+        .all()
+    )
+
+    # Construir resultados
+    results = [
+        {
+            "response_id": answer.response_id,
+            "question_id": related_question_id,
+            "answer_id": answer.id,
+            "answer_text": answer.answer_text,
+            "file_path": answer.file_path
+        }
+        for answer in last_answers
+    ]
 
     return results
 
