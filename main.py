@@ -261,8 +261,6 @@ def daily_schedule_task():
         response_details = get_response_details_logic(db)
         print(f"📌 Detalles de respuestas obtenidos: {len(response_details)}")
 
-        # Aquí podrías llamar a la función que envía correos u otra acción
-        # send_reminder_emails(schedules)
 
     except Exception as e:
         print(f"⚠️ Error en la tarea diaria: {str(e)}")
