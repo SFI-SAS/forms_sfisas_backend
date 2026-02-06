@@ -1175,3 +1175,23 @@ class SendResponseEmailRequest(BaseModel):
     form_title: str
     response_id: int
     answers: List[EmailAnswerItem]
+
+class RelationQuestionRuleCreate(BaseModel):
+    id_form: int
+    id_question: int
+    id_response: Optional[int] = None
+    date_notification: Optional[datetime] = None
+    time_alert: Optional[str] = None
+    enabled: Optional[bool] = True
+
+class RelationQuestionRuleResponse(BaseModel):
+    id: int
+    id_form: int
+    id_question: int
+    id_response: Optional[int]
+    date_notification: Optional[datetime]
+    time_alert: Optional[str]
+    enabled: bool
+
+    class Config:
+        from_attributes = True

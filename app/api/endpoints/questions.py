@@ -11,9 +11,9 @@ from pymysql import IntegrityError
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.database import get_db
-from app.models import Alias, FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, User, UserType
+from app.models import Response, Form, Alias, FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationQuestionRule, User, UserType
 from app.crud import  create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_answers_by_question_id, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers_optimized, get_related_or_filtered_answers_with_forms, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
-from app.schemas import AnswerByQuestionResponse, AnswerSchema, DetectSelectRelationsRequest, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionWithCategory, UpdateQuestionCategory
+from app.schemas import AnswerByQuestionResponse, AnswerSchema, DetectSelectRelationsRequest, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionWithCategory, RelationQuestionRuleCreate, RelationQuestionRuleResponse, UpdateQuestionCategory
 from app.core.security import get_current_user
 
 router = APIRouter()
@@ -977,3 +977,55 @@ def get_answers_by_question(
     answers = get_answers_by_question_id(db, question_id)
 
     return answers
+
+@router.post(
+    "/relation-question-rule",
+    response_model=RelationQuestionRuleResponse
+)
+def create_relation_question_rule(
+    payload: RelationQuestionRuleCreate,
+    db: Session = Depends(get_db)
+):
+
+    # 🔥 VALIDACIÓN PRO (evita basura en DB)
+
+    form_exists = db.query(Form.id).filter(
+        Form.id == payload.id_form
+    ).first()
+
+    if not form_exists:
+        raise HTTPException(404, "El formulario no existe")
+
+
+    question_exists = db.query(Question.id).filter(
+        Question.id == payload.id_question
+    ).first()
+
+    if not question_exists:
+        raise HTTPException(404, "La pregunta no existe")
+
+
+    if payload.id_response:
+        response_exists = db.query(Response.id).filter(
+            Response.id == payload.id_response
+        ).first()
+
+        if not response_exists:
+            raise HTTPException(404, "La response no existe")
+
+
+    # 🔥 CREAR REGLA
+    new_rule = RelationQuestionRule(
+        id_form=payload.id_form,
+        id_question=payload.id_question,
+        id_response=payload.id_response,
+        date_notification=payload.date_notification,
+        time_alert=payload.time_alert,
+        enabled=payload.enabled
+    )
+
+    db.add(new_rule)
+    db.commit()
+    db.refresh(new_rule)
+
+    return new_rule
