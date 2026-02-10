@@ -329,6 +329,8 @@ class EmailConfig(Base):
     id = Column(Integer, primary_key=True, index=True)
     email_address = Column(String(255), nullable=False)
     is_active = Column(Boolean, default=True)
+    
+    
 
 class QuestionFilterCondition(Base):
     __tablename__ = "question_filter_conditions"

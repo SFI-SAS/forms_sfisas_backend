@@ -12,7 +12,7 @@ from app.crud import (
 )
 
 from app.database import SessionLocal, engine
-from app.models import Base
+from app.models import Base, EmailConfig
 from app.api.endpoints import (
     alias, approvers, download_template, list_form, pdf_router, projects, responses, 
     responsibilitytransfer, users, forms, auth, questions
@@ -149,6 +149,38 @@ def daily_schedule_task():
         db.close()
 
 
+@app.on_event("startup")
+async def startup_event():
+    """Se ejecuta al iniciar la aplicación"""
+    print("🚀 Iniciando aplicación...")
+    
+    # ====== INICIALIZAR EMAIL_CONFIG ======
+    db = SessionLocal()
+    try:
+        # Verificar si ya existen registros
+        email_count = db.query(EmailConfig).count()
+        
+        if email_count == 0:
+            db.add_all([
+                EmailConfig(email_address="example1@domain.com", is_active=False),
+                EmailConfig(email_address="example2@domain.com", is_active=False),
+            ])
+            db.commit()
+            print("✅ Registros de email_config inicializados")
+        else:
+            print(f"ℹ️ email_config ya contiene {email_count} registros")
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error al inicializar email_config: {str(e)}")
+    finally:
+        db.close()
+    
+    # Verificar conexión a Redis
+    if redis_client.check_connection():
+        print("✅ Redis conectado correctamente")
+    else:
+        print("⚠️ Advertencia: Redis no está disponible")
+        
 def notification_rules_task():
     """
     Tarea programada para enviar notificaciones de reglas de vencimiento.
