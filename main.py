@@ -1,134 +1,16 @@
-# from fastapi import FastAPI
-# from fastapi.middleware.cors import CORSMiddleware
-# from fastapi.middleware.gzip import GZipMiddleware 
-# from jinja2 import Environment, FileSystemLoader
-# from app.crud import get_response_details_logic, get_schedules_by_frequency
-# from app.database import SessionLocal, engine
-# from app.models import Base
-# from app.api.endpoints import (
-#     approvers, list_form, pdf_router, projects, responses, 
-#     responsibilitytransfer, users, forms, auth, questions
-# )
-# from datetime import datetime
-# from apscheduler.schedulers.background import BackgroundScheduler
-
-# app = FastAPI(
-#     title="Safemetrics Forms API",
-#     version="1.0.0",
-#     description="API para gestión de formularios",
-#     openapi_version="3.1.0"
-# )
-
-
-# # 1. CORS debe ir primero
-# origins = ["*"]  # Ajustar en producción: ["https://forms.sfisas.com.co", "https://app.safemetrics.co"]
-
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=origins,
-#     allow_credentials=True,
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
-
-# # 2. ✅ GZIP debe ir después de CORS
-# # Solo comprime respuestas mayores a 1KB (1000 bytes)
-# app.add_middleware(
-#     GZipMiddleware,  # ✅ GZipMiddleware (con 'i' minúscula)
-#     minimum_size=1000  # Solo comprimir respuestas >1KB
-# )
-
-# # ========================================
-# # CONFIGURACIÓN DE TEMPLATES
-# # ========================================
-# templates_env = Environment(loader=FileSystemLoader("app/api/templates"))
-# app.state.templates_env = templates_env
-
-# # ========================================
-# # ROUTERS
-# # ========================================
-# app.include_router(pdf_router.router, prefix="/pdf", tags=["pdf"])
-# app.include_router(users.router, prefix="/users", tags=["users"])
-# app.include_router(forms.router, prefix="/forms", tags=["forms"])
-# app.include_router(approvers.router, prefix="/approvers", tags=["approvers"])
-# app.include_router(questions.router, prefix="/questions", tags=["questions"])
-# app.include_router(auth.router, prefix="/auth", tags=["auth"])
-# app.include_router(projects.router, prefix="/projects", tags=["projects"])
-# app.include_router(responses.router, prefix="/responses", tags=["responses"])
-# app.include_router(list_form.router, prefix="/list_form", tags=["list_form"])
-# app.include_router(
-#     responsibilitytransfer.router, 
-#     prefix="/responsibilitytransfer", 
-#     tags=["responsibility_transfer"]
-# )
-
-# # ========================================
-# # CREAR TABLAS
-# # ========================================
-# Base.metadata.create_all(bind=engine)
-
-# # ========================================
-# # ENDPOINTS
-# # ========================================
-# @app.get("/")
-# def read_root():
-#     return {"message": "Bienvenido a Formularios de SFI"}
-
-
-# # ========================================
-# # SCHEDULER PARA TAREAS PROGRAMADAS
-# # ========================================
-# DIAS_SEMANA = {
-#     "monday": "lunes",
-#     "tuesday": "martes",
-#     "wednesday": "miercoles",
-#     "thursday": "jueves",
-#     "friday": "viernes",
-#     "saturday": "sabado",
-#     "sunday": "domingo"
-# }
-
-# def daily_schedule_task():
-#     """Obtiene los registros activos para el día actual y ejecuta la lógica necesaria."""
-#     print("⏳ Ejecutando tarea diaria...")
-
-#     db = SessionLocal()
-#     try:
-#         schedules = get_schedules_by_frequency(db)
-#         print(f"📆 Registros obtenidos para hoy: {len(schedules)}")
-
-#         response_details = get_response_details_logic(db)
-#         print(f"📌 Detalles de respuestas obtenidos: {len(response_details)}")
-
-#         # Aquí podrías llamar a la función que envía correos u otra acción
-#         # send_reminder_emails(schedules)
-
-#     except Exception as e:
-#         print(f"⚠️ Error en la tarea diaria: {str(e)}")
-#     finally:
-#         db.close()
-
-# # Configurar el scheduler
-# scheduler = BackgroundScheduler()
-# scheduler.add_job(
-#     daily_schedule_task, 
-#     "cron", 
-#     hour=7, 
-#     minute=0
-# )  # Ejecutar todos los días a las 7:00 AM
-# scheduler.start()
-
-# # Detener el scheduler al apagar la app
-# @app.on_event("shutdown")
-# def shutdown_event():
-#     scheduler.shutdown()
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware 
 from jinja2 import Environment, FileSystemLoader
+from app.api.controllers.mail import send_rule_notification_email
 from app.redis_client import redis_client
-from app.crud import get_response_details_logic, get_schedules_by_frequency
+from app.crud import (
+    get_response_details_logic, 
+    get_schedules_by_frequency,
+    get_pending_notification_rules,
+    disable_notification_rule
+)
+
 from app.database import SessionLocal, engine
 from app.models import Base
 from app.api.endpoints import (
@@ -251,7 +133,7 @@ DIAS_SEMANA = {
 
 def daily_schedule_task():
     """Obtiene los registros activos para el día actual y ejecuta la lógica necesaria."""
-    print("⏳ Ejecutando tarea diaria...")
+    print("⏳ Ejecutando tarea diaria de formularios programados...")
 
     db = SessionLocal()
     try:
@@ -261,18 +143,119 @@ def daily_schedule_task():
         response_details = get_response_details_logic(db)
         print(f"📌 Detalles de respuestas obtenidos: {len(response_details)}")
 
-
     except Exception as e:
-        print(f"⚠️ Error en la tarea diaria: {str(e)}")
+        print(f"⚠️ Error en la tarea diaria de formularios: {str(e)}")
     finally:
         db.close()
 
+
+def notification_rules_task():
+    """
+    Tarea programada para enviar notificaciones de reglas de vencimiento.
+    Se ejecuta diariamente y:
+    1. Busca reglas que deben notificarse hoy
+    2. Envía correos de alerta
+    3. Deshabilita las reglas ya notificadas
+    """
+    print("\n" + "="*60)
+    print("⏰ Ejecutando tarea de notificaciones de reglas...")
+    print("="*60)
+
+    db = SessionLocal()
+    emails_sent = 0
+    emails_failed = 0
+    
+    try:
+        # Obtener notificaciones pendientes
+        notifications = get_pending_notification_rules(db)
+        
+        if not notifications:
+            print("✅ No hay notificaciones pendientes para hoy")
+            return
+        
+        print(f"\n📬 Procesando {len(notifications)} notificaciones...")
+        
+        # Procesar cada notificación
+        for notification in notifications:
+            try:
+                print(f"\n📧 Enviando correo a {notification['user_email']}...")
+                
+                # Enviar correo
+                email_sent = send_rule_notification_email(
+                    user_email=notification['user_email'],
+                    user_name=notification['user_name'],
+                    form_title=notification['form_title'],
+                    form_description=notification['form_description'],
+                    response_id=notification['response_id'],
+                    date_limit=notification['date_limit'],
+                    days_remaining=notification['days_remaining'],
+                    days_before_alert=notification['days_before_alert'],
+                    question_text=notification['question_text'],
+                    user_document=notification['user_document'],
+                    user_telephone=notification['user_telephone']
+                )
+                
+                if email_sent:
+                    emails_sent += 1
+                    
+                    # ✅ DESHABILITAR LA REGLA DESPUÉS DE ENVIAR EL CORREO
+                    disabled = disable_notification_rule(db, notification['rule_id'])
+                    
+                    if disabled:
+                        print(f"   ✅ Correo enviado y regla ID {notification['rule_id']} deshabilitada")
+                    else:
+                        print(f"   ⚠️ Correo enviado pero no se pudo deshabilitar la regla ID {notification['rule_id']}")
+                else:
+                    emails_failed += 1
+                    print(f"   ❌ No se pudo enviar el correo a {notification['user_email']}")
+                    
+            except Exception as e:
+                emails_failed += 1
+                print(f"   ❌ Error procesando notificación para {notification.get('user_email', 'email desconocido')}: {str(e)}")
+                continue
+        
+        # Resumen final
+        print("\n" + "="*60)
+        print("📊 RESUMEN DE NOTIFICACIONES")
+        print("="*60)
+        print(f"✅ Correos enviados exitosamente: {emails_sent}")
+        print(f"❌ Correos fallidos: {emails_failed}")
+        print(f"📨 Total procesados: {len(notifications)}")
+        print("="*60 + "\n")
+        
+    except Exception as e:
+        print(f"❌ Error general en la tarea de notificaciones: {str(e)}")
+    finally:
+        db.close()
+
+
 # Configurar el scheduler
 scheduler = BackgroundScheduler()
+
+# Tarea diaria de formularios programados (7:00 AM)
 scheduler.add_job(
     daily_schedule_task, 
     "cron", 
     hour=7, 
-    minute=0
+    minute=0,
+    id="daily_forms_task"
 )
+
+# ✅ NUEVA TAREA: Notificaciones de reglas (8:00 AM)
+scheduler.add_job(
+    notification_rules_task,
+    "cron",
+    hour=15,
+    minute=29,
+    id="notification_rules_task"
+)
+
+# Iniciar el scheduler
 scheduler.start()
+
+print("\n" + "="*60)
+print("📅 TAREAS PROGRAMADAS CONFIGURADAS")
+print("="*60)
+print("⏰ Formularios programados: Diario a las 7:00 AM")
+print("⏰ Notificaciones de reglas: Diario a las 8:00 AM")
+print("="*60 + "\n")

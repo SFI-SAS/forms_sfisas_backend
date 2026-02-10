@@ -13,7 +13,7 @@ from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 # from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, PalabrasClave, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, ResponseApproval, ResponseApprovalRequirement, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, PalabrasClave, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
 from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormMovimientoBase, NotificationResponse, PalabrasClaveCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, OptionCreate, ResponseCreate, AnswerCreate, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
@@ -7277,3 +7277,129 @@ def get_all_form_movimientos_basic(db: Session):
         }
         for m in movimientos
     ]
+
+
+def get_pending_notification_rules(db: Session) -> List[Dict]:
+    """
+    Obtiene las reglas de notificación que deben enviarse hoy.
+    
+    Lógica:
+    1. Busca reglas habilitadas (enabled = True)
+    2. Calcula: fecha_notificacion = date_notification - time_alert (días)
+    3. Si fecha_notificacion == HOY, debe enviarse
+    
+    Returns:
+        List[Dict]: Lista de diccionarios con la información para enviar emails
+    """
+    today = datetime.now().date()
+    notifications_to_send = []
+    
+    # Obtener todas las reglas habilitadas con sus relaciones
+    rules = db.query(RelationQuestionRule).filter(
+        RelationQuestionRule.enabled == True,
+        RelationQuestionRule.date_notification.isnot(None),
+        RelationQuestionRule.time_alert.isnot(None),
+        RelationQuestionRule.id_response.isnot(None)
+    ).options(
+        joinedload(RelationQuestionRule.related_response).joinedload(Response.user),
+        joinedload(RelationQuestionRule.related_response).joinedload(Response.form),
+        joinedload(RelationQuestionRule.question)
+    ).all()
+    
+    print(f"📊 Total de reglas habilitadas encontradas: {len(rules)}")
+    
+    for rule in rules:
+        try:
+            # Convertir time_alert a entero (días antes de notificar)
+            days_before = int(rule.time_alert)
+            
+            # Calcular la fecha en que debe enviarse la notificación
+            notification_date = rule.date_notification.date() - timedelta(days=days_before)
+            
+            print(f"  🔍 Regla ID {rule.id}:")
+            print(f"      - Fecha límite: {rule.date_notification.date()}")
+            print(f"      - Días antes: {days_before}")
+            print(f"      - Fecha notificación: {notification_date}")
+            print(f"      - Hoy: {today}")
+            
+            # Verificar si hoy es el día de enviar la notificación
+            if notification_date == today:
+                response = rule.related_response
+                
+                if not response:
+                    print(f"      ⚠️ No se encontró la respuesta asociada")
+                    continue
+                
+                user = response.user
+                form = response.form
+                
+                if not user or not form:
+                    print(f"      ⚠️ No se encontró el usuario o formulario asociado")
+                    continue
+                
+                # Calcular días restantes hasta la fecha límite
+                days_remaining = (rule.date_notification.date() - today).days
+                
+                notification_data = {
+                    'rule_id': rule.id,
+                    'response_id': response.id,
+                    'form_id': form.id,
+                    'form_title': form.title,
+                    'form_description': form.description or 'Sin descripción',
+                    'user_id': user.id,
+                    'user_name': user.name,
+                    'user_email': user.email,
+                    'user_telephone': user.telephone,
+                    'user_document': user.num_document,
+                    'date_limit': rule.date_notification.date(),
+                    'days_remaining': days_remaining,
+                    'days_before_alert': days_before,
+                    'question_text': rule.question.question_text if rule.question else 'Pregunta no disponible',
+                    'created_at': response.submitted_at
+                }
+                
+                notifications_to_send.append(notification_data)
+                print(f"      ✅ Notificación agregada para {user.email}")
+            else:
+                print(f"      ⏭️ No es el día de notificar (será: {notification_date})")
+                
+        except ValueError as e:
+            print(f"      ❌ Error al convertir time_alert '{rule.time_alert}' a entero: {e}")
+            continue
+        except Exception as e:
+            print(f"      ❌ Error procesando regla {rule.id}: {str(e)}")
+            continue
+    
+    print(f"\n📧 Total de notificaciones a enviar: {len(notifications_to_send)}")
+    return notifications_to_send
+
+
+def disable_notification_rule(db: Session, rule_id: int) -> bool:
+    """
+    Deshabilita una regla de notificación después de ser enviada.
+    
+    Args:
+        db: Sesión de base de datos
+        rule_id: ID de la regla a deshabilitar
+    
+    Returns:
+        bool: True si se deshabilitó correctamente
+    """
+    try:
+        rule = db.query(RelationQuestionRule).filter(
+            RelationQuestionRule.id == rule_id
+        ).first()
+        
+        if rule:
+            rule.enabled = False
+            db.commit()
+            print(f"✅ Regla ID {rule_id} deshabilitada correctamente")
+            return True
+        else:
+            print(f"⚠️ No se encontró la regla ID {rule_id}")
+            return False
+            
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error al deshabilitar regla ID {rule_id}: {str(e)}")
+        return False

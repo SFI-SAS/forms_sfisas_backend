@@ -1110,3 +1110,292 @@ Este correo fue generado automáticamente por SafeMetrics.
     except Exception as e:
         print(f"❌ Error al enviar correo: {str(e)}")
         return False
+    
+def send_rule_notification_email(
+    user_email: str,
+    user_name: str,
+    form_title: str,
+    form_description: str,
+    response_id: int,
+    date_limit: str,
+    days_remaining: int,
+    days_before_alert: int,
+    question_text: str,
+    user_document: str,
+    user_telephone: str
+) -> bool:
+    """
+    Envía un correo de alerta de vencimiento de respuesta según reglas configuradas.
+    
+    Args:
+        user_email (str): Email del usuario
+        user_name (str): Nombre del usuario
+        form_title (str): Título del formulario
+        form_description (str): Descripción del formulario
+        response_id (int): ID de la respuesta
+        date_limit (str): Fecha límite (formato: YYYY-MM-DD)
+        days_remaining (int): Días restantes hasta la fecha límite
+        days_before_alert (int): Días de anticipación configurados
+        question_text (str): Texto de la pregunta relacionada
+        user_document (str): Documento del usuario
+        user_telephone (str): Teléfono del usuario
+    
+    Returns:
+        bool: True si el envío fue exitoso
+    """
+    try:
+        current_date = datetime.now().strftime("%d/%m/%Y")
+        current_time = datetime.now().strftime("%H:%M:%S")
+        
+        # Formatear fecha límite
+        try:
+            if isinstance(date_limit, str):
+                date_obj = datetime.strptime(str(date_limit), "%Y-%m-%d")
+            else:
+                date_obj = date_limit
+            formatted_date = date_obj.strftime("%d/%m/%Y")
+        except:
+            formatted_date = str(date_limit)
+        
+        # Determinar urgencia y color
+        if days_remaining <= 2:
+            urgency_level = "URGENTE"
+            urgency_color = "#dc2626"
+            urgency_icon = "🚨"
+            urgency_bg = "#fee2e2"
+        elif days_remaining <= 5:
+            urgency_level = "IMPORTANTE"
+            urgency_color = "#f59e0b"
+            urgency_icon = "⚠️"
+            urgency_bg = "#fef3c7"
+        else:
+            urgency_level = "RECORDATORIO"
+            urgency_color = "#3b82f6"
+            urgency_icon = "📅"
+            urgency_bg = "#dbeafe"
+        
+        msg = EmailMessage()
+        msg["Subject"] = f"{urgency_icon} {urgency_level}: Vencimiento próximo - {form_title}"
+        msg["From"] = formataddr(("Safemetrics Alertas", MAIL_FROM_ADDRESS_ALT))
+        msg["To"] = formataddr((user_name, user_email))
+        
+        html_content = f"""
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="margin:0;padding:0;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background-color:#f1f5f9;">
+            
+            <!-- Contenedor principal -->
+            <div style="max-width:700px;margin:40px auto;background-color:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+                
+                <!-- Banner de urgencia -->
+                <div style="background:linear-gradient(135deg, {urgency_color} 0%, {urgency_color}dd 100%);padding:30px;text-align:center;">
+                    <div style="font-size:48px;margin-bottom:15px;">{urgency_icon}</div>
+                    <h1 style="margin:0;color:#ffffff;font-size:28px;font-weight:700;letter-spacing:-0.5px;">
+                        {urgency_level}
+                    </h1>
+                    <p style="margin:10px 0 0;color:#ffffff;font-size:16px;opacity:0.95;">
+                        Alerta de Vencimiento Programado
+                    </p>
+                </div>
+                
+                <!-- Contador de días -->
+                <div style="background-color:{urgency_bg};padding:25px;text-align:center;border-bottom:3px solid {urgency_color};">
+                    <div style="font-size:14px;color:{urgency_color};font-weight:600;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">
+                        Tiempo Restante
+                    </div>
+                    <div style="font-size:48px;font-weight:700;color:{urgency_color};line-height:1;">
+                        {days_remaining}
+                    </div>
+                    <div style="font-size:18px;color:{urgency_color};font-weight:500;margin-top:5px;">
+                        {'día' if days_remaining == 1 else 'días'}
+                    </div>
+                </div>
+                
+                <!-- Información del usuario -->
+                <div style="padding:30px;background-color:#f8fafc;border-bottom:1px solid #e2e8f0;">
+                    <h2 style="margin:0 0 20px 0;color:#1e293b;font-size:18px;font-weight:600;">
+                        👤 Destinatario de la Alerta
+                    </h2>
+                    <table width="100%" style="border-collapse:collapse;">
+                        <tr>
+                            <td style="padding:8px 0;color:#64748b;font-size:14px;width:35%;">
+                                <strong>Nombre:</strong>
+                            </td>
+                            <td style="padding:8px 0;color:#1e293b;font-size:14px;">
+                                {user_name}
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="padding:8px 0;color:#64748b;font-size:14px;">
+                                <strong>Email:</strong>
+                            </td>
+                            <td style="padding:8px 0;color:#1e293b;font-size:14px;">
+                                {user_email}
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="padding:8px 0;color:#64748b;font-size:14px;">
+                                <strong>Documento:</strong>
+                            </td>
+                            <td style="padding:8px 0;color:#1e293b;font-size:14px;">
+                                {user_document}
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="padding:8px 0;color:#64748b;font-size:14px;">
+                                <strong>Teléfono:</strong>
+                            </td>
+                            <td style="padding:8px 0;color:#1e293b;font-size:14px;">
+                                {user_telephone}
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+                
+                <!-- Detalles del formulario -->
+                <div style="padding:30px;">
+                    <h2 style="margin:0 0 20px 0;color:#1e293b;font-size:18px;font-weight:600;display:flex;align-items:center;gap:10px;">
+                        <span style="display:inline-block;width:4px;height:24px;background:{urgency_color};border-radius:2px;"></span>
+                        📋 Detalles del Formulario
+                    </h2>
+                    
+                    <div style="background-color:#f8fafc;padding:20px;border-radius:8px;border-left:4px solid {urgency_color};margin-bottom:20px;">
+                        <div style="margin-bottom:15px;">
+                            <div style="color:#64748b;font-size:12px;font-weight:600;text-transform:uppercase;margin-bottom:5px;">
+                                Formulario
+                            </div>
+                            <div style="color:#1e293b;font-size:16px;font-weight:600;">
+                                {form_title}
+                            </div>
+                        </div>
+                        
+                        <div style="margin-bottom:15px;">
+                            <div style="color:#64748b;font-size:12px;font-weight:600;text-transform:uppercase;margin-bottom:5px;">
+                                Descripción
+                            </div>
+                            <div style="color:#475569;font-size:14px;">
+                                {form_description}
+                            </div>
+                        </div>
+                        
+                        <div style="margin-bottom:15px;">
+                            <div style="color:#64748b;font-size:12px;font-weight:600;text-transform:uppercase;margin-bottom:5px;">
+                                ID de Respuesta
+                            </div>
+                            <div style="color:#1e293b;font-size:14px;font-family:monospace;">
+                                #{response_id}
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <div style="color:#64748b;font-size:12px;font-weight:600;text-transform:uppercase;margin-bottom:5px;">
+                                Pregunta Relacionada
+                            </div>
+                            <div style="color:#475569;font-size:14px;font-style:italic;">
+                                "{question_text}"
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Fechas importantes -->
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-top:20px;">
+                        <div style="background-color:#ffffff;padding:20px;border-radius:8px;border:2px solid #e2e8f0;">
+                            <div style="color:#64748b;font-size:12px;font-weight:600;text-transform:uppercase;margin-bottom:8px;">
+                                📅 Fecha Límite
+                            </div>
+                            <div style="color:#dc2626;font-size:20px;font-weight:700;">
+                                {formatted_date}
+                            </div>
+                        </div>
+                        <div style="background-color:#ffffff;padding:20px;border-radius:8px;border:2px solid #e2e8f0;">
+                            <div style="color:#64748b;font-size:12px;font-weight:600;text-transform:uppercase;margin-bottom:8px;">
+                                ⏰ Alerta Configurada
+                            </div>
+                            <div style="color:#3b82f6;font-size:20px;font-weight:700;">
+                                {days_before_alert} {'día' if days_before_alert == 1 else 'días'} antes
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Mensaje de acción -->
+                <div style="padding:30px;background-color:{urgency_bg};border-top:1px solid {urgency_color};">
+                    <div style="text-align:center;">
+                        <p style="margin:0 0 20px 0;color:{urgency_color};font-size:15px;font-weight:600;">
+                            ⚡ Se requiere su atención para esta respuesta antes de la fecha límite
+                        </p>
+                        <a href="https://forms.sfisas.com.co/" 
+                           style="display:inline-block;background-color:{urgency_color};color:white;padding:15px 40px;text-decoration:none;border-radius:8px;font-weight:600;font-size:16px;box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+                            Ir a Safemetrics
+                        </a>
+                    </div>
+                </div>
+                
+                <!-- Footer -->
+                <div style="padding:25px;background-color:#1e293b;text-align:center;">
+                    <p style="margin:0 0 8px 0;color:#94a3b8;font-size:13px;">
+                        Este correo fue generado automáticamente por el sistema de alertas de Safemetrics
+                    </p>
+                    <p style="margin:0;color:#64748b;font-size:12px;">
+                        Enviado el {current_date} a las {current_time}
+                    </p>
+                </div>
+                
+            </div>
+            
+        </body>
+        </html>
+        """
+        
+        # Texto plano alternativo
+        plain_text = f"""
+{urgency_icon} {urgency_level}: VENCIMIENTO PRÓXIMO
+════════════════════════════════════════════════
+
+TIEMPO RESTANTE: {days_remaining} {'día' if days_remaining == 1 else 'días'}
+
+DESTINATARIO:
+────────────────────────────────
+Nombre: {user_name}
+Email: {user_email}
+Documento: {user_document}
+Teléfono: {user_telephone}
+
+FORMULARIO:
+────────────────────────────────
+Título: {form_title}
+Descripción: {form_description}
+ID Respuesta: #{response_id}
+Pregunta: "{question_text}"
+
+FECHAS:
+────────────────────────────────
+Fecha Límite: {formatted_date}
+Alerta configurada: {days_before_alert} {'día' if days_before_alert == 1 else 'días'} antes
+
+⚡ Se requiere su atención antes de la fecha límite.
+Ir a: https://forms.sfisas.com.co/
+
+────────────────────────────────
+Enviado el {current_date} a las {current_time}
+Este correo fue generado automáticamente por Safemetrics.
+        """
+        
+        msg.set_content(plain_text)
+        msg.add_alternative(html_content, subtype="html")
+        
+        # Enviar correo
+        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
+            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
+            smtp.send_message(msg)
+        
+        print(f"✅ Correo de alerta enviado exitosamente a {user_email}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error al enviar correo de alerta a {user_email}: {str(e)}")
+        return False
