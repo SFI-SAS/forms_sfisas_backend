@@ -1,9 +1,9 @@
 from ast import Dict
 from collections import defaultdict
-from difflib import SequenceMatcher
+from difflib import SequenceMatcher, diff_bytes
 import io
 import json
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status, Query
+from fastapi import APIRouter, Depends, File, Form as FastAPIForm, HTTPException, Request, UploadFile, status, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import text
@@ -12,9 +12,11 @@ from typing import Any, List, Optional
 from app import models
 from app.api.controllers.mail import send_welcome_email
 # from app.api.endpoints.pdf_router import generate_pdf_from_form_id
+from app.api.controllers.pdf_form_exporter import FormPdfExporter, generate_form_pdf
 from app.database import get_db
-from app.models import Answer, EmailConfig, Question, Response, User, UserCategory, UserType
-from app.crud import create_email_config, create_user, create_user_category, create_user_with_random_password, decrypt_object, delete_user_category_by_id, encrypt_object, fetch_all_users, get_all_email_configs, get_all_user_categories, get_response_details_logic, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
+
+from app.models import Answer, EmailConfig, Form, Question, Response, User, UserCategory, UserType
+from app.crud import _extract_style_config, _serialize_answers, create_email_config, create_user, create_user_category, create_user_with_random_password, decrypt_object, delete_user_category_by_id, encrypt_object, fetch_all_users, get_all_email_configs, get_all_user_categories, get_response_details_logic, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
 from app.schemas import EmailConfigCreate, EmailConfigResponse, EmailConfigUpdate, EmailStatusUpdate, UpdateRecognitionId, UpdateUserCategory, UserBaseCreate, UserCategoryCreate, UserCategoryResponse, UserCreate, UserResponse, UserUpdate, UserUpdateInfo
 from app.core.security import get_current_user, hash_password
 
@@ -101,45 +103,358 @@ def get_user_endpoint(
 
 
 
-@router.get("/forms/{form_id}/pdf")
-async def generate_pdf_endpoint(
+@router.get("/{form_id}/questions-answers/pdf/user")
+def download_user_responses_pdf(
     form_id: int,
-    request: Request,
     db: Session = Depends(get_db),
-    current_user: Any = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
     """
-    Endpoint para generar y descargar PDF de un formulario.
+    Genera un PDF con el diseño del formulario y las respuestas del usuario.
     """
-    try:
-        # pdf_bytes = await generate_pdf_from_form_id(
-        #     form_id=form_id,
-        #     db=db,
-        #     current_user=current_user,
-        #     request=request
-        # )
-        
-        # Crear nombre del archivo
-        filename = f"form_{form_id}_response.pdf"
-        
-        # Crear response con el PDF
-        response = StreamingResponse(
-            io.BytesIO(pdf_bytes),
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}"
-            }
-        )
-        
-        return response
-        
-    except HTTPException:
-        raise
-    except Exception as e:
+    from sqlalchemy.orm import joinedload
+
+
+    # 1. Obtener formulario
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+
+    # 2. Obtener form_design
+    form_design = form.form_design
+    if isinstance(form_design, str):
+        import json
+        try:
+            form_design = json.loads(form_design)
+        except json.JSONDecodeError:
+            form_design = None
+
+    if not form_design or not isinstance(form_design, list) or len(form_design) == 0:
         raise HTTPException(
-            status_code=500,
-            detail="Error interno del servidor al generar el PDF"
+            status_code=400,
+            detail="Este formulario no tiene diseño disponible para generar PDF"
         )
+
+    # 3. Obtener respuestas del usuario
+    responses = (
+        db.query(Response)
+        .filter(Response.form_id == form_id, Response.user_id == current_user.id)
+        .order_by(Response.submitted_at.desc())
+        .all()
+    )
+
+    if not responses:
+        raise HTTPException(
+            status_code=404,
+            detail="No se encontraron respuestas para este usuario"
+        )
+
+    latest = responses[0]
+
+    # 4. Serializar answers
+    answers_orm = (
+        db.query(Answer)
+        .options(joinedload(Answer.question))
+        .filter(Answer.response_id == latest.id)
+        .all()
+    )
+
+    answers = []
+    for ans in answers_orm:
+        answers.append({
+            "id_answer":               ans.id,
+            "question_id":             ans.question_id,
+            "question_text":           ans.question.question_text if ans.question else "",
+            "question_type":           ans.question.question_type.value if (
+                                           ans.question and ans.question.question_type
+                                       ) else "text",
+            "answer_text":             ans.answer_text or "",
+            "file_path":               ans.file_path or "",
+            "repeated_id":             getattr(ans, "repeated_id", None),
+            "form_design_element_id":  getattr(ans, "form_design_element_id", None),
+        })
+
+    # 5. Extraer style_config
+    style_config = None
+    for item in form_design:
+        props = item.get("props") or {}
+        if props.get("styleConfig"):
+            style_config = props["styleConfig"]
+            break
+        if item.get("headerTable") and not item.get("type"):
+            style_config = item
+            break
+
+    # 6. Generar PDF
+    output = generate_form_pdf(
+        form_design=form_design,
+        answers=answers,
+        style_config=style_config,
+        form_title=form.title,
+        response_id=latest.id,
+    )
+
+    filename = f"Formato_{form.title.replace(' ', '_')}_{form_id}.pdf"
+
+    return StreamingResponse(
+        output,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+# ═══════════════════════════════════════════════════════
+# VARIANTE: PDF de un usuario específico (admin/creator)
+# ═══════════════════════════════════════════════════════
+
+@router.get("/{form_id}/questions-answers/pdf/user/{id_user}")
+def download_user_responses_pdf_by_admin(
+    form_id: int,
+    id_user: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Genera PDF con las respuestas de un usuario específico.
+    Solo para admin/creator.
+    """
+    from sqlalchemy.orm import joinedload
+
+
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permisos"
+        )
+
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+
+    form_design = form.form_design
+    if isinstance(form_design, str):
+        import json
+        try:
+            form_design = json.loads(form_design)
+        except json.JSONDecodeError:
+            form_design = None
+
+    if not form_design or not isinstance(form_design, list) or len(form_design) == 0:
+        raise HTTPException(status_code=400, detail="Formulario sin diseño disponible")
+
+    responses = (
+        db.query(Response)
+        .filter(Response.form_id == form_id, Response.user_id == id_user)
+        .order_by(Response.submitted_at.desc())
+        .all()
+    )
+
+    if not responses:
+        raise HTTPException(status_code=404, detail="No se encontraron respuestas")
+
+    latest = responses[0]
+
+    answers_orm = (
+        db.query(Answer)
+        .options(joinedload(Answer.question))
+        .filter(Answer.response_id == latest.id)
+        .all()
+    )
+
+    answers = []
+    for ans in answers_orm:
+        answers.append({
+            "id_answer":               ans.id,
+            "question_id":             ans.question_id,
+            "question_text":           ans.question.question_text if ans.question else "",
+            "question_type":           ans.question.question_type.value if (
+                                           ans.question and ans.question.question_type
+                                       ) else "text",
+            "answer_text":             ans.answer_text or "",
+            "file_path":               ans.file_path or "",
+            "repeated_id":             getattr(ans, "repeated_id", None),
+            "form_design_element_id":  getattr(ans, "form_design_element_id", None),
+        })
+
+    style_config = None
+    for item in form_design:
+        props = item.get("props") or {}
+        if props.get("styleConfig"):
+            style_config = props["styleConfig"]
+            break
+        if item.get("headerTable") and not item.get("type"):
+            style_config = item
+            break
+
+    target_user = db.query(User).filter(User.id == id_user).first()
+    user_name = target_user.name if target_user else f"Usuario_{id_user}"
+
+    output = generate_form_pdf(
+        form_design=form_design,
+        answers=answers,
+        style_config=style_config,
+        form_title=form.title,
+        response_id=latest.id,
+    )
+
+    safe_name = "".join(c for c in user_name if c.isalnum() or c in " _-")
+    filename = f"Respuesta_{safe_name}_{form.title.replace(' ', '_')}_{form_id}.pdf"
+
+    return StreamingResponse(
+        output,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+# ═══════════════════════════════════════════════════════
+# VARIANTE: PDF de TODAS las respuestas (all-users)
+# ═══════════════════════════════════════════════════════
+@router.get("/{form_id}/questions-answers/pdf/all-users")
+def download_all_responses_pdf(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Genera un PDF con TODAS las respuestas de todos los usuarios.
+    Cada respuesta ocupa una sección con salto de página.
+    """
+    from sqlalchemy.orm import joinedload
+    from xhtml2pdf import pisa
+
+    FormModel = Form
+    form = db.query(FormModel).filter(FormModel.id == form_id).first()
+
+    if not form:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+
+    form_design = form.form_design
+    if isinstance(form_design, str):
+        import json
+        try:
+            form_design = json.loads(form_design)
+        except json.JSONDecodeError:
+            form_design = None
+
+    if not form_design or not isinstance(form_design, list) or len(form_design) == 0:
+        raise HTTPException(status_code=400, detail="Formulario sin diseño disponible")
+
+    all_responses = (
+        db.query(Response)
+        .filter(Response.form_id == form_id)
+        .order_by(Response.submitted_at.desc())
+        .all()
+    )
+
+    if not all_responses:
+        raise HTTPException(status_code=404, detail="No se encontraron respuestas")
+
+    style_config = _extract_style_config(form_design)
+
+    # Generar HTML de cada respuesta y unirlas con page-break
+    pages_html = []
+
+    for resp in all_responses:
+        answers_orm = (
+            db.query(Answer)
+            .options(joinedload(Answer.question))
+            .filter(Answer.response_id == resp.id)
+            .all()
+        )
+
+        user = db.query(User).filter(User.id == resp.user_id).first()
+        user_name = user.name if user else f"Usuario_{resp.user_id}"
+
+        # ✅ CORREGIDO: Usar _serialize_answers para reconstruir repeated_id
+        answers = _serialize_answers(answers_orm, db, form_id, form_design)
+
+        exporter = FormPdfExporter(
+            form_design=form_design,
+            answers=answers,
+            style_config=style_config,
+            form_title=form.title,
+            response_id=resp.id,
+        )
+
+        # Obtener solo el HTML interno (sin <html><body> wrapper)
+        page_html = exporter._render_header_table_html()
+        page_html += exporter._render_document_number_html()
+
+        # Info del usuario
+        page_html += f'''
+        <div style="
+            margin-bottom:8px;padding:6px 10px;
+            background-color:#EFF6FF;border:1px solid #BFDBFE;
+            border-radius:4px;font-size:10px;color:#1E40AF;
+        ">
+            <b>Usuario:</b> {exporter._esc(user_name)} &nbsp;|&nbsp;
+            <b>Fecha:</b> {str(resp.submitted_at)[:19]}
+        </div>
+        '''
+
+        filtered = exporter._filter_form_items(form_design)
+        for field in filtered:
+            fid = field.get("id")
+            ftype = field.get("type", "")
+            if fid and fid in exporter._consumed_by_repeater and ftype != "repeater":
+                continue
+            page_html += exporter._render_field_html(field)
+
+        page_html += exporter._render_footer_html()
+        pages_html.append(page_html)
+
+    # Unir con page-break
+    sc = style_config or {}
+    font_family = sc.get("font", {}).get("family", "Arial, sans-serif") if isinstance(sc, dict) else "Arial, sans-serif"
+
+    combined_html = f'''
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <style>
+        @page {{
+            size: letter landscape;
+            margin: 1.5cm;
+        }}
+        body {{
+            font-family: {font_family};
+            font-size: 12px;
+            color: #333333;
+            margin: 0;
+            padding: 0;
+        }}
+        .page-section {{
+            page-break-after: always;
+        }}
+        .page-section:last-child {{
+            page-break-after: auto;
+        }}
+    </style>
+</head>
+<body>
+    {"".join(f'<div class="page-section">{p}</div>' for p in pages_html)}
+</body>
+</html>
+    '''
+
+    output = io.BytesIO()
+    pisa_status = pisa.CreatePDF(combined_html, dest=output)
+
+    if pisa_status.err:
+        raise HTTPException(status_code=500, detail="Error generando PDF")
+
+    output.seek(0)
+
+    filename = f"Todas_Respuestas_{form.title.replace(' ', '_')}_{form_id}.pdf"
+
+    return StreamingResponse(
+        output,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
 
 
 @router.put("/{user_id}", response_model=UserResponse)
@@ -331,8 +646,8 @@ def get_all_users(db: Session = Depends(get_db), current_user: User = Depends(ge
 @router.post("/send-file-emails")
 async def send_file_to_emails(
     file: UploadFile = File(...),
-    emails: List[str] = Form(...),
-    name_form: str = Form(...),
+    emails: List[str] = FastAPIForm(...),
+    name_form: str = FastAPIForm(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):

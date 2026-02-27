@@ -7403,3 +7403,151 @@ def disable_notification_rule(db: Session, rule_id: int) -> bool:
         db.rollback()
         print(f"❌ Error al deshabilitar regla ID {rule_id}: {str(e)}")
         return False
+    
+def _reconstruct_repeated_ids(form_design: list, answers_list: list, repeated_question_ids: set):
+    """
+    Reconstruye el campo repeated_id en cada answer dict,
+    SIN necesitar la columna en el modelo Answer.
+
+    Usa 3 fuentes de información:
+    1. form_design → hijos directos de cada repeater (element_id)
+    2. form_design → linkExternalId de hijos (question_id)
+    3. FormAnswer.is_repeated → questions marcadas como parte de repeater
+
+    Args:
+        form_design: Lista de elementos del diseño del formulario
+        answers_list: Lista de dicts de answers (se modifica in-place)
+        repeated_question_ids: Set de question_ids marcados como is_repeated en FormAnswer
+    """
+    # Paso 1: Encontrar todos los repeaters recursivamente
+    repeaters = []
+
+    def find_repeaters(items):
+        for item in items:
+            if item.get("type") == "repeater":
+                repeaters.append(item)
+            for child in (item.get("children") or []):
+                find_repeaters([child])
+
+    find_repeaters(form_design)
+
+    if not repeaters:
+        return  # No hay repeaters, nada que reconstruir
+
+    # Paso 2: Construir mapas de pertenencia
+    # element_id (UUID) → repeater_id
+    element_to_repeater = {}
+    # question_id (linkExternalId) → repeater_id
+    question_to_repeater = {}
+
+    for rep in repeaters:
+        rep_id = rep.get("id")
+        if not rep_id:
+            continue
+        for child in (rep.get("children") or []):
+            child_id = child.get("id")
+            if child_id:
+                element_to_repeater[child_id] = rep_id
+            link_id = child.get("linkExternalId")
+            if link_id is not None:
+                question_to_repeater[int(link_id)] = rep_id
+            sqid = (child.get("props") or {}).get("sourceQuestionId")
+            if sqid is not None:
+                question_to_repeater[int(sqid)] = rep_id
+
+    # Paso 3: Asignar repeated_id a cada answer
+    for ans in answers_list:
+        # Si ya tiene repeated_id (por si acaso), no sobreescribir
+        if ans.get("repeated_id"):
+            continue
+
+        elem_id = ans.get("form_design_element_id")
+        q_id = ans.get("question_id")
+
+        # Prioridad 1: element_id es hijo directo del repeater
+        if elem_id and elem_id in element_to_repeater:
+            ans["repeated_id"] = element_to_repeater[elem_id]
+            continue
+
+        # Prioridad 2: question_id matchea linkExternalId de un hijo
+        if q_id is not None and q_id in question_to_repeater:
+            ans["repeated_id"] = question_to_repeater[q_id]
+            continue
+
+        # Prioridad 3: question está marcada como is_repeated en FormAnswer
+        if q_id is not None and q_id in repeated_question_ids:
+            if len(repeaters) == 1:
+                # Solo hay un repeater → asignar directamente
+                ans["repeated_id"] = repeaters[0].get("id")
+            else:
+                # Múltiples repeaters → asignar al primero (heurística)
+                # TODO: mejorar con proximidad en form_design si es necesario
+                ans["repeated_id"] = repeaters[0].get("id")
+
+
+# ═══════════════════════════════════════════════════════════════
+# FUNCIÓN AUXILIAR: Obtener question_ids repetidos desde FormAnswer
+# ═══════════════════════════════════════════════════════════════
+
+def _get_repeated_question_ids(db, form_id: int) -> set:
+    """
+    Consulta FormAnswer para obtener los question_id marcados como is_repeated.
+    """
+    from app.models import FormAnswer
+
+    form_answers = (
+        db.query(FormAnswer.question_id)
+        .filter(
+            FormAnswer.form_id == form_id,
+            FormAnswer.is_repeated == True
+        )
+        .all()
+    )
+    return {fa.question_id for fa in form_answers}
+
+
+# ═══════════════════════════════════════════════════════════════
+# FUNCIÓN AUXILIAR: Serializar answers del ORM al formato del exportador
+# ═══════════════════════════════════════════════════════════════
+
+def _serialize_answers(answers_orm, db, form_id: int, form_design: list) -> list:
+    """
+    Convierte answers ORM a dicts y reconstruye repeated_id.
+    """
+    answers = []
+    for ans in answers_orm:
+        answers.append({
+            "id_answer":              ans.id,
+            "question_id":            ans.question_id,
+            "question_text":          ans.question.question_text if ans.question else "",
+            "question_type":          (
+                ans.question.question_type.value
+                if ans.question and ans.question.question_type
+                else "text"
+            ),
+            "answer_text":            ans.answer_text,
+            "file_path":              ans.file_path or "",
+            "repeated_id":            None,  # Se reconstruye abajo
+            "form_design_element_id": getattr(ans, "form_design_element_id", None),
+        })
+
+    # Reconstruir repeated_id
+    repeated_qids = _get_repeated_question_ids(db, form_id)
+    _reconstruct_repeated_ids(form_design, answers, repeated_qids)
+
+    return answers
+
+
+# ═══════════════════════════════════════════════════════════════
+# FUNCIÓN AUXILIAR: Extraer style_config del form_design
+# ═══════════════════════════════════════════════════════════════
+
+def _extract_style_config(form_design: list):
+    """Extrae el style_config del form_design."""
+    for item in form_design:
+        props = item.get("props") or {}
+        if props.get("styleConfig"):
+            return props["styleConfig"]
+        if item.get("headerTable") and not item.get("type"):
+            return item
+    return None
