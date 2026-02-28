@@ -7477,47 +7477,47 @@ def _get_repeated_question_ids(db, form_id: int) -> set:
 # FUNCIÓN AUXILIAR: Serializar answers del ORM al formato del exportador
 # ═══════════════════════════════════════════════════════════════
 
-def _serialize_answers(answers_orm, db, form_id: int, form_design: list) -> list:
-    """
-    Convierte answers ORM a dicts y reconstruye repeated_id.
-    """
-    answers = []
-    for ans in answers_orm:
-        answers.append({
-            "id_answer":              ans.id,
-            "question_id":            ans.question_id,
-            "question_text":          ans.question.question_text if ans.question else "",
-            "question_type":          (
-                ans.question.question_type.value
-                if ans.question and ans.question.question_type
-                else "text"
-            ),
-            "answer_text":            ans.answer_text,
-            "file_path":              ans.file_path or "",
-            "repeated_id":            None,  # Se reconstruye abajo
-            "form_design_element_id": getattr(ans, "form_design_element_id", None),
-        })
+# def _serialize_answers(answers_orm, db, form_id: int, form_design: list) -> list:
+#     """
+#     Convierte answers ORM a dicts y reconstruye repeated_id.
+#     """
+#     answers = []
+#     for ans in answers_orm:
+#         answers.append({
+#             "id_answer":              ans.id,
+#             "question_id":            ans.question_id,
+#             "question_text":          ans.question.question_text if ans.question else "",
+#             "question_type":          (
+#                 ans.question.question_type.value
+#                 if ans.question and ans.question.question_type
+#                 else "text"
+#             ),
+#             "answer_text":            ans.answer_text,
+#             "file_path":              ans.file_path or "",
+#             "repeated_id":            None,  # Se reconstruye abajo
+#             "form_design_element_id": getattr(ans, "form_design_element_id", None),
+#         })
 
-    # Reconstruir repeated_id
-    repeated_qids = _get_repeated_question_ids(db, form_id)
-    _reconstruct_repeated_ids(form_design, answers, repeated_qids)
+#     # Reconstruir repeated_id
+#     repeated_qids = _get_repeated_question_ids(db, form_id)
+#     _reconstruct_repeated_ids(form_design, answers, repeated_qids)
 
-    return answers
+#     return answers
 
 
-# ═══════════════════════════════════════════════════════════════
-# FUNCIÓN AUXILIAR: Extraer style_config del form_design
-# ═══════════════════════════════════════════════════════════════
+# # ═══════════════════════════════════════════════════════════════
+# # FUNCIÓN AUXILIAR: Extraer style_config del form_design
+# # ═══════════════════════════════════════════════════════════════
 
-def _extract_style_config(form_design: list):
-    """Extrae el style_config del form_design."""
-    for item in form_design:
-        props = item.get("props") or {}
-        if props.get("styleConfig"):
-            return props["styleConfig"]
-        if item.get("headerTable") and not item.get("type"):
-            return item
-    return None
+# def _extract_style_config(form_design: list):
+#     """Extrae el style_config del form_design."""
+#     for item in form_design:
+#         props = item.get("props") or {}
+#         if props.get("styleConfig"):
+#             return props["styleConfig"]
+#         if item.get("headerTable") and not item.get("type"):
+#             return item
+#     return None
 
     
 def sanitize_template_design(design: list) -> list:
