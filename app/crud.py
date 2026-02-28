@@ -13,7 +13,7 @@ from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 # from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, FormTemplate, PalabrasClave, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, TemplateScope, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, CategoryApproval, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, FormTemplate, PalabrasClave, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, TemplateScope, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
 from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormMovimientoBase, FormTemplateCreate, FormTemplateUpdate, NotificationResponse, PalabrasClaveCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, OptionCreate, ResponseCreate, AnswerCreate, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
@@ -204,7 +204,7 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             title=form.title,
             description=form.description,
             format_type=form.format_type,
-            id_category=form.id_category,  # ← Añadido aquí
+            id_category=form.id_category,
             created_at=datetime.utcnow()
         )
 
@@ -216,6 +216,15 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
         db.commit()
         db.refresh(db_form)
 
+        # ✅ AUTO-SYNC: Copiar aprobadores de la categoría al formulario
+        if db_form.id_category:
+            sync_form_approvals_from_category(
+                db=db,
+                form_id=db_form.id,
+                category_id=db_form.id_category,
+                replace=True
+            )
+
         # Crear y devolver la respuesta
         response = {
             "id": db_form.id,
@@ -224,7 +233,7 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             "description": db_form.description,
             "format_type": db_form.format_type.value,
             "created_at": db_form.created_at,
-            "id_category": db_form.id_category,  # ← Incluir en la respuesta
+            "id_category": db_form.id_category,
             "assign_user": [moderator.user_id for moderator in db_form.form_moderators]
         }
 
@@ -242,6 +251,7 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno del servidor: {str(e)}"
         )
+
 def get_form_id_users(db: Session, form_id: int, user_id: int):
     """
     Obtiene solo la información básica de un formulario.
@@ -7714,3 +7724,276 @@ def delete_template_service(db: Session, template_id: int, user_id: int) -> bool
     template.is_enabled = False
     db.commit()
     return True
+
+    
+def get_category_approvals(
+    db: Session,
+    category_id: int,
+    only_active: bool = True
+) -> List[CategoryApproval]:
+    """Obtiene los aprobadores de una categoría."""
+    query = db.query(CategoryApproval).options(
+        joinedload(CategoryApproval.user)
+    ).filter(
+        CategoryApproval.category_id == category_id
+    )
+
+    if only_active:
+        query = query.filter(CategoryApproval.is_active == True)
+
+    return query.order_by(CategoryApproval.sequence_number).all()
+
+
+def add_category_approver(
+    db: Session,
+    category_id: int,
+    data  # CategoryApprovalCreate
+) -> CategoryApproval:
+    """Agrega un aprobador a una categoría."""
+    # Validar que la categoría existe
+    category = db.query(FormCategory).filter(FormCategory.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Categoría no encontrada")
+
+    # Validar que el usuario existe
+    user = db.query(User).filter(User.id == data.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    # Verificar que no esté duplicado
+    existing = db.query(CategoryApproval).filter(
+        CategoryApproval.category_id == category_id,
+        CategoryApproval.user_id == data.user_id
+    ).first()
+
+    if existing:
+        # Si ya existe pero estaba inactivo, reactivar
+        if not existing.is_active:
+            existing.is_active = True
+            existing.sequence_number = data.sequence_number
+            existing.is_mandatory = data.is_mandatory
+            existing.deadline_days = data.deadline_days
+            db.commit()
+            db.refresh(existing)
+            return existing
+        raise HTTPException(status_code=400, detail="Este usuario ya es aprobador de esta categoría")
+
+    approver = CategoryApproval(
+        category_id=category_id,
+        user_id=data.user_id,
+        sequence_number=data.sequence_number,
+        is_mandatory=data.is_mandatory,
+        deadline_days=data.deadline_days,
+    )
+
+    db.add(approver)
+    db.commit()
+    db.refresh(approver)
+
+    # Cargar relación user
+    db.refresh(approver, ['user'])
+    return approver
+
+
+def update_category_approver(
+    db: Session,
+    approval_id: int,
+    data  # CategoryApprovalUpdate
+) -> CategoryApproval:
+    """Actualiza un aprobador de categoría."""
+    approver = db.query(CategoryApproval).filter(
+        CategoryApproval.id == approval_id
+    ).first()
+
+    if not approver:
+        raise HTTPException(status_code=404, detail="Aprobador no encontrado")
+
+    if data.sequence_number is not None:
+        approver.sequence_number = data.sequence_number
+    if data.is_mandatory is not None:
+        approver.is_mandatory = data.is_mandatory
+    if data.deadline_days is not None:
+        approver.deadline_days = data.deadline_days
+    if data.is_active is not None:
+        approver.is_active = data.is_active
+
+    db.commit()
+    db.refresh(approver)
+    return approver
+
+
+def remove_category_approver(db: Session, approval_id: int) -> bool:
+    """Elimina un aprobador de una categoría."""
+    approver = db.query(CategoryApproval).filter(
+        CategoryApproval.id == approval_id
+    ).first()
+
+    if not approver:
+        raise HTTPException(status_code=404, detail="Aprobador no encontrado")
+
+    db.delete(approver)
+    db.commit()
+    return True
+
+
+def bulk_save_category_approvers(
+    db: Session,
+    category_id: int,
+    approvers_data: list  # List[CategoryApprovalCreate]
+) -> List[CategoryApproval]:
+    """
+    Guarda toda la lista de aprobadores de una categoría.
+    Reemplaza los existentes: elimina los que no están en la lista nueva
+    y agrega/actualiza los que sí están.
+    """
+    category = db.query(FormCategory).filter(FormCategory.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Categoría no encontrada")
+
+    # Validar que todos los usuarios existen
+    user_ids = [a.user_id for a in approvers_data]
+    existing_users = db.query(User.id).filter(User.id.in_(user_ids)).all()
+    existing_user_ids = {u.id for u in existing_users}
+    invalid_ids = set(user_ids) - existing_user_ids
+    if invalid_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Usuarios no encontrados: {list(invalid_ids)}"
+        )
+
+    # Eliminar aprobadores actuales de esta categoría
+    db.query(CategoryApproval).filter(
+        CategoryApproval.category_id == category_id
+    ).delete(synchronize_session=False)
+
+    # Crear nuevos
+    new_approvers = []
+    for data in approvers_data:
+        approver = CategoryApproval(
+            category_id=category_id,
+            user_id=data.user_id,
+            sequence_number=data.sequence_number,
+            is_mandatory=data.is_mandatory,
+            deadline_days=data.deadline_days,
+        )
+        db.add(approver)
+        new_approvers.append(approver)
+
+    db.commit()
+
+    # Refresh para cargar IDs y relaciones
+    for a in new_approvers:
+        db.refresh(a)
+        db.refresh(a, ['user'])
+
+    return new_approvers
+
+
+def get_all_categories_with_approvers(db: Session) -> list:
+    """Obtiene todas las categorías con sus aprobadores para la vista de gestión."""
+    categories = db.query(FormCategory).order_by(
+        FormCategory.order, FormCategory.name
+    ).all()
+
+    result = []
+    for cat in categories:
+        approvers = db.query(CategoryApproval).options(
+            joinedload(CategoryApproval.user)
+        ).filter(
+            CategoryApproval.category_id == cat.id,
+            CategoryApproval.is_active == True
+        ).order_by(CategoryApproval.sequence_number).all()
+
+        result.append({
+            "id": cat.id,
+            "name": cat.name,
+            "description": cat.description,
+            "icon": cat.icon,
+            "color": cat.color,
+            "approvers": approvers,
+        })
+
+    return result
+
+
+# ─── SYNC: Copiar aprobadores de categoría a formulario ──────
+
+def sync_form_approvals_from_category(
+    db: Session,
+    form_id: int,
+    category_id: Optional[int],
+    replace: bool = True
+):
+    """
+    Sincroniza los aprobadores del formulario con los de su categoría.
+    
+    Llamar esta función cuando:
+    - Se crea un formulario con categoría
+    - Se cambia la categoría de un formulario
+    
+    Args:
+        db: Sesión de BD
+        form_id: ID del formulario
+        category_id: ID de la categoría nueva (None si se quita categoría)
+        replace: Si True, elimina aprobadores existentes antes de copiar.
+                 Si False, solo agrega los que no existen.
+    """
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        return
+
+    if category_id is None:
+        # Si se quita la categoría, no hacer nada (mantener los que tiene)
+        return
+
+    # Obtener aprobadores activos de la categoría
+    category_approvers = db.query(CategoryApproval).filter(
+        CategoryApproval.category_id == category_id,
+        CategoryApproval.is_active == True
+    ).order_by(CategoryApproval.sequence_number).all()
+
+    if not category_approvers:
+        return
+
+    if replace:
+        # Eliminar aprobadores actuales del formulario
+        db.query(FormApproval).filter(
+            FormApproval.form_id == form_id
+        ).delete(synchronize_session=False)
+
+        # Copiar todos los de la categoría
+        for cat_approver in category_approvers:
+            form_approval = FormApproval(
+                form_id=form_id,
+                user_id=cat_approver.user_id,
+                sequence_number=cat_approver.sequence_number,
+                is_mandatory=cat_approver.is_mandatory,
+                deadline_days=cat_approver.deadline_days,
+                is_active=True,
+            )
+            db.add(form_approval)
+    else:
+        # Solo agregar los que no existen
+        existing_user_ids = set(
+            row.user_id for row in
+            db.query(FormApproval.user_id).filter(
+                FormApproval.form_id == form_id,
+                FormApproval.is_active == True
+            ).all()
+        )
+
+        for cat_approver in category_approvers:
+            if cat_approver.user_id not in existing_user_ids:
+                form_approval = FormApproval(
+                    form_id=form_id,
+                    user_id=cat_approver.user_id,
+                    sequence_number=cat_approver.sequence_number,
+                    is_mandatory=cat_approver.is_mandatory,
+                    deadline_days=cat_approver.deadline_days,
+                    is_active=True,
+                )
+                db.add(form_approval)
+
+    db.commit()
+
+

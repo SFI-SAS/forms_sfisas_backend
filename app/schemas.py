@@ -1245,3 +1245,69 @@ class FormTemplateResponse(BaseModel):
 
 class FormTemplateDetail(FormTemplateResponse):
     template_design: List[Dict[str, Any]]
+
+
+class CategoryApprovalCreate(BaseModel):
+    user_id: int
+    sequence_number: int = Field(1, ge=1)
+    is_mandatory: bool = True
+    deadline_days: Optional[int] = None
+
+
+class CategoryApprovalUpdate(BaseModel):
+    sequence_number: Optional[int] = Field(None, ge=1)
+    is_mandatory: Optional[bool] = None
+    deadline_days: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class CategoryApprovalBulkSave(BaseModel):
+    """Para guardar toda la lista de aprobadores de una categoría de una vez."""
+    approvers: List[CategoryApprovalCreate]
+
+
+class ApproverUserInfo(BaseModel):
+    id: int
+    name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CategoryApprovalResponse(BaseModel):
+    id: int
+    category_id: int
+    user_id: int
+    user: Optional[ApproverUserInfo] = None
+    sequence_number: int
+    is_mandatory: bool
+    deadline_days: Optional[int]
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class CategoryWithApproversResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    icon: Optional[str] = None
+    color: Optional[str] = None
+    approvers: List[CategoryApprovalResponse] = []
+
+    class Config:
+        from_attributes = True
+
+
+
+
+
+
+
+
+
+

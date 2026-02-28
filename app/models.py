@@ -2,7 +2,7 @@
 from datetime import datetime
 from sqlalchemy import (
     Boolean, Column, BigInteger, DateTime, Integer, LargeBinary, String, Text, 
-    ForeignKey, TIMESTAMP, Enum, func, text
+    ForeignKey, TIMESTAMP, Enum, UniqueConstraint, func, text
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -157,6 +157,7 @@ class FormCategory(Base):
             "FormMovimientos",
             back_populates="category"
         )
+    approvals = relationship("CategoryApproval", back_populates="category", cascade="all, delete-orphan")
     
 class Question(Base):
     __tablename__ = 'questions'
@@ -575,3 +576,25 @@ class FormTemplate(Base):
     # Relationships
     user = relationship('User', back_populates='form_templates')
     category = relationship('FormCategory')
+
+
+class CategoryApproval(Base):
+    __tablename__ = 'category_approvals'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    category_id = Column(BigInteger, ForeignKey('form_categories.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    sequence_number = Column(Integer, nullable=False, default=1)
+    is_mandatory = Column(Boolean, nullable=False, default=True)
+    deadline_days = Column(Integer, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('category_id', 'user_id', name='uq_category_user'),
+    )
+
+    # Relationships
+    category = relationship('FormCategory', back_populates='approvals')
+    user = relationship('User')
