@@ -1195,3 +1195,53 @@ class RelationQuestionRuleResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class FormTemplateCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=500)
+    id_category: Optional[int] = None
+    tags: Optional[List[str]] = []
+    scope: Optional[str] = "private"
+    source_form_id: Optional[int] = None
+    template_design: Optional[List[Dict[str, Any]]] = None
+
+
+class FormTemplateUpdate(BaseModel):
+    name: Optional[str] = Field(None, max_length=255)
+    description: Optional[str] = Field(None, max_length=500)
+    id_category: Optional[int] = None
+    tags: Optional[List[str]] = None
+    scope: Optional[str] = None
+    template_design: Optional[List[Dict[str, Any]]] = None
+
+
+class TemplateCategoryInfo(BaseModel):
+    id: int
+    name: str
+    icon: Optional[str] = None
+    color: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class FormTemplateResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str]
+    id_category: Optional[int]
+    category: Optional[TemplateCategoryInfo] = None
+    tags: List[str]
+    scope: str
+    usage_count: int
+    created_at: datetime
+    updated_at: datetime
+    user_id: int
+
+    class Config:
+        from_attributes = True
+
+
+class FormTemplateDetail(FormTemplateResponse):
+    template_design: List[Dict[str, Any]]

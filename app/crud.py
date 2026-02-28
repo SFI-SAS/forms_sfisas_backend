@@ -13,8 +13,8 @@ from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 # from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, PalabrasClave, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
-from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormMovimientoBase, NotificationResponse, PalabrasClaveCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, OptionCreate, ResponseCreate, AnswerCreate, UserUpdate, QuestionUpdate, UserUpdateInfo
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, FormTemplate, PalabrasClave, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, TemplateScope, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormMovimientoBase, FormTemplateCreate, FormTemplateUpdate, NotificationResponse, PalabrasClaveCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, OptionCreate, ResponseCreate, AnswerCreate, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
@@ -24,9 +24,9 @@ from app.redis_client import redis_client
 import os
 import secrets
 import string
-
+import copy
 import random
-
+from uuid import uuid4
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -7403,3 +7403,198 @@ def disable_notification_rule(db: Session, rule_id: int) -> bool:
         db.rollback()
         print(f"❌ Error al deshabilitar regla ID {rule_id}: {str(e)}")
         return False
+    
+def sanitize_template_design(design: list) -> list:
+    """
+    Limpia el diseño para uso como plantilla:
+    - Regenera todos los UUIDs (id)
+    - Elimina linkExternalId e id_question (vínculos al formulario original)
+    - Preserva estructura, props, estilos y relaciones parent-child
+    - Procesa recursivamente layouts y sus hijos
+    """
+    id_mapping = {}
+
+    def process_item(item: dict) -> dict:
+        if not isinstance(item, dict):
+            return item
+
+        new_item = copy.deepcopy(item)
+
+        # Solo procesar items con 'type' (no el styleConfig global)
+        if 'type' not in new_item:
+            return new_item
+
+        # Regenerar UUID
+        old_id = new_item.get('id')
+        new_id = str(uuid4())
+        if old_id:
+            id_mapping[old_id] = new_id
+        new_item['id'] = new_id
+
+        # Actualizar parentId si existe
+        if new_item.get('parentId') and new_item['parentId'] in id_mapping:
+            new_item['parentId'] = id_mapping[new_item['parentId']]
+
+        # Eliminar vínculos a preguntas del formulario original
+        new_item.pop('linkExternalId', None)
+        new_item.pop('id_question', None)
+
+        # Procesar hijos recursivamente
+        if 'children' in new_item and isinstance(new_item['children'], list):
+            new_item['children'] = [process_item(child) for child in new_item['children']]
+
+        return new_item
+
+    return [process_item(item) for item in design]
+
+
+def create_template_service(db: Session, user_id: int, data) -> FormTemplate:
+    """Crea una nueva plantilla desde un formulario existente o diseño directo."""
+    design = []
+
+    if data.source_form_id:
+        form = db.query(Form).filter(Form.id == data.source_form_id).first()
+        if not form:
+            raise HTTPException(status_code=404, detail="Source form not found")
+        if form.form_design:
+            design = copy.deepcopy(form.form_design)
+    elif data.template_design:
+        design = copy.deepcopy(data.template_design)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Must provide either source_form_id or template_design"
+        )
+
+    design = sanitize_template_design(design)
+
+    template = FormTemplate(
+        user_id=user_id,
+        name=data.name,
+        description=data.description,
+        id_category=data.id_category,
+        tags=data.tags or [],
+        scope=TemplateScope(data.scope) if data.scope else TemplateScope.private,
+        template_design=design,
+    )
+
+    db.add(template)
+    db.commit()
+    db.refresh(template)
+
+    # Cargar relación category para la respuesta
+    if template.id_category:
+        db.refresh(template, ['category'])
+
+    return template
+
+
+def list_templates_service(
+    db: Session,
+    user_id: int,
+    id_category: int = None,
+    search: str = None,
+    scope_filter: str = None,
+    skip: int = 0,
+    limit: int = 50
+) -> list:
+    """Lista plantillas accesibles para el usuario actual."""
+    query = db.query(FormTemplate).options(
+        joinedload(FormTemplate.category)
+    ).filter(
+        FormTemplate.is_enabled == True,
+        or_(
+            FormTemplate.user_id == user_id,
+            FormTemplate.scope == TemplateScope.company,
+            FormTemplate.scope == TemplateScope.public,
+        )
+    )
+
+    if id_category:
+        query = query.filter(FormTemplate.id_category == id_category)
+
+    if search:
+        search_term = f"%{search}%"
+        query = query.filter(
+            or_(
+                FormTemplate.name.ilike(search_term),
+                FormTemplate.description.ilike(search_term),
+            )
+        )
+
+    if scope_filter:
+        query = query.filter(FormTemplate.scope == scope_filter)
+
+    return query.order_by(FormTemplate.updated_at.desc()).offset(skip).limit(limit).all()
+
+
+def get_template_detail_service(db: Session, template_id: int, user_id: int) -> FormTemplate:
+    """Obtiene el detalle completo de una plantilla incluyendo su diseño."""
+    template = db.query(FormTemplate).options(
+        joinedload(FormTemplate.category)
+    ).filter(
+        FormTemplate.id == template_id,
+        FormTemplate.is_enabled == True
+    ).first()
+
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    if template.user_id != user_id and template.scope == TemplateScope.private:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    return template
+
+
+def apply_template_service(db: Session, template_id: int, user_id: int) -> list:
+    """Aplica una plantilla: devuelve diseño con UUIDs frescos e incrementa usage_count."""
+    template = get_template_detail_service(db, template_id, user_id)
+
+    template.usage_count = (template.usage_count or 0) + 1
+    db.commit()
+
+    return sanitize_template_design(copy.deepcopy(template.template_design))
+
+
+def update_template_service(db: Session, template_id: int, user_id: int, data) -> FormTemplate:
+    """Actualiza metadatos o diseño de una plantilla propia."""
+    template = db.query(FormTemplate).filter(
+        FormTemplate.id == template_id,
+        FormTemplate.user_id == user_id,
+        FormTemplate.is_enabled == True
+    ).first()
+
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found or access denied")
+
+    if data.name is not None:
+        template.name = data.name
+    if data.description is not None:
+        template.description = data.description
+    if data.id_category is not None:
+        template.id_category = data.id_category
+    if data.tags is not None:
+        template.tags = data.tags
+    if data.scope is not None:
+        template.scope = TemplateScope(data.scope)
+    if data.template_design is not None:
+        template.template_design = sanitize_template_design(data.template_design)
+
+    db.commit()
+    db.refresh(template)
+    return template
+
+
+def delete_template_service(db: Session, template_id: int, user_id: int) -> bool:
+    """Elimina (soft-delete) una plantilla propia."""
+    template = db.query(FormTemplate).filter(
+        FormTemplate.id == template_id,
+        FormTemplate.user_id == user_id
+    ).first()
+
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found or access denied")
+
+    template.is_enabled = False
+    db.commit()
+    return True

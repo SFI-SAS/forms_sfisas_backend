@@ -4,15 +4,15 @@ from pathlib import Path
 import shutil
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile,Query,Request,  File, Body, status, Form as FastAPIForm
-from sqlalchemy import and_, desc, func, select
+from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.orm import Session, joinedload, defer
 from typing import Any, List, Optional
 from app.api.controllers.mail import send_response_answers_email
 from app.redis_client import redis_client
 from app.database import get_db
-from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, User, UserType
-from app.crud import  analyze_form_relations, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, delete_form, delete_form_category, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status
-from app.schemas import AlertMessageRequest, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
+from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
+from app.crud import  analyze_form_relations, apply_template_service, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, create_template_service, delete_form, delete_form_category, delete_template_service, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_template_detail_service, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, list_templates_service, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status, update_template_service
+from app.schemas import AlertMessageRequest, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, FormTemplateCreate, FormTemplateDetail, FormTemplateResponse, FormTemplateUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
 import pandas as pd
@@ -53,6 +53,108 @@ def create_form_endpoint(
         )
 
     return create_form(db=db, form=form, user_id=current_user.id)
+
+@router.post("/form-templates", response_model=FormTemplateResponse, status_code=201)
+def create_template(
+    payload: FormTemplateCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Crea una nueva plantilla de formulario."""
+    if current_user is None:
+        raise HTTPException(status_code=403, detail="Authentication required")
+    return create_template_service(db, current_user.id, payload)
+
+
+@router.get("/form-templates", response_model=List[FormTemplateResponse])
+def list_templates(
+    id_category: Optional[int] = Query(None, description="Filtrar por ID de categoría"),
+    search: Optional[str] = Query(None, description="Buscar por nombre o descripción"),
+    scope: Optional[str] = Query(None, description="Filtrar por alcance: private, company, public"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Lista plantillas accesibles para el usuario actual."""
+    if current_user is None:
+        raise HTTPException(status_code=403, detail="Authentication required")
+    return list_templates_service(db, current_user.id, id_category, search, scope, skip, limit)
+
+
+@router.get("/form-templates/categories")
+def list_template_categories(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Devuelve todas las categorías disponibles (las mismas de formularios)."""
+    if current_user is None:
+        raise HTTPException(status_code=403, detail="Authentication required")
+
+    categories = db.query(FormCategory).order_by(FormCategory.order, FormCategory.name).all()
+    return [
+        {
+            "id": cat.id,
+            "name": cat.name,
+            "description": cat.description,
+            "icon": cat.icon,
+            "color": cat.color,
+            "parent_id": cat.parent_id,
+        }
+        for cat in categories
+    ]
+
+
+@router.get("/form-templates/{template_id}", response_model=FormTemplateDetail)
+def get_template(
+    template_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Obtiene el detalle completo de una plantilla incluyendo su diseño."""
+    if current_user is None:
+        raise HTTPException(status_code=403, detail="Authentication required")
+    return get_template_detail_service(db, template_id, current_user.id)
+
+
+@router.post("/form-templates/{template_id}/apply")
+def apply_template(
+    template_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Aplica una plantilla: devuelve diseño con UUIDs frescos."""
+    if current_user is None:
+        raise HTTPException(status_code=403, detail="Authentication required")
+    design = apply_template_service(db, template_id, current_user.id)
+    return {"template_design": design}
+
+
+@router.put("/form-templates/{template_id}", response_model=FormTemplateResponse)
+def update_template(
+    template_id: int,
+    payload: FormTemplateUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Actualiza metadatos o diseño de una plantilla propia."""
+    if current_user is None:
+        raise HTTPException(status_code=403, detail="Authentication required")
+    return update_template_service(db, template_id, current_user.id, payload)
+
+
+@router.delete("/form-templates/{template_id}", status_code=200)
+def delete_template(
+    template_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Elimina (soft-delete) una plantilla propia."""
+    if current_user is None:
+        raise HTTPException(status_code=403, detail="Authentication required")
+    delete_template_service(db, template_id, current_user.id)
+    return {"message": "Template deleted successfully"}
+
 
 @router.post("/{form_id}/questions", response_model=FormResponse)
 def add_questions_to_form_endpoint(
@@ -3822,3 +3924,4 @@ def send_answers_by_email(payload: SendResponseEmailRequest):
         "status": "ok",
         "sent_to": payload.email_to
     }
+

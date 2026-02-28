@@ -105,6 +105,7 @@ class User(Base):
         'FormMovimientos',
         back_populates='user',
     )
+    form_templates = relationship("FormTemplate", back_populates="user")
 
 class UserCategory(Base):
     __tablename__ = 'user_categories'
@@ -548,3 +549,29 @@ class RelationQuestionRule(Base):
         back_populates="question_rules"
     )
 
+class TemplateScope(str, enum.Enum):
+    private = "private"
+    company = "company"
+    public = "public"
+
+
+class FormTemplate(Base):
+    __tablename__ = 'form_templates'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
+    name = Column(String(255), nullable=False)
+    description = Column(String(500), nullable=True)
+    id_category = Column(BigInteger, ForeignKey('form_categories.id'), nullable=True)
+    tags = Column(AutoJSON, nullable=True, default=[])
+    thumbnail_url = Column(Text, nullable=True)
+    template_design = Column(AutoJSON, nullable=False, default=[])
+    scope = Column(Enum(TemplateScope), nullable=False, default=TemplateScope.private)
+    usage_count = Column(BigInteger, nullable=False, default=0)
+    is_enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    # Relationships
+    user = relationship('User', back_populates='form_templates')
+    category = relationship('FormCategory')
