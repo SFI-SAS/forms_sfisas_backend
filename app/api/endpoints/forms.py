@@ -2861,166 +2861,23 @@ def update_category_endpoint(
 ):
     return update_form_category_1(db, category_id, category_update)
 
-
 @router.get("/users/form_by_user/search")
-def search_forms_by_user(
-    db: Session,
-    user_id: int,
+def search_user_forms(
     search: str,
-    filter_type: str = "all",
+    filter_type: str = Query("all", pattern="^(all|user|response_user)$"),
     page: int = 1,
-    page_size: int = 30
-) -> dict:
-    """
-    Busca formularios asignados al usuario con búsqueda flexible.
-    
-    Busca en: title, description, category.name, palabras_clave
-    Soporta búsqueda parcial, case-insensitive, y múltiples palabras.
-    """
-    
-    # ── 1. Base query: formularios habilitados ──
-    query = (
-        db.query(Form)
-        .outerjoin(FormCategory, Form.id_category == FormCategory.id)
-        .options(joinedload(Form.category))
-        .filter(Form.is_enabled == True)
-    )
-    
-    # ── 2. Filtro por tipo de asignación ──
-    if filter_type == "user":
-        # Solo formularios asignados al usuario (como moderador/llenador)
-        assigned_form_ids = (
-            db.query(FormModerators.form_id)
-            .filter(FormModerators.user_id == user_id)
-            .subquery()
-        )
-        query = query.filter(
-            or_(
-                Form.id.in_(assigned_form_ids),
-                Form.user_id == user_id  # También los que él creó
-            )
-        )
-    elif filter_type == "response_user":
-        # Solo formularios que el usuario ya respondió
-        responded_form_ids = (
-            db.query(Response.form_id)
-            .filter(Response.user_id == user_id)
-            .distinct()
-            .subquery()
-        )
-        query = query.filter(Form.id.in_(responded_form_ids))
-    else:
-        # "all" — formularios asignados O respondidos
-        assigned_form_ids = (
-            db.query(FormModerators.form_id)
-            .filter(FormModerators.user_id == user_id)
-            .subquery()
-        )
-        responded_form_ids = (
-            db.query(Response.form_id)
-            .filter(Response.user_id == user_id)
-            .distinct()
-            .subquery()
-        )
-        query = query.filter(
-            or_(
-                Form.id.in_(assigned_form_ids),
-                Form.id.in_(responded_form_ids),
-                Form.user_id == user_id
-            )
-        )
-    
-    # ── 3. Búsqueda por texto ──
-    # Obtener IDs de formularios que coinciden por palabras_clave
-    keyword_form_ids = (
-        db.query(PalabrasClave.form_id)
-        .filter(PalabrasClave.keywords.ilike(f"%{search}%"))
-        .subquery()
-    )
-    
-    # Separar palabras del término de búsqueda
-    search_terms = search.strip().split()
-    
-    if len(search_terms) == 1:
-        # Búsqueda simple: una sola palabra
-        term = search_terms[0]
-        pattern = f"%{term}%"
-        query = query.filter(
-            or_(
-                Form.title.ilike(pattern),
-                Form.description.ilike(pattern),
-                FormCategory.name.ilike(pattern),
-                Form.id.in_(keyword_form_ids),
-                # También buscar por ID si es numérico
-                *([Form.id == int(term)] if term.isdigit() else [])
-            )
-        )
-    else:
-        # Búsqueda compuesta: TODAS las palabras deben aparecer en algún campo
-        # Esto permite buscar "Inspección Diaria" y encontrar "Inspección Diaria de Obra"
-        search_conditions = []
-        for term in search_terms:
-            pattern = f"%{term}%"
-            search_conditions.append(
-                or_(
-                    Form.title.ilike(pattern),
-                    Form.description.ilike(pattern),
-                    FormCategory.name.ilike(pattern),
-                )
-            )
-        query = query.filter(
-            or_(
-                and_(*search_conditions),  # Todas las palabras en algún campo
-                Form.id.in_(keyword_form_ids),  # O match por palabras clave
-            )
-        )
-    
-    # ── 4. Contar total antes de paginar ──
-    total = query.count()
-    total_pages = math.ceil(total / page_size) if total > 0 else 0
-    
-    # ── 5. Paginar y ordenar (más relevantes primero) ──
-    # Orden: coincidencia exacta en título primero, luego por título
-    forms = (
-        query
-        .order_by(
-            # Priorizar coincidencia exacta en título
-            func.length(Form.title).asc(),
-            Form.title.asc()
-        )
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-    
-    # ── 6. Serializar ──
-    items = []
-    for form in forms:
-        items.append({
-            "id": form.id,
-            "title": form.title,
-            "description": form.description or "",
-            "user_id": form.user_id,
-            "format_type": form.format_type.value if form.format_type else None,
-            "created_at": form.created_at.isoformat() if form.created_at else None,
-            "id_category": form.id_category,
-            "is_enabled": form.is_enabled,
-            "category": {
-                "id": form.category.id,
-                "name": form.category.name,
-                "description": form.category.description
-            } if form.category else None
-        })
-    
-    return {
-        "items": items,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": total_pages,
-        "search": search,
-        "filter_type": filter_type
-    }
+    page_size: int = 30,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if not search or search.strip() == "":
+        raise HTTPException(status_code=400, detail="El término de búsqueda no puede estar vacío")
+    if page_size > 100:
+        page_size = 100
+
+    # Llamar a la función de servicio
+    result = search_forms_by_user(db, current_user.id, search.strip(), filter_type, page, page_size)
+    return result
 
 
 # Mover categoría

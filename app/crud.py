@@ -3,6 +3,7 @@ import base64
 from collections import defaultdict
 from io import BytesIO
 import json
+import math
 import os
 import threading
 import pytz
@@ -1449,132 +1450,7 @@ def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int =
         "total_pages": total_pages
     }
     
-def search_forms_by_user(
-    db: Session, 
-    user_id: int, 
-    search: str,
-    filter_type: str = "all",
-    page: int = 1, 
-    page_size: int = 30
-):
-    """
-    Busca formularios del usuario por término de búsqueda con diferentes filtros.
-    
-    Args:
-        db: Sesión de base de datos
-        user_id: ID del usuario
-        search: Término de búsqueda
-        filter_type: Tipo de filtro ("all", "user", "response_user")
-        page: Número de página
-        page_size: Cantidad de registros por página
-    
-    Returns:
-        Dict con items paginados y metadata
-    """
-    offset = (page - 1) * page_size
-    search_term = f"%{search}%"
-    
-    # Construir query base según el tipo de filtro
-    if filter_type == "response_user":
-        # Formularios que el usuario ha completado/respondido
-        base_query = (
-            db.query(Form)
-            .join(Response, Form.id == Response.form_id)
-            .options(
-                defer(Form.form_design),
-                joinedload(Form.category)
-            )
-            .filter(Response.user_id == user_id)
-            .filter(
-                or_(
-                    Form.title.ilike(search_term),
-                    Form.description.ilike(search_term),
-                    Form.category.has(FormCategory.name.ilike(search_term)),
-                    Form.category.has(
-                        FormCategory.parent.has(FormCategory.name.ilike(search_term))
-                    )
-                )
-            )
-            .distinct()  # Evitar duplicados
-        )
-    else:
-        # "all" o "user" - Formularios asignados al usuario
-        base_query = (
-            db.query(Form)
-            .join(FormModerators, Form.id == FormModerators.form_id)
-            .options(
-                defer(Form.form_design),
-                joinedload(Form.category)
-            )
-            .filter(FormModerators.user_id == user_id)
-            .filter(
-                or_(
-                    Form.title.ilike(search_term),
-                    Form.description.ilike(search_term),
-                    Form.category.has(FormCategory.name.ilike(search_term)),
-                    Form.category.has(
-                        FormCategory.parent.has(FormCategory.name.ilike(search_term))
-                    )
-                )
-            )
-        )
-        
-        # Si es "user", excluir los que ya ha completado
-        if filter_type == "user":
-            # Subconsulta para obtener IDs de formularios completados
-            completed_form_ids = (
-                db.query(Response.form_id)
-                .filter(Response.user_id == user_id)
-                .distinct()
-                .subquery()
-            )
-            base_query = base_query.filter(~Form.id.in_(completed_form_ids))
-    
-    total_count = base_query.count()
-    forms = base_query.offset(offset).limit(page_size).all()
-    
-    # Convertir a diccionarios
-    result = []
-    for form in forms:
-        try:
-            form_dict = {
-                "id": form.id,
-                "title": form.title,
-                "format_type": form.format_type.value if hasattr(form.format_type, 'value') else str(form.format_type),
-                "is_enabled": form.is_enabled,
-                "user_id": form.user_id,
-                "description": form.description,
-                "created_at": form.created_at.isoformat() if form.created_at else None,
-                "id_category": form.id_category,
-                "category": {
-                    "id": form.category.id,
-                    "parent_id": form.category.parent_id,
-                    "is_expanded": form.category.is_expanded,
-                    "color": form.category.color,
-                    "updated_at": form.category.updated_at.isoformat() if form.category.updated_at else None,
-                    "name": form.category.name,
-                    "description": form.category.description,
-                    "order": form.category.order,
-                    "icon": form.category.icon,
-                    "created_at": form.category.created_at.isoformat()
-                } if form.category else None
-            }
-            result.append(form_dict)
-        except Exception as e:
-            print(f"Error procesando form {form.id}: {str(e)}")
-            continue
-    
-    total_pages = (total_count + page_size - 1) // page_size
-    
-    return {
-        "items": result,
-        "total": total_count,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": total_pages,
-        "search": search,
-        "filter_type": filter_type
-    }
+
 def get_forms_by_user_summary(db: Session, user_id: int):
     """
     Obtiene un resumen de los formularios (solo campos básicos para listados).
@@ -7714,3 +7590,163 @@ def delete_template_service(db: Session, template_id: int, user_id: int) -> bool
     template.is_enabled = False
     db.commit()
     return True
+
+
+def search_forms_by_user(
+    db: Session,
+    user_id: int,
+    search: str,
+    filter_type: str = "all",
+    page: int = 1,
+    page_size: int = 30
+) -> dict:
+    """
+    Busca formularios asignados al usuario con búsqueda flexible.
+    
+    Busca en: title, description, category.name, palabras_clave
+    Soporta búsqueda parcial, case-insensitive, y múltiples palabras.
+    """
+    
+    # ── 1. Base query: formularios habilitados ──
+    query = (
+        db.query(Form)
+        .outerjoin(FormCategory, Form.id_category == FormCategory.id)
+        .options(joinedload(Form.category))
+        .filter(Form.is_enabled == True)
+    )
+    
+    # ── 2. Filtro por tipo de asignación ──
+    if filter_type == "user":
+        # Solo formularios asignados al usuario (como moderador/llenador)
+        assigned_form_ids = (
+            db.query(FormModerators.form_id)
+            .filter(FormModerators.user_id == user_id)
+            .subquery()
+        )
+        query = query.filter(
+            or_(
+                Form.id.in_(assigned_form_ids),
+                Form.user_id == user_id  # También los que él creó
+            )
+        )
+    elif filter_type == "response_user":
+        # Solo formularios que el usuario ya respondió
+        responded_form_ids = (
+            db.query(Response.form_id)
+            .filter(Response.user_id == user_id)
+            .distinct()
+            .subquery()
+        )
+        query = query.filter(Form.id.in_(responded_form_ids))
+    else:
+        # "all" — formularios asignados O respondidos
+        assigned_form_ids = (
+            db.query(FormModerators.form_id)
+            .filter(FormModerators.user_id == user_id)
+            .subquery()
+        )
+        responded_form_ids = (
+            db.query(Response.form_id)
+            .filter(Response.user_id == user_id)
+            .distinct()
+            .subquery()
+        )
+        query = query.filter(
+            or_(
+                Form.id.in_(assigned_form_ids),
+                Form.id.in_(responded_form_ids),
+                Form.user_id == user_id
+            )
+        )
+    
+    # ── 3. Búsqueda por texto ──
+    # Obtener IDs de formularios que coinciden por palabras_clave
+    keyword_form_ids = (
+        db.query(PalabrasClave.form_id)
+        .filter(PalabrasClave.keywords.ilike(f"%{search}%"))
+        .subquery()
+    )
+    
+    # Separar palabras del término de búsqueda
+    search_terms = search.strip().split()
+    
+    if len(search_terms) == 1:
+        # Búsqueda simple: una sola palabra
+        term = search_terms[0]
+        pattern = f"%{term}%"
+        query = query.filter(
+            or_(
+                Form.title.ilike(pattern),
+                Form.description.ilike(pattern),
+                FormCategory.name.ilike(pattern),
+                Form.id.in_(keyword_form_ids),
+                # También buscar por ID si es numérico
+                *([Form.id == int(term)] if term.isdigit() else [])
+            )
+        )
+    else:
+        # Búsqueda compuesta: TODAS las palabras deben aparecer en algún campo
+        # Esto permite buscar "Inspección Diaria" y encontrar "Inspección Diaria de Obra"
+        search_conditions = []
+        for term in search_terms:
+            pattern = f"%{term}%"
+            search_conditions.append(
+                or_(
+                    Form.title.ilike(pattern),
+                    Form.description.ilike(pattern),
+                    FormCategory.name.ilike(pattern),
+                )
+            )
+        query = query.filter(
+            or_(
+                and_(*search_conditions),  # Todas las palabras en algún campo
+                Form.id.in_(keyword_form_ids),  # O match por palabras clave
+            )
+        )
+    
+    # ── 4. Contar total antes de paginar ──
+    total = query.count()
+    total_pages = math.ceil(total / page_size) if total > 0 else 0
+    
+    # ── 5. Paginar y ordenar (más relevantes primero) ──
+    # Orden: coincidencia exacta en título primero, luego por título
+    forms = (
+        query
+        .order_by(
+            # Priorizar coincidencia exacta en título
+            func.length(Form.title).asc(),
+            Form.title.asc()
+        )
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    
+    # ── 6. Serializar ──
+    items = []
+    for form in forms:
+        items.append({
+            "id": form.id,
+            "title": form.title,
+            "description": form.description or "",
+            "user_id": form.user_id,
+            "format_type": form.format_type.value if form.format_type else None,
+            "created_at": form.created_at.isoformat() if form.created_at else None,
+            "id_category": form.id_category,
+            "is_enabled": form.is_enabled,
+            "category": {
+                "id": form.category.id,
+                "name": form.category.name,
+                "description": form.category.description
+            } if form.category else None
+        })
+    
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "search": search,
+        "filter_type": filter_type
+    }
