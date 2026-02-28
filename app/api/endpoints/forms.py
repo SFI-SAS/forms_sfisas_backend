@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 from pathlib import Path
 import shutil
@@ -11,7 +12,7 @@ from app.api.controllers.excel_form_exporter import generate_form_excel
 from app.api.controllers.mail import send_response_answers_email
 from app.redis_client import redis_client
 from app.database import get_db
-from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
+from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, PalabrasClave, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
 from app.crud import  _extract_style_config, _serialize_answers, analyze_form_relations, apply_template_service, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, create_template_service, delete_form, delete_form_category, delete_template_service, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_template_detail_service, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, list_templates_service, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status, update_template_service
 from app.schemas import AlertMessageRequest, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, FormTemplateCreate, FormTemplateDetail, FormTemplateResponse, FormTemplateUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
@@ -2862,69 +2863,164 @@ def update_category_endpoint(
 
 
 @router.get("/users/form_by_user/search")
-def search_user_forms(
-    search: str,  # ← Término de búsqueda (obligatorio)
-    filter_type: str = Query("all", regex="^(all|user|response_user)$"),  # ← Nuevo parámetro
+def search_forms_by_user(
+    db: Session,
+    user_id: int,
+    search: str,
+    filter_type: str = "all",
     page: int = 1,
-    page_size: int = 30,
-    db: Session = Depends(get_db), 
-    current_user: User = Depends(get_current_user)
-):
+    page_size: int = 30
+) -> dict:
     """
-    Busca formularios del usuario autenticado según el tipo de filtro.
-
-    - **search**: Término de búsqueda (obligatorio, busca en title, description y category)
-    - **filter_type**: Tipo de filtro a aplicar:
-        - "all": Todos los formularios asignados al usuario (por defecto)
-        - "user": Solo formularios asignados que debe llenar
-        - "response_user": Solo formularios que ya ha completado/respondido
-    - **page**: Número de página (por defecto 1)
-    - **page_size**: Cantidad de registros por página (por defecto 30, máximo 100)
-    - **Requiere autenticación.**
+    Busca formularios asignados al usuario con búsqueda flexible.
+    
+    Busca en: title, description, category.name, palabras_clave
+    Soporta búsqueda parcial, case-insensitive, y múltiples palabras.
     """
-    try:
-        if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User does not have permission to search forms"
-            )
-        
-        if page_size > 100:
-            page_size = 100
-        
-        # Validar que el término de búsqueda no esté vacío
-        if not search or search.strip() == "":
-            raise HTTPException(
-                status_code=400,
-                detail="El término de búsqueda no puede estar vacío"
-            )
-        
-        forms_data = search_forms_by_user(
-            db, 
-            current_user.id, 
-            search.strip(), 
-            filter_type,
-            page, 
-            page_size
+    
+    # ── 1. Base query: formularios habilitados ──
+    query = (
+        db.query(Form)
+        .outerjoin(FormCategory, Form.id_category == FormCategory.id)
+        .options(joinedload(Form.category))
+        .filter(Form.is_enabled == True)
+    )
+    
+    # ── 2. Filtro por tipo de asignación ──
+    if filter_type == "user":
+        # Solo formularios asignados al usuario (como moderador/llenador)
+        assigned_form_ids = (
+            db.query(FormModerators.form_id)
+            .filter(FormModerators.user_id == user_id)
+            .subquery()
         )
-        
-        if not forms_data["items"]:
-            return {
-                "items": [],
-                "total": 0,
-                "page": page,
-                "page_size": page_size,
-                "total_pages": 0,
-                "search": search,
-                "filter_type": filter_type
-            }
-        
-        return forms_data
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        query = query.filter(
+            or_(
+                Form.id.in_(assigned_form_ids),
+                Form.user_id == user_id  # También los que él creó
+            )
+        )
+    elif filter_type == "response_user":
+        # Solo formularios que el usuario ya respondió
+        responded_form_ids = (
+            db.query(Response.form_id)
+            .filter(Response.user_id == user_id)
+            .distinct()
+            .subquery()
+        )
+        query = query.filter(Form.id.in_(responded_form_ids))
+    else:
+        # "all" — formularios asignados O respondidos
+        assigned_form_ids = (
+            db.query(FormModerators.form_id)
+            .filter(FormModerators.user_id == user_id)
+            .subquery()
+        )
+        responded_form_ids = (
+            db.query(Response.form_id)
+            .filter(Response.user_id == user_id)
+            .distinct()
+            .subquery()
+        )
+        query = query.filter(
+            or_(
+                Form.id.in_(assigned_form_ids),
+                Form.id.in_(responded_form_ids),
+                Form.user_id == user_id
+            )
+        )
+    
+    # ── 3. Búsqueda por texto ──
+    # Obtener IDs de formularios que coinciden por palabras_clave
+    keyword_form_ids = (
+        db.query(PalabrasClave.form_id)
+        .filter(PalabrasClave.keywords.ilike(f"%{search}%"))
+        .subquery()
+    )
+    
+    # Separar palabras del término de búsqueda
+    search_terms = search.strip().split()
+    
+    if len(search_terms) == 1:
+        # Búsqueda simple: una sola palabra
+        term = search_terms[0]
+        pattern = f"%{term}%"
+        query = query.filter(
+            or_(
+                Form.title.ilike(pattern),
+                Form.description.ilike(pattern),
+                FormCategory.name.ilike(pattern),
+                Form.id.in_(keyword_form_ids),
+                # También buscar por ID si es numérico
+                *([Form.id == int(term)] if term.isdigit() else [])
+            )
+        )
+    else:
+        # Búsqueda compuesta: TODAS las palabras deben aparecer en algún campo
+        # Esto permite buscar "Inspección Diaria" y encontrar "Inspección Diaria de Obra"
+        search_conditions = []
+        for term in search_terms:
+            pattern = f"%{term}%"
+            search_conditions.append(
+                or_(
+                    Form.title.ilike(pattern),
+                    Form.description.ilike(pattern),
+                    FormCategory.name.ilike(pattern),
+                )
+            )
+        query = query.filter(
+            or_(
+                and_(*search_conditions),  # Todas las palabras en algún campo
+                Form.id.in_(keyword_form_ids),  # O match por palabras clave
+            )
+        )
+    
+    # ── 4. Contar total antes de paginar ──
+    total = query.count()
+    total_pages = math.ceil(total / page_size) if total > 0 else 0
+    
+    # ── 5. Paginar y ordenar (más relevantes primero) ──
+    # Orden: coincidencia exacta en título primero, luego por título
+    forms = (
+        query
+        .order_by(
+            # Priorizar coincidencia exacta en título
+            func.length(Form.title).asc(),
+            Form.title.asc()
+        )
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    
+    # ── 6. Serializar ──
+    items = []
+    for form in forms:
+        items.append({
+            "id": form.id,
+            "title": form.title,
+            "description": form.description or "",
+            "user_id": form.user_id,
+            "format_type": form.format_type.value if form.format_type else None,
+            "created_at": form.created_at.isoformat() if form.created_at else None,
+            "id_category": form.id_category,
+            "is_enabled": form.is_enabled,
+            "category": {
+                "id": form.category.id,
+                "name": form.category.name,
+                "description": form.category.description
+            } if form.category else None
+        })
+    
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "search": search,
+        "filter_type": filter_type
+    }
 
 
 # Mover categoría
