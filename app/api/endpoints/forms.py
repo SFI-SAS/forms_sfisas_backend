@@ -7,11 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile,Query,Request,
 from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.orm import Session, joinedload, defer
 from typing import Any, List, Optional
+from app.api.controllers.excel_form_exporter import generate_form_excel
 from app.api.controllers.mail import send_response_answers_email
 from app.redis_client import redis_client
 from app.database import get_db
 from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
-from app.crud import  analyze_form_relations, apply_template_service, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, create_template_service, delete_form, delete_form_category, delete_template_service, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_template_detail_service, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, list_templates_service, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status, update_template_service
+from app.crud import  _extract_style_config, _serialize_answers, analyze_form_relations, apply_template_service, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, create_template_service, delete_form, delete_form_category, delete_template_service, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_template_detail_service, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, list_templates_service, move_category, process_regisfacial_answer, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, toggle_form_status, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status, update_template_service
 from app.schemas import AlertMessageRequest, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, FormTemplateCreate, FormTemplateDetail, FormTemplateResponse, FormTemplateUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
 from io import BytesIO
@@ -1356,23 +1357,10 @@ def get_forms_by_answers(
     forms = get_moderated_forms_by_answers(answer_ids, current_user.id, db)
     return forms
 
-
-
 @router.get("/{form_id}/questions-answers/excel")
 def download_questions_answers_excel(form_id: int, db: Session = Depends(get_db)):
     """
     Genera un archivo Excel con las preguntas y respuestas de un formulario específico.
-
-    Este endpoint consulta todas las preguntas y sus respectivas respuestas
-    asociadas a un formulario dado y devuelve un archivo Excel para su descarga.
-
-    Args:
-        form_id (int): ID del formulario del cual se desean exportar los datos.
-        db (Session): Sesión de base de datos proporcionada por FastAPI.
-
-    Returns:
-        StreamingResponse: Archivo Excel (.xlsx) con los datos de preguntas y respuestas.
-        Si el formulario no existe, retorna un error 404.
     """
     data = get_questions_and_answers_by_form_id(db, form_id)
     if not data:
@@ -1388,23 +1376,13 @@ def download_questions_answers_excel(form_id: int, db: Session = Depends(get_db)
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=Formulario_{form_id}_respuestas.xlsx"}
     )
-    
-    
+
+
 @router.get("/{form_id}/answers/excel/all-users")
 def download_questions_answers_excel_all_users(form_id: int, db: Session = Depends(get_db)):
     """
     Genera un archivo Excel con las preguntas y respuestas de un formulario específico.
-
-    Este endpoint es idéntico al endpoint /{form_id}/questions-answers/excel
-    pero con una ruta diferente para uso en emails automáticos.
-    
-    Args:
-        form_id (int): ID del formulario del cual se desean exportar los datos.
-        db (Session): Sesión de base de datos proporcionada por FastAPI.
-
-    Returns:
-        StreamingResponse: Archivo Excel (.xlsx) con los datos de preguntas y respuestas.
-        Si el formulario no existe, retorna un error 404.
+    Ruta alternativa para uso en emails automáticos.
     """
     data = get_questions_and_answers_by_form_id(db, form_id)
     if not data:
@@ -1420,26 +1398,91 @@ def download_questions_answers_excel_all_users(form_id: int, db: Session = Depen
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=Formulario_{form_id}_respuestas.xlsx"}
     )
-                                                                                                         
+
+
 @router.get("/{form_id}/questions-answers/excel/user")
-def download_user_responses_excel(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def download_user_responses_excel(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
-    Exporta las respuestas de un usuario a un formulario en un archivo Excel.
+    Exporta las respuestas del usuario a Excel.
+    Si el formulario tiene form_design, replica el diseño visual completo.
+    Si no, hace fallback al formato simple con pandas.
 
-    Este endpoint recupera todas las respuestas dadas por el usuario autenticado
-    a un formulario específico y genera un archivo Excel con la información.
-
-    Args:
-        form_id (int): ID del formulario.
-        db (Session): Sesión de base de datos.
-        current_user (User): Usuario autenticado (inyectado con Depends).
-
-    Returns:
-        StreamingResponse: Archivo Excel descargable con las respuestas del usuario.
+    v3.0: Reconstruye repeated_id desde form_design + FormAnswer.is_repeated
     """
+    from sqlalchemy.orm import joinedload
+    import json
+
+    # 1. Obtener el formulario
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+
+    # 2. Verificar si tiene form_design
+    form_design = form.form_design
+
+    if isinstance(form_design, str):
+        try:
+            form_design = json.loads(form_design)
+        except json.JSONDecodeError:
+            form_design = None
+
+    # 3. Si tiene form_design → generar Excel con diseño
+    if form_design and isinstance(form_design, list) and len(form_design) > 0:
+
+        responses = (
+            db.query(Response)
+            .filter(Response.form_id == form_id, Response.user_id == current_user.id)
+            .order_by(Response.submitted_at.desc())
+            .all()
+        )
+
+        if not responses:
+            raise HTTPException(
+                status_code=404,
+                detail="No se encontraron respuestas para este usuario"
+            )
+
+        latest = responses[0]
+
+        answers_orm = (
+            db.query(Answer)
+            .options(joinedload(Answer.question))
+            .filter(Answer.response_id == latest.id)
+            .all()
+        )
+
+        # ✅ Serializar CON reconstrucción de repeated_id
+        answers = _serialize_answers(answers_orm, db, form_id, form_design)
+
+        style_config = _extract_style_config(form_design)
+
+        output = generate_form_excel(
+            form_design=form_design,
+            answers=answers,
+            style_config=style_config,
+            form_title=form.title,
+            response_id=latest.id,
+        )
+
+        filename = f"Formato_{form.title.replace(' ', '_')}_{form_id}.xlsx"
+
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+
+    # 4. Fallback: formato simple con pandas
     data = get_questions_and_answers_by_form_id_and_user(db, form_id, current_user.id)
     if not data or not data["data"]:
-        raise HTTPException(status_code=404, detail="No se encontraron respuestas para este usuario en el formulario")
+        raise HTTPException(
+            status_code=404,
+            detail="No se encontraron respuestas para este usuario en el formulario"
+        )
 
     df = pd.DataFrame(data["data"])
     output = BytesIO()
@@ -1449,10 +1492,11 @@ def download_user_responses_excel(form_id: int, db: Session = Depends(get_db), c
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename=Respuestas_usuario_{current_user.id}_formulario_{form_id}.xlsx"}
+        headers={
+            "Content-Disposition": f"attachment; filename=Respuestas_usuario_{current_user.id}_formulario_{form_id}.xlsx"
+        }
     )
-        
-                                                                                                                                                                                                                                                             
+                                                                                                                                                                                                                                     
                       
 @router.get("/{form_id}/responses_data_forms")
 def get_form_responses(form_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -1509,33 +1553,204 @@ def get_user_responses(user_id: int, db: Session = Depends(get_db), current_user
         raise HTTPException(status_code=404, detail="User or responses not found")
     return data
 
-
 @router.get("/{form_id}/questions-answers/excel/user/{id_user}")
 def download_user_responses_excel(
     form_id: int,
     id_user: int,
-    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
-    Descarga en formato Excel las respuestas de un usuario para un formulario.
-
-    - **form_id**: ID del formulario.
-    - **id_user**: ID del usuario cuyas respuestas se desean consultar.
-    - **current_user**: Usuario autenticado, debe ser tipo `creator` o `admin`.
-    - **db**: Sesión de base de datos.
-
-    Retorna un archivo Excel que contiene:
-    - Información del usuario.
-    - Preguntas del formulario.
-    - Respuestas del usuario (incluyendo archivos si aplica).
+    Descarga en formato Excel las respuestas de un usuario específico.
+    Si tiene form_design → replica el diseño visual completo.
+    Si no → fallback al formato simple con pandas.
     """
+    from sqlalchemy.orm import joinedload
+    from copy import copy
+    from openpyxl import Workbook, load_workbook
+
+
+    # Validar permisos
     if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create forms"
         )
+
+    # 1. Obtener el formulario
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+
+    # 2. Obtener form_design
+    form_design = form.form_design
+
+    if isinstance(form_design, str):
+        import json
+        try:
+            form_design = json.loads(form_design)
+        except json.JSONDecodeError:
+            form_design = None
+
+    # 3. Si tiene form_design → generar Excel con diseño
+    if form_design and isinstance(form_design, list) and len(form_design) > 0:
+
+        # Consultar respuestas del usuario específico
+        all_responses = (
+            db.query(Response)
+            .filter(Response.form_id == form_id, Response.user_id == id_user)
+            .order_by(Response.submitted_at.desc())
+            .all()
+        )
+
+        if not all_responses:
+            raise HTTPException(
+                status_code=404,
+                detail="No se encontraron respuestas para este usuario"
+            )
+
+        # Extraer style_config
+        style_config = None
+        for item in form_design:
+            props = item.get("props") or {}
+            if props.get("styleConfig"):
+                style_config = props["styleConfig"]
+                break
+            if item.get("headerTable") and not item.get("type"):
+                style_config = item
+                break
+
+        # Nombre del usuario
+        target_user = db.query(User).filter(User.id == id_user).first()
+        user_name = target_user.name if target_user else f"Usuario_{id_user}"
+        safe_name = "".join(c for c in user_name if c.isalnum() or c in " _-")[:15]
+
+        # Si solo hay 1 respuesta → una sola hoja
+        if len(all_responses) == 1:
+            resp = all_responses[0]
+            answers_orm = (
+                db.query(Answer)
+                .options(joinedload(Answer.question))
+                .filter(Answer.response_id == resp.id)
+                .all()
+            )
+
+            answers = []
+            for ans in answers_orm:
+                answers.append({
+                    "id_answer":               ans.id,
+                    "question_id":             ans.question_id,
+                    "question_text":           ans.question.question_text if ans.question else "",
+                    "question_type":           ans.question.question_type.value if (
+                                                   ans.question and ans.question.question_type
+                                               ) else "text",
+                    "answer_text":             ans.answer_text or "",
+                    "file_path":               ans.file_path or "",
+                    "repeated_id":             getattr(ans, "repeated_id", None),
+                    "form_design_element_id":  getattr(ans, "form_design_element_id", None),
+                })
+
+            output = generate_form_excel(
+                form_design=form_design,
+                answers=answers,
+                style_config=style_config,
+                form_title=form.title,
+                response_id=resp.id,
+            )
+
+            filename = f"Respuestas_{safe_name}_{form.title.replace(' ', '_')}_{form_id}.xlsx"
+
+            return StreamingResponse(
+                output,
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+            )
+
+        # Si hay múltiples respuestas → una hoja por cada una
+        wb_final = Workbook()
+        wb_final.remove(wb_final.active)
+
+        for resp in all_responses:
+            answers_orm = (
+                db.query(Answer)
+                .options(joinedload(Answer.question))
+                .filter(Answer.response_id == resp.id)
+                .all()
+            )
+
+            answers = []
+            for ans in answers_orm:
+                answers.append({
+                    "id_answer":               ans.id,
+                    "question_id":             ans.question_id,
+                    "question_text":           ans.question.question_text if ans.question else "",
+                    "question_type":           ans.question.question_type.value if (
+                                                   ans.question and ans.question.question_type
+                                               ) else "text",
+                    "answer_text":             ans.answer_text or "",
+                    "file_path":               ans.file_path or "",
+                    "repeated_id":             getattr(ans, "repeated_id", None),
+                    "form_design_element_id":  getattr(ans, "form_design_element_id", None),
+                })
+
+            single_output = generate_form_excel(
+                form_design=form_design,
+                answers=answers,
+                style_config=style_config,
+                form_title=form.title,
+                response_id=resp.id,
+            )
+
+            temp_wb = load_workbook(single_output)
+            temp_ws = temp_wb.active
+
+            sheet_name = f"R{resp.id}"[:31]
+            existing_names = wb_final.sheetnames
+            if sheet_name in existing_names:
+                counter = 2
+                while f"{sheet_name[:28]}_{counter}" in existing_names:
+                    counter += 1
+                sheet_name = f"{sheet_name[:28]}_{counter}"
+
+            new_ws = wb_final.create_sheet(title=sheet_name)
+
+            # Copiar celdas con copy() para evitar StyleProxy error
+            for row in temp_ws.iter_rows():
+                for cell in row:
+                    new_cell = new_ws.cell(
+                        row=cell.row,
+                        column=cell.column,
+                        value=cell.value
+                    )
+                    if cell.has_style:
+                        new_cell.font = copy(cell.font)
+                        new_cell.fill = copy(cell.fill)
+                        new_cell.alignment = copy(cell.alignment)
+                        new_cell.border = copy(cell.border)
+                        new_cell.number_format = cell.number_format
+
+            for col_letter, dim in temp_ws.column_dimensions.items():
+                new_ws.column_dimensions[col_letter].width = dim.width
+            for row_num, dim in temp_ws.row_dimensions.items():
+                new_ws.row_dimensions[row_num].height = dim.height
+            for merge_range in temp_ws.merged_cells.ranges:
+                new_ws.merge_cells(str(merge_range))
+
+        output = BytesIO()
+        wb_final.save(output)
+        output.seek(0)
+
+        filename = f"Respuestas_{safe_name}_{form.title.replace(' ', '_')}_{form_id}.xlsx"
+
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+
+    # 4. Fallback: formato simple con pandas
     data = get_questions_and_answers_by_form_id_and_user(db, form_id, id_user)
-    
+
     if not data or not data["data"]:
         raise HTTPException(
             status_code=404,
@@ -1554,7 +1769,6 @@ def download_user_responses_excel(
             "Content-Disposition": f"attachment; filename=Respuestas_usuario_{id_user}_formulario_{form_id}.xlsx"
         }
     )
-
 @router.get("/form-schedules_table/", response_model=List[FormScheduleOut], )
 def get_form_schedules(form_id: int, user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
@@ -1588,17 +1802,142 @@ def get_form_schedules(form_id: int, user_id: int, db: Session = Depends(get_db)
 
         return schedules
 
+
+
 @router.get("/{form_id}/questions-answers/excel/all-users")
 def download_all_user_responses_excel(
     form_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
-    Descarga mejorada con:
-    - Hoja principal con todas las respuestas
-    - Hojas adicionales para repetidores
+    Descarga TODAS las respuestas de TODOS los usuarios para un formulario.
+    Si tiene form_design → genera un Excel con una hoja por respuesta, replicando el diseño.
+    Si no → fallback al formato simple.
     """
-    # ✅ Usa la función mejorada
+    from sqlalchemy.orm import joinedload
+    from openpyxl import Workbook, load_workbook
+    from copy import copy
+
+    # 1. Obtener el formulario
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+
+    # 2. Obtener form_design
+    form_design = form.form_design
+
+    if isinstance(form_design, str):
+        import json
+        try:
+            form_design = json.loads(form_design)
+        except json.JSONDecodeError:
+            form_design = None
+
+    # 3. Si tiene form_design → generar Excel con diseño
+    if form_design and isinstance(form_design, list) and len(form_design) > 0:
+
+        all_responses = (
+            db.query(Response)
+            .filter(Response.form_id == form_id)
+            .order_by(Response.submitted_at.desc())
+            .all()
+        )
+
+        if not all_responses:
+            raise HTTPException(
+                status_code=404,
+                detail="No se encontraron respuestas para este formulario"
+            )
+
+        style_config = _extract_style_config(form_design)
+
+        # Crear workbook final
+        wb_final = Workbook()
+        wb_final.remove(wb_final.active)
+
+        for resp in all_responses:
+            # Obtener answers
+            answers_orm = (
+                db.query(Answer)
+                .options(joinedload(Answer.question))
+                .filter(Answer.response_id == resp.id)
+                .all()
+            )
+
+            # Nombre del usuario
+            user = db.query(User).filter(User.id == resp.user_id).first()
+            user_name = user.name if user else f"Usuario_{resp.user_id}"
+            safe_name = "".join(c for c in user_name if c.isalnum() or c in " _-")[:15]
+
+            # ✅ CORREGIDO: Usar _serialize_answers para reconstruir repeated_id
+            answers = _serialize_answers(answers_orm, db, form_id, form_design)
+
+            # Generar Excel individual
+            single_output = generate_form_excel(
+                form_design=form_design,
+                answers=answers,
+                style_config=style_config,
+                form_title=form.title,
+                response_id=resp.id,
+            )
+
+            # Cargar el workbook temporal
+            temp_wb = load_workbook(single_output)
+            temp_ws = temp_wb.active
+
+            # Nombre de hoja único
+            sheet_name = f"R{resp.id}_{safe_name}"[:31]
+            existing_names = wb_final.sheetnames
+            if sheet_name in existing_names:
+                counter = 2
+                while f"{sheet_name[:28]}_{counter}" in existing_names:
+                    counter += 1
+                sheet_name = f"{sheet_name[:28]}_{counter}"
+
+            new_ws = wb_final.create_sheet(title=sheet_name)
+
+            # Copiar celdas con estilos
+            for row in temp_ws.iter_rows():
+                for cell in row:
+                    new_cell = new_ws.cell(
+                        row=cell.row,
+                        column=cell.column,
+                        value=cell.value
+                    )
+                    if cell.has_style:
+                        new_cell.font = copy(cell.font)
+                        new_cell.fill = copy(cell.fill)
+                        new_cell.alignment = copy(cell.alignment)
+                        new_cell.border = copy(cell.border)
+                        new_cell.number_format = cell.number_format
+
+            # Copiar anchos de columna
+            for col_letter, dim in temp_ws.column_dimensions.items():
+                new_ws.column_dimensions[col_letter].width = dim.width
+
+            # Copiar alturas de fila
+            for row_num, dim in temp_ws.row_dimensions.items():
+                new_ws.row_dimensions[row_num].height = dim.height
+
+            # Copiar merges
+            for merge_range in temp_ws.merged_cells.ranges:
+                new_ws.merge_cells(str(merge_range))
+
+        # Guardar
+        output = BytesIO()
+        wb_final.save(output)
+        output.seek(0)
+
+        filename = f"Todas_Respuestas_{form.title.replace(' ', '_')}_{form_id}.xlsx"
+
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+
+    # 4. Fallback: formato simple
     data = get_all_user_responses_by_form_id_improved(db, form_id)
 
     if not data or not data["data"]:
@@ -1606,8 +1945,7 @@ def download_all_user_responses_excel(
             status_code=404,
             detail="No se encontraron respuestas para este formulario"
         )
-    
-    # ✅ Genera Excel mejorado
+
     output = generate_excel_with_repeaters(data)
 
     return StreamingResponse(
@@ -1617,7 +1955,6 @@ def download_all_user_responses_excel(
             "Content-Disposition": f"attachment; filename=Respuestas_formulario_{form_id}_usuarios.xlsx"
         }
     )
-
 @router.get("/users/unanswered_forms",
     summary="Obtener formularios no respondidos",
     description="Retorna los formularios asignados al usuario autenticado que aún no han sido respondidos."

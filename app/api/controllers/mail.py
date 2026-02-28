@@ -1,927 +1,836 @@
+"""
+email_service.py — SafeMetrics
+v3.1 — Adjuntos FUNCIONALES en correos de cierre de formato
+
+FIX v3.1:
+  ✅ send_action_notification_email ahora busca la respuesta más reciente
+     y genera PDF/Excel INTERNAMENTE — ya no depende de pdf_bytes externo
+  ✅ send_download_link  → Adjunta Excel (.xlsx) con diseño completo
+  ✅ send_pdf_attachment → Adjunta PDF (.pdf) con diseño completo
+  ✅ generate_report     → Adjunta PDF (.pdf) con diseño completo
+  ✅ Nuevo parámetro response_id (opcional, retrocompatible)
+"""
+
 import mimetypes
 import os
 import smtplib
 import json
+import io
 from email.message import EmailMessage
 from email.utils import formataddr
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from fastapi import UploadFile
 
-from app.models import Response, Form
+from app.api.controllers.excel_form_exporter import generate_form_excel
+from app.api.controllers.pdf_form_exporter import FormPdfExporter
+from app.models import Response, Form, Answer, FormAnswer, User
 from app.schemas import EmailAnswerItem
 
 
-# Configuración del servidor SMTP alternativo
+# ═══════════════════════════════════════════════════════════════
+# CONFIGURACIÓN SMTP
+# ═══════════════════════════════════════════════════════════════
+
 MAIL_HOST_ALT = os.getenv("MAIL_HOST_ALT")
 MAIL_PORT_ALT = os.getenv("MAIL_PORT_ALT")
 MAIL_USERNAME_ALT = os.getenv("MAIL_USERNAME_ALT")
 MAIL_PASSWORD_ALT = os.getenv("MAIL_PASSWORD_ALT")
 MAIL_FROM_ADDRESS_ALT = os.getenv("MAIL_FROM_ADDRESS_ALT")
 
-def send_email_daily_forms(user_email: str, user_name: str, forms: List[Dict]) -> bool:
+# ── Paleta corporativa ──
+_C = {
+    "brand":      "#0F8594",
+    "brand_dark": "#0A5F6A",
+    "brand_bg":   "#EDF7F8",
+    "text":       "#1F2937",
+    "text_sec":   "#4B5563",
+    "text_muted": "#9CA3AF",
+    "border":     "#E5E7EB",
+    "bg":         "#F9FAFB",
+    "white":      "#FFFFFF",
+    "red":        "#DC2626",
+    "red_bg":     "#FEF2F2",
+    "red_dark":   "#991B1B",
+    "amber":      "#D97706",
+    "amber_bg":   "#FFFBEB",
+    "amber_dark": "#92400E",
+    "green":      "#059669",
+    "green_bg":   "#ECFDF5",
+    "green_dark": "#065F46",
+}
 
-    try:
-        # Validar que los datos sean correctos
-        if not user_email or not user_name:
-            print(f"⚠️ Datos inválidos para el correo: user_email={user_email}, user_name={user_name}")
-            return False
 
-        current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# ═══════════════════════════════════════════════════════════════
+# TEMPLATE BASE — HTML profesional reutilizable
+# ═══════════════════════════════════════════════════════════════
 
-        # Construcción del HTML con los formularios
-        form_list_html = "".join(
-            f"""
-            <tr>
-                <td style="padding: 10px; border-bottom: 1px solid #ddd;">
-                    <h3 style="color: #00498C; margin: 5px 0;">{form.get('title', 'Formulario sin título')}</h3>
-                    <p style="margin: 5px 0; color: #555;">{form.get('description', 'Sin descripción')}</p>
-                </td>
-            </tr>
-            """ 
-            for form in forms
-        )
+def _base_email_html(title: str, body_content: str, footer_note: str = "") -> str:
+    """Genera el wrapper HTML de todos los correos."""
+    year = datetime.now().year
+    date_str = datetime.now().strftime("%d/%m/%Y · %H:%M")
 
+    return f"""<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;font-family:'Segoe UI',Helvetica,Arial,sans-serif;background-color:#F3F4F6;color:{_C['text']};line-height:1.6;-webkit-text-size-adjust:100%;">
 
-        # Verificar que haya formularios antes de enviar el email
-        if not form_list_html:
-            print(f"⚠️ No hay formularios para enviar a {user_email}.")
-            return False
+<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#F3F4F6;padding:40px 16px;">
+<tr><td align="center">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;background-color:{_C['white']};border:1px solid {_C['border']};border-radius:6px;">
 
-        # Construcción del mensaje
-        msg = EmailMessage()
-        subject = f"📋 Formulario(s) Pendiente(s) para Hoy - {current_date}"
-        msg["Subject"] = subject
-        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
-        msg["To"] = formataddr((user_name, user_email))
-
-        html_content = f"""
-<html>
-<head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-</head>
-<body style="font-size: 17px; text-align: center; padding: 40px; background-color: #f4f4f4;">
-
-    <table align="center" style="width: 100%; max-width: 500px; background-color: white; border-radius: 10px; box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); padding: 25px;">
+    <!-- HEADER -->
+    <tr><td style="padding:20px 32px;border-bottom:2px solid {_C['brand']};">
+        <table width="100%" cellpadding="0" cellspacing="0">
         <tr>
-            <td align="center">
-                <h2 style="color: #00498C;">📋 Formularios Pendientes</h2>
-                <p>Estimado/a <strong>{user_name}</strong>,</p>
-                <p>Safemetrics le recuerda que tiene formularios asignados a su usuario que deben ser completados.</p>
-
-                <table style="width: 100%; text-align: left; margin-top: 15px; border-collapse: collapse;">
-                    {form_list_html}
-                </table>
-
-                <p style="margin-top: 20px;">Le solicitamos que complete estos formularios a la brevedad.</p>
-                
-                 <a href="https://forms.sfisas.com.co/" style="color: #007bff; text-decoration: underline;" target="_blank">
-  
-</a>
-                                        <hr style="margin: 30px 0;">
-                        <p style="font-size: 13px; color: #888;">Enviado el <strong>{current_date}</strong></p>
-            </td>
+            <td style="font-size:17px;font-weight:700;color:{_C['brand']};letter-spacing:-0.2px;">SafeMetrics</td>
+            <td align="right" style="font-size:12px;color:{_C['text_muted']};">{date_str}</td>
         </tr>
-    </table>
+        </table>
+    </td></tr>
 
-    
+    <!-- TITULO -->
+    <tr><td style="padding:28px 32px 12px;">
+        <h1 style="margin:0;font-size:19px;font-weight:600;color:{_C['text']};">{title}</h1>
+    </td></tr>
+
+    <!-- CUERPO -->
+    <tr><td style="padding:0 32px 32px;">
+        {body_content}
+    </td></tr>
+
+    <!-- FOOTER -->
+    <tr><td style="padding:18px 32px;background-color:{_C['bg']};border-top:1px solid {_C['border']};">
+        {f'<p style="margin:0 0 6px;font-size:11px;color:{_C["text_muted"]};text-align:center;">{footer_note}</p>' if footer_note else ''}
+        <p style="margin:0;font-size:11px;color:{_C['text_muted']};text-align:center;">&copy; {year} SafeMetrics &mdash; Correo generado automáticamente.</p>
+    </td></tr>
+
+</table>
+</td></tr>
+</table>
 
 </body>
-</html>
+</html>"""
 
-        """
 
-        if not html_content:
-            print("⚠️ El contenido del email está vacío, no se enviará el correo.")
+# ── Helpers de contenido ──
+
+def _p(text: str) -> str:
+    return f'<p style="font-size:14px;color:{_C["text_sec"]};margin:0 0 14px;">{text}</p>'
+
+
+def _info_row(label: str, value: str) -> str:
+    return f"""<tr>
+        <td style="padding:5px 0;color:{_C['text_muted']};font-size:13px;width:38%;vertical-align:top;">{label}</td>
+        <td style="padding:5px 0;color:{_C['text']};font-size:13px;vertical-align:top;">{value}</td>
+    </tr>"""
+
+
+def _info_block(heading: str, rows_html: str) -> str:
+    return f"""<div style="margin:18px 0;">
+        <p style="margin:0 0 8px;font-size:12px;font-weight:600;color:{_C['text']};text-transform:uppercase;letter-spacing:0.5px;">{heading}</p>
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid {_C['border']};">{rows_html}</table>
+    </div>"""
+
+
+def _callout(text: str, style: str = "info") -> str:
+    """Cuadro lateral (info / success / warning / error)."""
+    m = {
+        "info":    (_C["brand"],  _C["brand_bg"],  _C["brand_dark"]),
+        "success": (_C["green"],  _C["green_bg"],  _C["green_dark"]),
+        "warning": (_C["amber"],  _C["amber_bg"],  _C["amber_dark"]),
+        "error":   (_C["red"],    _C["red_bg"],    _C["red_dark"]),
+    }
+    bdr, bg, clr = m.get(style, m["info"])
+    return f'<div style="margin:14px 0;padding:11px 14px;border-left:3px solid {bdr};background:{bg};border-radius:2px;"><p style="margin:0;font-size:13px;color:{clr};">{text}</p></div>'
+
+
+def _btn(url: str, label: str = "Ir a SafeMetrics") -> str:
+    return f"""<div style="margin:22px 0;text-align:center;">
+        <a href="{url}" style="display:inline-block;padding:10px 26px;background-color:{_C['brand']};color:#fff;text-decoration:none;border-radius:4px;font-size:13px;font-weight:600;">{label}</a>
+    </div>"""
+
+_APP_URL = "https://forms.sfisas.com.co/"
+_API_URL = "https://api-forms-sfi.service.saferut.com"
+
+
+# ── SMTP ──
+
+def _send_msg(msg: EmailMessage) -> bool:
+    try:
+        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
+            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
+            smtp.send_message(msg)
+        return True
+    except Exception as e:
+        print(f"❌ Error SMTP: {e}")
+        return False
+
+
+def _new_msg(subject: str, to_email: str, to_name: str = "") -> EmailMessage:
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = formataddr(("SafeMetrics", MAIL_FROM_ADDRESS_ALT))
+    msg["To"] = formataddr((to_name, to_email)) if to_name else to_email
+    return msg
+
+
+# ═══════════════════════════════════════════════════════════════
+# RECONSTRUCCIÓN DE repeated_id  (para adjuntos con diseño)
+# ═══════════════════════════════════════════════════════════════
+
+def _reconstruct_repeated_ids(form_design: list, answers_list: list, repeated_question_ids: set):
+    """Reconstruye repeated_id sin columna en modelo Answer."""
+    repeaters = []
+
+    def _find(items):
+        for it in items:
+            if it.get("type") == "repeater":
+                repeaters.append(it)
+            for ch in (it.get("children") or []):
+                _find([ch])
+    _find(form_design)
+
+    if not repeaters:
+        return
+
+    elem_map, q_map = {}, {}
+    for rep in repeaters:
+        rid = rep.get("id")
+        if not rid:
+            continue
+        for ch in (rep.get("children") or []):
+            cid = ch.get("id")
+            if cid:
+                elem_map[cid] = rid
+            lid = ch.get("linkExternalId")
+            if lid is not None:
+                q_map[int(lid)] = rid
+            sqid = (ch.get("props") or {}).get("sourceQuestionId")
+            if sqid is not None:
+                q_map[int(sqid)] = rid
+
+    for ans in answers_list:
+        if ans.get("repeated_id"):
+            continue
+        eid = ans.get("form_design_element_id")
+        qid = ans.get("question_id")
+
+        if eid and eid in elem_map:
+            ans["repeated_id"] = elem_map[eid]
+        elif qid is not None and qid in q_map:
+            ans["repeated_id"] = q_map[qid]
+        elif qid is not None and qid in repeated_question_ids:
+            ans["repeated_id"] = repeaters[0].get("id")
+
+
+def _serialize_answers_for_export(answers_orm, db, form_id: int, form_design: list) -> list:
+    """Serializa answers ORM → dicts y reconstruye repeated_id."""
+    answers = []
+    for ans in answers_orm:
+        answers.append({
+            "id_answer":              ans.id,
+            "question_id":            ans.question_id,
+            "question_text":          ans.question.question_text if ans.question else "",
+            "question_type":          (ans.question.question_type.value if ans.question and ans.question.question_type else "text"),
+            "answer_text":            ans.answer_text or "",
+            "file_path":              ans.file_path or "",
+            "repeated_id":            None,
+            "form_design_element_id": getattr(ans, "form_design_element_id", None),
+        })
+
+    rqids = {
+        fa.question_id
+        for fa in db.query(FormAnswer.question_id)
+            .filter(FormAnswer.form_id == form_id, FormAnswer.is_repeated == True).all()
+    }
+    _reconstruct_repeated_ids(form_design, answers, rqids)
+    return answers
+
+
+def _extract_style_config(form_design: list):
+    for item in form_design:
+        props = item.get("props") or {}
+        if props.get("styleConfig"):
+            return props["styleConfig"]
+        if item.get("headerTable") and not item.get("type"):
+            return item
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════
+# GENERACIÓN DE ADJUNTOS CON DISEÑO COMPLETO
+# ═══════════════════════════════════════════════════════════════
+
+def generate_response_pdf_bytes(db, form, response_obj) -> Optional[bytes]:
+    """Genera PDF con diseño completo (soporta repeaters). Retorna bytes o None."""
+    from sqlalchemy.orm import joinedload
+    try:
+        fd = form.form_design
+        if isinstance(fd, str):
+            fd = json.loads(fd)
+        if not fd or not isinstance(fd, list):
+            print(f"⚠️ form_design vacío o inválido para form {form.id}")
+            return None
+
+        answers_orm = (
+            db.query(Answer).options(joinedload(Answer.question))
+            .filter(Answer.response_id == response_obj.id).all()
+        )
+        if not answers_orm:
+            print(f"⚠️ No se encontraron answers para response {response_obj.id}")
+            return None
+
+        answers = _serialize_answers_for_export(answers_orm, db, form.id, fd)
+        sc = _extract_style_config(fd)
+
+        exporter = FormPdfExporter(
+            form_design=fd, answers=answers, style_config=sc,
+            form_title=form.title, response_id=response_obj.id,
+        )
+        result = exporter.generate().getvalue()
+        print(f"✅ PDF generado: {len(result)} bytes para response #{response_obj.id}")
+        return result
+    except Exception as e:
+        print(f"❌ Error PDF response {response_obj.id}: {e}")
+        import traceback; traceback.print_exc()
+        return None
+
+
+def generate_response_excel_bytes(db, form, response_obj) -> Optional[bytes]:
+    """Genera Excel con diseño completo (soporta repeaters). Retorna bytes o None."""
+    from sqlalchemy.orm import joinedload
+    try:
+        fd = form.form_design
+        if isinstance(fd, str):
+            fd = json.loads(fd)
+        if not fd or not isinstance(fd, list):
+            print(f"⚠️ form_design vacío o inválido para form {form.id}")
+            return None
+
+        answers_orm = (
+            db.query(Answer).options(joinedload(Answer.question))
+            .filter(Answer.response_id == response_obj.id).all()
+        )
+        if not answers_orm:
+            print(f"⚠️ No se encontraron answers para response {response_obj.id}")
+            return None
+
+        answers = _serialize_answers_for_export(answers_orm, db, form.id, fd)
+        sc = _extract_style_config(fd)
+
+        buf = generate_form_excel(
+            form_design=fd, answers=answers, style_config=sc,
+            form_title=form.title, response_id=response_obj.id,
+        )
+        result = buf.getvalue()
+        print(f"✅ Excel generado: {len(result)} bytes para response #{response_obj.id}")
+        return result
+    except Exception as e:
+        print(f"❌ Error Excel response {response_obj.id}: {e}")
+        import traceback; traceback.print_exc()
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════
+#  1. FORMULARIOS PENDIENTES (diario)
+# ═══════════════════════════════════════════════════════════════
+
+def send_email_daily_forms(user_email: str, user_name: str, forms: List[Dict]) -> bool:
+    try:
+        if not user_email or not user_name or not forms:
             return False
 
-        msg.set_content(html_content, subtype="html")
+        rows = ""
+        for i, f in enumerate(forms):
+            bg = _C['bg'] if i % 2 == 0 else _C['white']
+            rows += f"""<tr style="background:{bg};">
+                <td style="padding:9px 12px;border-bottom:1px solid {_C['border']};font-size:13px;font-weight:600;">{f.get('title','Sin título')}</td>
+                <td style="padding:9px 12px;border-bottom:1px solid {_C['border']};font-size:13px;color:{_C['text_sec']};">{f.get('description','Sin descripción')}</td>
+            </tr>"""
 
-        # Enviar el correo usando SMTP alternativo
-        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
-            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
-            smtp.send_message(msg)
+        hdr_s = f'padding:9px 12px;text-align:left;font-size:11px;font-weight:600;color:{_C["text_muted"]};text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid {_C["border"]};'
 
-        print(f"📧 Correo enviado exitosamente a {user_email}.")
-        return True
+        body = _p(f'Estimado/a <strong>{user_name}</strong>, tiene formularios pendientes de completar:')
+        body += f"""<table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid {_C['border']};border-collapse:collapse;border-radius:4px;overflow:hidden;">
+            <thead><tr style="background:{_C['bg']};">
+                <th style="{hdr_s}">Formulario</th>
+                <th style="{hdr_s}">Descripción</th>
+            </tr></thead>
+            <tbody>{rows}</tbody>
+        </table>"""
+        body += _btn(_APP_URL)
 
+        html = _base_email_html("Formularios pendientes", body)
+        msg = _new_msg(f"Formularios pendientes — {datetime.now().strftime('%d/%m/%Y')}", user_email, user_name)
+        msg.set_content(f"Tiene {len(forms)} formularios pendientes. Ingrese a SafeMetrics para completarlos.")
+        msg.add_alternative(html, subtype="html")
+        return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error al enviar el correo a {user_email}: {str(e)}")
+        print(f"❌ Error correo diario a {user_email}: {e}")
         return False
 
 
-from datetime import datetime
+# ═══════════════════════════════════════════════════════════════
+#  2. ADJUNTO DE RESPUESTAS
+# ═══════════════════════════════════════════════════════════════
 
 def send_email_with_attachment(
-    to_email: str,
-    name_form: str,
-    to_name: str,
-    upload_file: UploadFile,
+    to_email: str, name_form: str, to_name: str, upload_file: UploadFile,
 ) -> bool:
     try:
-        msg = EmailMessage()
-        msg["Subject"] = "📎 Respuestas adjuntas - Safemetrics"
-        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
-        msg["To"] = formataddr((to_name, to_email))
+        body = _p(f'Se adjunta el archivo con las respuestas del formulario <strong>"{name_form}"</strong> del usuario <strong>{to_name}</strong>.')
+        body += _callout(f'Archivo adjunto: <strong>{upload_file.filename}</strong>', 'info')
+        body += _p(f'<span style="color:{_C["text_muted"]};font-size:12px;">Revise el documento adjunto para consultar las respuestas completas.</span>')
 
-        current_date = datetime.now().strftime("%d/%m/%Y")
+        html = _base_email_html(f"Respuestas — {name_form}", body)
+        msg = _new_msg(f"Respuestas adjuntas — {name_form}", to_email, to_name)
+        msg.set_content(f'Se adjuntan las respuestas del formulario "{name_form}".')
+        msg.add_alternative(html, subtype="html")
 
-        # HTML elegante con name_form
-        html_content = f"""
-        <html>
-        <head>
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        </head>
-        <body style="font-family: Arial, sans-serif; font-size: 16px; text-align: center; padding: 40px; background-color: #f4f4f4;">
-
-            <table align="center" style="width: 100%; max-width: 520px; background-color: white; border-radius: 12px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); padding: 25px;">
-                <tr>
-                    <td align="center">
-                        <h2 style="color: #00498C;">📋 Respuestas de formulario</h2>
-                        
-                        <p>Se adjunta el archivo que contiene las respuestas proporcionadas por el usuario <strong>{to_name}</strong> correspondientes al formulario <strong>“{name_form}”</strong>.</p>
-                        <p>Por favor, revise el documento adjunto.</p>
-
-                        <hr style="margin: 30px 0;">
-                        <p style="font-size: 13px; color: #888;">Enviado el <strong>{current_date}</strong></p>
-                    </td>
-                </tr>
-            </table>
-
-        </body>
-        </html>
-        """
-
-        # Texto alternativo por si el correo no soporta HTML
-        msg.set_content(
-            f"Estimado/a {to_name},\n\nAdjunto encontrará el archivo con las respuestas del formulario \"{name_form}\"."
-        )
-
-        msg.add_alternative(html_content, subtype="html")
-
-        # Adjuntar archivo tal cual fue subido
         upload_file.file.seek(0)
-        file_data = upload_file.file.read()
+        data = upload_file.file.read()
+        mt, _ = mimetypes.guess_type(upload_file.filename)
+        main, sub = ("application", "octet-stream") if not mt else mt.split("/")
+        msg.add_attachment(data, maintype=main, subtype=sub, filename=upload_file.filename)
 
-        mime_type, _ = mimetypes.guess_type(upload_file.filename)
-        maintype, subtype = ("application", "octet-stream")
-        if mime_type:
-            maintype, subtype = mime_type.split("/")
-
-        msg.add_attachment(
-            file_data,
-            maintype=maintype,
-            subtype=subtype,
-            filename=upload_file.filename
-        )
-
-        # Envío del correo
-        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
-            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
-            smtp.send_message(msg)
-
-        print(f"✅ Archivo enviado a {to_email}")
-        return True
-
+        return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error al enviar archivo a {to_email}: {str(e)}")
+        print(f"❌ Error correo adjunto a {to_email}: {e}")
         return False
 
 
+# ═══════════════════════════════════════════════════════════════
+#  3. BIENVENIDA
+# ═══════════════════════════════════════════════════════════════
 
 def send_welcome_email(email: str, name: str, password: str) -> bool:
     try:
-        current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        body = _p(f'Estimado/a <strong>{name}</strong>, su cuenta ha sido creada exitosamente.')
+        body += _info_block("Credenciales de acceso",
+            _info_row("Correo", email) +
+            _info_row("Contraseña", f'<code style="background:{_C["bg"]};padding:2px 8px;border-radius:3px;font-family:monospace;font-size:13px;">{password}</code>')
+        )
+        body += _callout('Se recomienda cambiar la contraseña después del primer ingreso.', 'warning')
+        body += _btn(_APP_URL, "Ingresar a SafeMetrics")
 
-        msg = EmailMessage()
-        msg["Subject"] = "👋 ¡Bienvenido a Safemetrics!"
-        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
-        msg["To"] = formataddr((name, email))
-
-        html_content = f"""
-        <html>
-        <head>
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        </head>
-        <body style="font-family: Arial, sans-serif; font-size: 16px; text-align: center; padding: 40px; background-color: #f4f4f4;">
-
-            <table align="center" style="width: 100%; max-width: 520px; background-color: white; border-radius: 12px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); padding: 25px;">
-                <tr>
-                    <td align="center">
-                        <h2 style="color: #00498C;">¡Bienvenido a Safemetrics, {name}!</h2>
-                        
-                        <p>Tu cuenta ha sido creada con éxito. A continuación, te compartimos tus credenciales de acceso:</p>            
-                        <ul style="list-style: none; padding: 0; text-align: left; display: inline-block;">
-                            <li><strong>Email:</strong> {email}</li>
-                            <li><strong>Contraseña:</strong> {password}</li>
-                        </ul>
-                      
-                      
-
-
-                        <hr style="margin: 30px 0;">
-                      
-                             <a href="https://forms.sfisas.com.co/" style="color: #007bff; text-decoration: underline;" target="_blank">
-  Ir a Safemetrics
-</a>
-                      <br>
-                        <p style="font-size: 13px; color: #888;">Enviado el <strong>{current_date}</strong></p>
-                    </td>
-                </tr>
-            </table>
-
-        </body>
-        </html>
-        """
-
-        msg.set_content(html_content, subtype="html")
-
-        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
-            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
-            smtp.send_message(msg)
-
-        print(f"📧 Correo de bienvenida enviado exitosamente a {email}.")
-        return True
-
+        html = _base_email_html("Bienvenido a SafeMetrics", body)
+        msg = _new_msg("Bienvenido a SafeMetrics", email, name)
+        msg.set_content(f"Bienvenido {name}. Email: {email} | Contraseña: {password}")
+        msg.add_alternative(html, subtype="html")
+        return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error al enviar el correo de bienvenida a {email}: {str(e)}")
+        print(f"❌ Error correo bienvenida a {email}: {e}")
         return False
-    
-    
-    
+
+
+# ═══════════════════════════════════════════════════════════════
+#  4. ESTADO DE APROBACIÓN
+# ═══════════════════════════════════════════════════════════════
 
 def send_email_plain_approval_status(
-    to_email: str,
-    name_form: str,
-    to_name: str,
-    body_text: str,
-    subject: str  # Añadimos el parámetro 'subject'
+    to_email: str, name_form: str, to_name: str, body_text: str, subject: str
 ) -> bool:
     try:
-        msg = EmailMessage()
-        msg["Subject"] = subject  # Usamos el parámetro 'subject' aquí
-        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
-        msg["To"] = formataddr((to_name, to_email))
+        body = _p(f'El formato <strong>"{name_form}"</strong> ha sido procesado.')
+        body += f'<div style="margin:14px 0;padding:12px 14px;background:{_C["bg"]};border:1px solid {_C["border"]};border-radius:4px;"><pre style="margin:0;font-family:\'Segoe UI\',sans-serif;font-size:13px;color:{_C["text"]};white-space:pre-wrap;word-wrap:break-word;">{body_text}</pre></div>'
 
-        current_date = datetime.now().strftime("%d/%m/%Y")
-
-        # Aquí ajustamos el contenido HTML para reflejar que el formato fue autorizado
-        html_content = f"""
-        <html>
-        <body style="font-family: Arial, sans-serif; font-size: 16px; padding: 20px;">
-            
-            <p>El formato <strong>{name_form}</strong> ha sido autorizado.</p>
-           
-                        <pre style="background-color: #f4f4f4; padding: 15px; border-radius: 5px; font-family: monospace;">
-{body_text}
-            </pre>
-            <p style="font-size: 12px; color: #999;">Enviado el {current_date}</p>
-        </body>
-        </html>
-        """
-
+        html = _base_email_html(subject, body)
+        msg = _new_msg(subject, to_email, to_name)
         msg.set_content(f"Estimado/a {to_name},\n\n{body_text}")
-        msg.add_alternative(html_content, subtype="html")
-
-        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
-            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
-            smtp.send_message(msg)
-
-        print(f"✅ Correo enviado a {to_email}")
-        return True
-
+        msg.add_alternative(html, subtype="html")
+        return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error al enviar correo a {to_email}: {str(e)}")
+        print(f"❌ Error correo aprobación a {to_email}: {e}")
         return False
 
+
+# ═══════════════════════════════════════════════════════════════
+#  5. APROBACIONES VENCIDAS
+# ═══════════════════════════════════════════════════════════════
 
 def send_email_plain_approval_status_vencidos(
-    to_email: str,
-    name_form: str,
-    to_name: str,
-    body_html: str,   # Ahora es un string HTML
-    subject: str
+    to_email: str, name_form: str, to_name: str, body_html: str, subject: str
 ) -> bool:
     try:
-        msg = EmailMessage()
-        msg["Subject"] = subject
-        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
-        msg["To"] = formataddr((to_name, to_email))
+        body = _p(f'Se han detectado aprobaciones vencidas para el formato <strong>"{name_form}"</strong>.')
+        body += body_html
 
-        current_date = datetime.now().strftime("%d/%m/%Y")
-
-        # 🔄 Construir el cuerpo del correo
-        msg.set_content(f"Estimado/a {to_name},\n\nAprobaciones vencidas para el formato {name_form}.")
-        msg.add_alternative(body_html, subtype="html")  # 💡 Aquí ya pasamos el HTML directamente
-
-        # 📬 Enviar el correo
-        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
-            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
-            smtp.send_message(msg)
-
-        print(f"✅ Correo enviado a {to_email}")
-        return True
-
+        html = _base_email_html(subject, body)
+        msg = _new_msg(subject, to_email, to_name)
+        msg.set_content(f"Aprobaciones vencidas para {name_form}.")
+        msg.add_alternative(html, subtype="html")
+        return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error al enviar correo a {to_email}: {str(e)}")
+        print(f"❌ Error correo vencidos a {to_email}: {e}")
         return False
 
+
+# ═══════════════════════════════════════════════════════════════
+#  6. SIGUIENTE APROBADOR
+# ═══════════════════════════════════════════════════════════════
 
 def send_email_aprovall_next(
-    to_email: str,
-    name_form: str,
-    to_name: str,
-    body_html: str,
-    subject: str
+    to_email: str, name_form: str, to_name: str, body_html: str, subject: str
 ) -> bool:
     try:
-        msg = EmailMessage()
-        msg["Subject"] = subject
-        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
-        msg["To"] = formataddr((to_name, to_email))
+        body = _p(f'Tiene una aprobación pendiente para el formato <strong>"{name_form}"</strong>.')
+        body += body_html
+        body += _btn(_APP_URL, "Revisar en SafeMetrics")
 
-        msg.set_content(f"Estimado/a {to_name},\n\nAprobaciones vencidas para el formato {name_form}.")
-        msg.add_alternative(body_html, subtype="html")
-
-        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
-            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
-            smtp.send_message(msg)
-
-        print(f"✅ Correo enviado a {to_email}")
-        return True
-
+        html = _base_email_html(subject, body)
+        msg = _new_msg(subject, to_email, to_name)
+        msg.set_content(f"Aprobación pendiente para {name_form}.")
+        msg.add_alternative(html, subtype="html")
+        return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error al enviar correo a {to_email}: {str(e)}")
+        print(f"❌ Error correo aprobador a {to_email}: {e}")
         return False
 
 
-def send_rejection_email(to_email: str, to_name: str, formato: dict, usuario_respondio: dict, aprobador_rechazo: dict, todos_los_aprobadores: list):
+# ═══════════════════════════════════════════════════════════════
+#  7. RECHAZO
+# ═══════════════════════════════════════════════════════════════
+
+def _approvers_table(approvers: list) -> str:
+    """Genera tabla de cadena de aprobación."""
+    rows = ""
+    for ap in approvers:
+        sv = ap['status'].value.capitalize() if hasattr(ap['status'], 'value') else str(ap['status'])
+        rows += f"""<tr>
+            <td style="padding:7px 10px;border-bottom:1px solid {_C['border']};font-size:12px;text-align:center;">{ap['secuencia']}</td>
+            <td style="padding:7px 10px;border-bottom:1px solid {_C['border']};font-size:12px;">{ap['nombre']}</td>
+            <td style="padding:7px 10px;border-bottom:1px solid {_C['border']};font-size:12px;">{ap['email']}</td>
+            <td style="padding:7px 10px;border-bottom:1px solid {_C['border']};font-size:12px;text-align:center;">{sv}</td>
+            <td style="padding:7px 10px;border-bottom:1px solid {_C['border']};font-size:12px;">{ap.get('mensaje','—')}</td>
+        </tr>"""
+
+    hdr_s = f'padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:{_C["text_muted"]};text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid {_C["border"]};'
+    return f"""<div style="margin:18px 0;">
+        <p style="margin:0 0 8px;font-size:12px;font-weight:600;color:{_C['text']};text-transform:uppercase;letter-spacing:.5px;">Cadena de aprobación</p>
+        <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid {_C['border']};border-collapse:collapse;">
+        <thead><tr style="background:{_C['bg']};">
+            <th style="{hdr_s}text-align:center;">Seq</th>
+            <th style="{hdr_s}">Nombre</th>
+            <th style="{hdr_s}">Email</th>
+            <th style="{hdr_s}text-align:center;">Estado</th>
+            <th style="{hdr_s}">Mensaje</th>
+        </tr></thead>
+        <tbody>{rows}</tbody>
+        </table>
+    </div>"""
+
+
+def send_rejection_email(
+    to_email: str, to_name: str, formato: dict,
+    usuario_respondio: dict, aprobador_rechazo: dict, todos_los_aprobadores: list
+):
     try:
-        msg = EmailMessage()
-        msg["Subject"] = f"Formulario rechazado: {formato['titulo']}"
-        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
-        msg["To"] = formataddr((to_name, to_email))
+        body = _p(f'Estimado/a <strong>{to_name}</strong>, las respuestas al formulario <strong>"{formato["titulo"]}"</strong> han sido <span style="color:{_C["red"]};font-weight:600;">rechazadas</span>.')
 
-        current_date = datetime.now().strftime("%d/%m/%Y")
-
-        # HTML de lista de aprobadores
-        aprobadores_html = ""
-        for aprobador in todos_los_aprobadores:
-            aprobadores_html += f"""
-                <tr>
-                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador['secuencia']}</td>
-                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador['nombre']}</td>
-                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador['email']}</td>
-                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador['status'].value.capitalize()}</td>
-                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador.get('mensaje', 'Sin mensaje')}</td>
-                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador.get('reviewed_at', 'No disponible')}</td>
-                </tr>
-            """
-
-        html_content = f"""
-        <html>
-        <body style="font-family: 'Segoe UI', sans-serif; background-color: #f9f9f9; margin: 0; padding: 30px;">
-            <table width="100%" cellspacing="0" cellpadding="0" style="max-width: 600px; margin: auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 30px;">
-                <tr>
-                    <td>
-                        <h2 style="color: #b02a37; margin-bottom: 10px;">Formulario Rechazado</h2>
-<p style="font-size: 16px; color: #333;">
-    Estimado/a <strong>{to_name}</strong>,<br><br>
-    Le informamos que las respuestas al formulario titulado <strong>“{formato['titulo']}”</strong> han sido <span style="color: #b02a37;"><strong>rechazadas</strong></span>.
-</p>
-
-
-                        <hr style="margin: 25px 0; border: none; border-top: 1px solid #e0e0e0;">
-
-                        <h3 style="color: #333; font-size: 17px;">📄 Detalles del Formulario</h3>
-                        <ul style="padding-left: 20px; color: #555; font-size: 15px;">
-                            <li><strong>Título:</strong> {formato['titulo']}</li>
-                            <li><strong>Descripción:</strong> {formato['descripcion']}</li>
-                            <li><strong>Tipo:</strong> {formato['tipo_formato'].capitalize()}</li>
-                            <li><strong>Creado por:</strong> {formato['creado_por']['nombre']} ({formato['creado_por']['email']})</li>
-                        </ul>
-
-                        <h3 style="color: #333; font-size: 17px;">👤 Usuario que respondió</h3>
-                        <ul style="padding-left: 20px; color: #555; font-size: 15px;">
-                            <li><strong>Nombre:</strong> {usuario_respondio['nombre']}</li>
-                            <li><strong>Email:</strong> {usuario_respondio['email']}</li>
-                            <li><strong>Teléfono:</strong> {usuario_respondio['telefono']}</li>
-                            <li><strong>Documento:</strong> {usuario_respondio['num_documento']}</li>
-                        </ul>
-
-                        <h3 style="color: #333; font-size: 17px;">🔒 Revisión</h3>
-                        <ul style="padding-left: 20px; color: #555; font-size: 15px;">
-                            <li><strong>Revisado por:</strong> {aprobador_rechazo['nombre']} ({aprobador_rechazo['email']})</li>
-                            <li><strong>Mensaje:</strong> {aprobador_rechazo.get('mensaje', 'Sin mensaje')}</li>
-                            <li><strong>Fecha de revisión:</strong> {aprobador_rechazo.get('reviewed_at', 'No disponible')}</li>
-                        </ul>
-
-                        <h3 style="color: #333; font-size: 17px;">📋 Todos los aprobadores</h3>
-                        <table width="100%" style="border-collapse: collapse; font-size: 14px;">
-                            <thead>
-                                <tr style="background-color: #f0f0f0;">
-                                    <th style="padding: 5px; border: 1px solid #ccc;">Secuencia</th>
-                                    <th style="padding: 5px; border: 1px solid #ccc;">Nombre</th>
-                                    <th style="padding: 5px; border: 1px solid #ccc;">Email</th>
-                                    <th style="padding: 5px; border: 1px solid #ccc;">Estado</th>
-                                    <th style="padding: 5px; border: 1px solid #ccc;">Mensaje</th>
-                                    <th style="padding: 5px; border: 1px solid #ccc;">Fecha</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {aprobadores_html}
-                            </tbody>
-                        </table>
-
-                        <p style="font-size: 14px; color: #999; margin-top: 30px;">
-                            Enviado el {current_date} 
-                        </p>
-                    </td>
-                </tr>
-            </table>
-        </body>
-        </html>
-        """
-
-        msg.set_content(
-            f"El formulario \"{formato['titulo']}\" ha sido rechazado por {aprobador_rechazo['nombre']}."
+        body += _info_block("Formulario",
+            _info_row("Título", formato['titulo']) +
+            _info_row("Descripción", formato['descripcion']) +
+            _info_row("Tipo", formato['tipo_formato'].capitalize()) +
+            _info_row("Creado por", f"{formato['creado_por']['nombre']} ({formato['creado_por']['email']})")
         )
-        msg.add_alternative(html_content, subtype="html")
-
-        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
-            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
-            smtp.send_message(msg)
-
-        print(f"✅ Correo de rechazo enviado a {to_email}")
-        return True
-
-    except Exception as e:
-        print(f"❌ Error al enviar correo de rechazo a {to_email}: {str(e)}")
-        return False
-
-
-
-def send_reconsideration_email(to_email: str, to_name: str, formato: dict, usuario_solicita: dict, mensaje_reconsideracion: str, aprobador_que_rechazo: dict, todos_los_aprobadores: list):
-    try:
-        msg = EmailMessage()
-        msg["Subject"] = f"Solicitud de reconsideración: {formato['titulo']}"
-        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
-        msg["To"] = formataddr((to_name, to_email))
-
-        current_date = datetime.now().strftime("%d/%m/%Y")
-
-        # HTML de lista de aprobadores
-        aprobadores_html = ""
-        for aprobador in todos_los_aprobadores:
-            aprobadores_html += f"""
-                <tr>
-                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador['secuencia']}</td>
-                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador['nombre']}</td>
-                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador['email']}</td>
-                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador['status'].value.capitalize()}</td>
-                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador.get('mensaje', 'Sin mensaje')}</td>
-                    <td style="padding: 5px; border: 1px solid #ccc;">{aprobador.get('reviewed_at', 'No disponible')}</td>
-                </tr>
-            """
-
-        html_content = f"""
-        <html>
-        <body style="font-family: 'Segoe UI', sans-serif; background-color: #f9f9f9; margin: 0; padding: 30px;">
-            <table width="100%" cellspacing="0" cellpadding="0" style="max-width: 600px; margin: auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 30px;">
-                <tr>
-                    <td>
-                        <h2 style="color: #f39c12; margin-bottom: 10px;">🔄 Solicitud de Reconsideración</h2>
-                        <p style="font-size: 16px; color: #333;">
-                            Estimado/a <strong>{to_name}</strong>,<br><br>
-                            Le informamos que <strong>{usuario_solicita['nombre']}</strong> ha solicitado una reconsideración 
-                            para el formulario <strong>"{formato['titulo']}"</strong> que fue previamente rechazado.
-                        </p>
-
-                        <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; padding: 15px; margin: 20px 0;">
-                            <h4 style="color: #856404; margin: 0 0 10px 0;">💬 Mensaje de reconsideración:</h4>
-                            <p style="color: #856404; margin: 0; font-style: italic;">"{mensaje_reconsideracion}"</p>
-                        </div>
-
-                        <hr style="margin: 25px 0; border: none; border-top: 1px solid #e0e0e0;">
-
-                        <h3 style="color: #333; font-size: 17px;">📄 Detalles del Formulario</h3>
-                        <ul style="padding-left: 20px; color: #555; font-size: 15px;">
-                            <li><strong>Título:</strong> {formato['titulo']}</li>
-                            <li><strong>Descripción:</strong> {formato['descripcion']}</li>
-                            <li><strong>Creado por:</strong> {formato['creado_por']['nombre']} ({formato['creado_por']['email']})</li>
-                        </ul>
-
-                        <h3 style="color: #333; font-size: 17px;">👤 Usuario que solicita reconsideración</h3>
-                        <ul style="padding-left: 20px; color: #555; font-size: 15px;">
-                            <li><strong>Nombre:</strong> {usuario_solicita['nombre']}</li>
-                            <li><strong>Email:</strong> {usuario_solicita['email']}</li>
-                            <li><strong>Teléfono:</strong> {usuario_solicita['telefono']}</li>
-                            <li><strong>Documento:</strong> {usuario_solicita['num_documento']}</li>
-                        </ul>
-
-                        <h3 style="color: #333; font-size: 17px;">❌ Aprobador que rechazó originalmente</h3>
-                        <ul style="padding-left: 20px; color: #555; font-size: 15px;">
-                            <li><strong>Nombre:</strong> {aprobador_que_rechazo['nombre']} ({aprobador_que_rechazo['email']})</li>
-                            <li><strong>Motivo del rechazo:</strong> {aprobador_que_rechazo.get('mensaje', 'Sin mensaje')}</li>
-                            <li><strong>Fecha de rechazo:</strong> {aprobador_que_rechazo.get('reviewed_at', 'No disponible')}</li>
-                        </ul>
-
-                        <h3 style="color: #333; font-size: 17px;">📋 Todos los aprobadores</h3>
-                        <table width="100%" style="border-collapse: collapse; font-size: 14px;">
-                            <thead>
-                                <tr style="background-color: #f0f0f0;">
-                                    <th style="padding: 5px; border: 1px solid #ccc;">Secuencia</th>
-                                    <th style="padding: 5px; border: 1px solid #ccc;">Nombre</th>
-                                    <th style="padding: 5px; border: 1px solid #ccc;">Email</th>
-                                    <th style="padding: 5px; border: 1px solid #ccc;">Estado</th>
-                                    <th style="padding: 5px; border: 1px solid #ccc;">Mensaje</th>
-                                    <th style="padding: 5px; border: 1px solid #ccc;">Fecha</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {aprobadores_html}
-                            </tbody>
-                        </table>
-
-                        <div style="background-color: #e8f5e8; border: 1px solid #c3e6c3; border-radius: 5px; padding: 15px; margin: 20px 0;">
-                            <p style="color: #2d5a2d; margin: 0; font-size: 14px;">
-                                <strong>Acción requerida:</strong> Se solicita revisar nuevamente las respuestas del formulario 
-                                considerando la justificación proporcionada por el usuario.
-                            </p>
-                        </div>
-
-                        <p style="font-size: 14px; color: #999; margin-top: 30px;">
-                            Enviado el {current_date} 
-                        </p>
-                    </td>
-                </tr>
-            </table>
-        </body>
-        </html>
-        """
-
-        msg.set_content(
-            f"Solicitud de reconsideración para el formulario \"{formato['titulo']}\" por {usuario_solicita['nombre']}. Mensaje: {mensaje_reconsideracion}"
+        body += _info_block("Respondido por",
+            _info_row("Nombre", usuario_respondio['nombre']) +
+            _info_row("Correo", usuario_respondio['email']) +
+            _info_row("Documento", usuario_respondio['num_documento'])
         )
-        msg.add_alternative(html_content, subtype="html")
+        body += _info_block("Rechazado por",
+            _info_row("Nombre", f"{aprobador_rechazo['nombre']} ({aprobador_rechazo['email']})") +
+            _info_row("Motivo", aprobador_rechazo.get('mensaje', 'Sin mensaje')) +
+            _info_row("Fecha", aprobador_rechazo.get('reviewed_at', 'No disponible'))
+        )
+        body += _approvers_table(todos_los_aprobadores)
 
-        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
-            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
-            smtp.send_message(msg)
-
-        print(f"✅ Correo de reconsideración enviado a {to_email}")
-        return True
-
+        html = _base_email_html(f"Formulario rechazado — {formato['titulo']}", body)
+        msg = _new_msg(f"Formulario rechazado: {formato['titulo']}", to_email, to_name)
+        msg.set_content(f'El formulario "{formato["titulo"]}" ha sido rechazado.')
+        msg.add_alternative(html, subtype="html")
+        return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error al enviar correo de reconsideración a {to_email}: {str(e)}")
+        print(f"❌ Error correo rechazo a {to_email}: {e}")
         return False
-    
-    
-async def send_action_notification_email(action: str, recipient: str, form, current_date: str, pdf_bytes=None, pdf_filename=None, db=None, current_user=None):
-    """
-    Versión mejorada de send_action_notification_email que incluye tabla de reporte para generate_report.
-    
-    Args:
-        action (str): Tipo de acción (send_download_link, send_pdf_attachment, generate_report)
-        recipient (str): Email del destinatario
-        form: Objeto Form de la base de datos
-        current_date (str): Fecha actual formateada
-        pdf_bytes (bytes, optional): Bytes del PDF generado
-        pdf_filename (str, optional): Nombre del archivo PDF
-        db: Sesión de base de datos (requerida para generate_report)
-        current_user: Usuario actual (requerido para generate_report)
-    
-    Returns:
-        bool: True si el envío fue exitoso, False en caso contrario
-    """
-    from app.crud import get_form
+
+
+# ═══════════════════════════════════════════════════════════════
+#  8. RECONSIDERACIÓN
+# ═══════════════════════════════════════════════════════════════
+
+def send_reconsideration_email(
+    to_email: str, to_name: str, formato: dict,
+    usuario_solicita: dict, mensaje_reconsideracion: str,
+    aprobador_que_rechazo: dict, todos_los_aprobadores: list
+):
     try:
-        msg = EmailMessage()
-        
-        # Configurar asunto y contenido según el tipo de acción
-        action_configs = {
-            'send_download_link': {
-                'subject': f"Enlace de descarga - {form.title}",
-                'title': "Enlace de Descarga Disponible",
-                'icon': "📥",
-                'message': "Se ha generado un enlace de descarga para las respuestas del formulario en formato Excel.",
-                'color': "#2563eb"
-            },
-            'send_pdf_attachment': {
-                'subject': f"PDF del formulario - {form.title}",
-                'title': "PDF del Formulario",
-                'icon': "📄",
-                'message': "Se ha procesado el formulario y se adjunta el PDF con las respuestas.",
-                'color': "#dc2626"
-            },
-            'generate_report': {
-                'subject': f"Reporte generado - {form.title}",
-                'title': "Reporte Generado",
-                'icon': "📊",
-                'message': "Se ha generado un reporte con las respuestas del formulario.",
-                'color': "#16a34a"
-            }
-        }
-        
-        config = action_configs.get(action, {
-            'subject': f"Notificación - {form.title}",
-            'title': "Notificación del Formulario",
-            'icon': "📋",
-            'message': f"Se ha procesado la acción: {action}",
-            'color': "#6b7280"
-        })
-        
-        msg["Subject"] = config['subject']
-        msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
-        msg["To"] = recipient
-        
-        # Contenido adicional según el tipo de acción
-        additional_content = ""
-        
-        if action == 'send_download_link':
-            # URL del nuevo endpoint que funciona igual al original 
-            excel_download_url = f"https://api-forms-sfi.service.saferut.com/forms/{form.id}/answers/excel/all-users"
-            
-            additional_content = f"""
-            <div style="margin: 20px 0; padding: 15px; background-color: #e3f2fd; border-radius: 5px; border-left: 4px solid #2563eb;">
-                <p style="margin: 0 0 15px 0; color: #1565c0; font-size: 15px;">
-                    <strong>📥 Descarga de datos:</strong><br>
-                    Haz clic en el botón para descargar el archivo Excel con todas las respuestas del formulario.
-                </p>
-                <div style="text-align: center;">
-                    <a href="{excel_download_url}" 
-                    style="display: inline-block; 
-                            background-color: #2563eb; 
-                            color: white; 
-                            padding: 15px 30px; 
-                            text-decoration: none; 
-                            border-radius: 8px; 
-                            font-weight: bold; 
-                            font-size: 16px;
-                            box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                        📊 Descargar Excel
-                    </a>
-                </div>
-                <p style="margin: 15px 0 0 0; color: #666; font-size: 12px; text-align: center;">
-                    📄 Archivo: Formulario_{form.id}_respuestas.xlsx
-                </p>
-            </div>
-            """
-        elif action == 'send_pdf_attachment':
-            additional_content = f"""
-            <div style="margin: 20px 0; padding: 15px; background-color: #ffebee; border-radius: 5px; border-left: 4px solid #dc2626;">
-                <p style="margin: 0; color: #c62828; font-size: 15px;">
-                    <strong>📎 Archivo adjunto:</strong> {pdf_filename}<br>
-                    El PDF con las respuestas del formulario se encuentra adjunto a este correo.
-                </p>
-            </div>
-            """
-        elif action == 'generate_report':
-            # Para generate_report, necesitamos obtener los datos del formulario
-            if db and current_user:
-                try:
-                    # Obtener datos del formulario usando la función get_form
-                    form_data = get_form(db, form.id, current_user.id)
-                    
-                    if form_data:
-                        report_table = generate_report_table_html(form_data)
-                        additional_content = report_table
-                    else:
-                        additional_content = """
-                        <div style="margin: 20px 0; padding: 15px; background-color: #fff3cd; border-radius: 5px; border-left: 4px solid #ffc107;">
-                            <p style="margin: 0; color: #856404; font-size: 15px;">
-                                <strong>⚠️ Advertencia:</strong> No se pudieron obtener los datos del formulario para generar el reporte.
-                            </p>
-                        </div>
-                        """
-                except Exception as e:
-                    additional_content = f"""
-                    <div style="margin: 20px 0; padding: 15px; background-color: #f8d7da; border-radius: 5px; border-left: 4px solid #dc3545;">
-                        <p style="margin: 0; color: #721c24; font-size: 15px;">
-                            <strong>❌ Error:</strong> No se pudo generar el reporte. {str(e)}
-                        </p>
-                    </div>
-                    """
-            else:
-                additional_content = """
-                <div style="margin: 20px 0; padding: 15px; background-color: #e2e3e5; border-radius: 5px; border-left: 4px solid #6c757d;">
-                    <p style="margin: 0; color: #495057; font-size: 15px;">
-                        <strong>📊 Reporte generado:</strong> Los datos del formulario han sido procesados exitosamente.
-                    </p>
-                </div>
-                """
-        
-        html_content = f"""
-        <html>
-        <body style="font-family: 'Segoe UI', sans-serif; background-color: #f9f9f9; margin: 0; padding: 30px;">
-            <table width="100%" cellspacing="0" cellpadding="0" style="max-width: 800px; margin: auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 30px;">
-                <tr>
-                    <td>
-                        <h2 style="color: {config['color']}; margin-bottom: 10px;">{config['icon']} {config['title']}</h2>
-                        <p style="font-size: 16px; color: #333;">
-                            Estimado/a usuario,<br><br>
-                            {config['message']}
-                        </p>
-                        
-                        <hr style="margin: 25px 0; border: none; border-top: 1px solid #e0e0e0;">
-                        
-                        <h3 style="color: #333; font-size: 17px;">📄 Detalles del Formulario</h3>
-                        <ul style="padding-left: 20px; color: #555; font-size: 15px;">
-                            <li><strong>Título:</strong> {form.title}</li>
-                            <li><strong>Descripción:</strong> {form.description or 'Sin descripción'}</li>
-                            <li><strong>Tipo:</strong> {form.format_type.value.capitalize()}</li>
-                            <li><strong>Creado por:</strong> {form.user.name} ({form.user.email})</li>
-                            <li><strong>Fecha de creación:</strong> {form.created_at.strftime('%d/%m/%Y')}</li>
-                        </ul>
-                        
-                        <h3 style="color: #333; font-size: 17px;">⚙️ Configuración Ejecutada</h3>
-                        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; border-left: 4px solid {config['color']};">
-                            <p style="margin: 0; color: #555; font-size: 15px;">
-                                <strong>Acción seleccionada:</strong> {action.replace('_', ' ').title()}<br>
-                                <strong>Destinatario:</strong> {recipient}<br>
-                                <strong>Formulario ID:</strong> {form.id}
-                            </p>
-                        </div>
-                        
-                        {additional_content}
-                        
-                        <p style="font-size: 14px; color: #999; margin-top: 30px;">
-                            Enviado el {current_date}
-                        </p>
-                    </td>
-                </tr>
-            </table>
-        </body>
-        </html>
-        """
-        
-        # Contenido de texto plano
-        text_content = f"""
-        {config['title']}
-        
-        {config['message']}
-        
-        Detalles del formulario:
-        - Título: {form.title}
-        - Descripción: {form.description or 'Sin descripción'}
-        - Tipo: {form.format_type.value.capitalize()}
-        - Creado por: {form.user.name} ({form.user.email})
-        - Fecha de creación: {form.created_at.strftime('%d/%m/%Y')}
-        
-        Configuración ejecutada: {action.replace('_', ' ').title()}
-        Destinatario: {recipient}
-        Formulario ID: {form.id}
-        
-        {"Para descargar el archivo Excel, visita: https://api-forms-sfi.service.saferut.com/forms/" + str(form.id) + "/answers/excel/all-users" if action == 'send_download_link' else ""}
-        
-        Enviado el {current_date}
-        """
-        
-        msg.set_content(text_content)
-        msg.add_alternative(html_content, subtype="html")
-        
-        # Adjuntar PDF si es necesario
-        if action == 'send_pdf_attachment' and pdf_bytes:
-            msg.add_attachment(
-                pdf_bytes,
-                maintype='application',
-                subtype='pdf',
-                filename=pdf_filename
-            )
-        
-        # Enviar el correo
-        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
-            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
-            smtp.send_message(msg)
-        
-        print(f"✅ Correo de acción '{action}' enviado a {recipient}")
-        return True
-        
+        body = _p(f'Estimado/a <strong>{to_name}</strong>, el usuario <strong>{usuario_solicita["nombre"]}</strong> ha solicitado reconsideración para el formulario <strong>"{formato["titulo"]}"</strong>.')
+        body += _callout(f'<strong>Motivo de reconsideración:</strong><br>{mensaje_reconsideracion}', 'warning')
+
+        body += _info_block("Solicitante",
+            _info_row("Nombre", usuario_solicita['nombre']) +
+            _info_row("Correo", usuario_solicita['email']) +
+            _info_row("Documento", usuario_solicita['num_documento'])
+        )
+        body += _info_block("Rechazo original",
+            _info_row("Por", f"{aprobador_que_rechazo['nombre']} ({aprobador_que_rechazo['email']})") +
+            _info_row("Motivo", aprobador_que_rechazo.get('mensaje', 'Sin mensaje')) +
+            _info_row("Fecha", aprobador_que_rechazo.get('reviewed_at', 'No disponible'))
+        )
+        body += _approvers_table(todos_los_aprobadores)
+        body += _callout('Se solicita revisar nuevamente las respuestas considerando la justificación proporcionada.', 'info')
+        body += _btn(_APP_URL, "Revisar en SafeMetrics")
+
+        html = _base_email_html(f"Solicitud de reconsideración — {formato['titulo']}", body)
+        msg = _new_msg(f"Reconsideración solicitada: {formato['titulo']}", to_email, to_name)
+        msg.set_content(f'Reconsideración solicitada para "{formato["titulo"]}" por {usuario_solicita["nombre"]}.')
+        msg.add_alternative(html, subtype="html")
+        return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error al enviar correo de acción '{action}' a {recipient}: {str(e)}")
+        print(f"❌ Error correo reconsideración a {to_email}: {e}")
         return False
-    
-    
-def generate_report_table_html(form_data):
-    """
-    Genera una tabla HTML con los datos del formulario para incluir en el correo de reporte.
-    
-    Args:
-        form_data: Datos del formulario obtenidos de get_form()
-    
-    Returns:
-        str: HTML de la tabla con los datos del reporte
-    """
+
+
+# ═══════════════════════════════════════════════════════════════
+#  9. NOTIFICACIÓN DE ACCIÓN AL CERRAR FORMATO  ★ CORREGIDO v3.1 ★
+# ═══════════════════════════════════════════════════════════════
+
+def _generate_report_table_html(form_data) -> str:
+    """Tabla de reporte para correo de generate_report."""
     if not form_data or not form_data.get('questions'):
-        return "<p>No hay datos disponibles para mostrar.</p>"
-    
-    # Crear encabezados de la tabla basados en las preguntas
-    headers = []
-    question_map = {}
-    
-    for question in form_data['questions']:
-        headers.append(question['question_text'])
-        question_map[question['id']] = question['question_text']
-    
-    # Si no hay respuestas, mostrar solo las preguntas
+        return _callout("No hay datos disponibles para mostrar.", "warning")
+
+    hdr_s = f'padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:{_C["text_muted"]};border-bottom:1px solid {_C["border"]};'
+
     if not form_data.get('responses'):
-        table_html = f"""
-        <div style="margin: 20px 0; padding: 15px; background-color: #f8f9fa; border-radius: 5px; border-left: 4px solid #16a34a;">
-            <h4 style="color: #16a34a; margin: 0 0 15px 0;">📊 Estructura del Formulario</h4>
-            <div style="overflow-x: auto;">
-                <table style="width: 100%; border-collapse: collapse; background-color: white; border-radius: 5px; overflow: hidden;">
-                    <thead>
-                        <tr style="background-color: #16a34a; color: white;">
-                            <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">Pregunta</th>
-                            <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">Tipo</th>
-                            <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">Requerida</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-        """
-        
-        for i, question in enumerate(form_data['questions']):
-            row_color = "#f9f9f9" if i % 2 == 0 else "white"
-            required_text = "Sí" if question.get('required', False) else "No"
-            
-            table_html += f"""
-                        <tr style="background-color: {row_color};">
-                            <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: 500;">{question['question_text']}</td>
-                            <td style="padding: 10px; border-bottom: 1px solid #ddd;">{question['question_type'].capitalize()}</td>
-                            <td style="padding: 10px; border-bottom: 1px solid #ddd;">{required_text}</td>
-                        </tr>
-            """
-        
-        table_html += """
-                    </tbody>
-                </table>
-            </div>
-            <p style="margin: 15px 0 0 0; color: #666; font-size: 13px;">
-                📝 Este formulario aún no tiene respuestas registradas.
-            </p>
-        </div>
-        """
-        
-        return table_html
-    
-    # Crear tabla con respuestas
-    table_html = f"""
-    <div style="margin: 20px 0; padding: 15px; background-color: #f8f9fa; border-radius: 5px; border-left: 4px solid #16a34a;">
-        <h4 style="color: #16a34a; margin: 0 0 15px 0;">📊 Reporte de Respuestas</h4>
-        <div style="overflow-x: auto;">
-            <table style="width: 100%; border-collapse: collapse; background-color: white; border-radius: 5px; overflow: hidden;">
-                <thead>
-                    <tr style="background-color: #16a34a; color: white;">
-                        <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">ID Respuesta</th>
+        rows = ""
+        for i, q in enumerate(form_data['questions']):
+            bg = _C['bg'] if i % 2 == 0 else _C['white']
+            req = "Sí" if q.get('required') else "No"
+            rows += f'<tr style="background:{bg};"><td style="padding:7px 10px;border-bottom:1px solid {_C["border"]};font-size:12px;">{q["question_text"]}</td><td style="padding:7px 10px;border-bottom:1px solid {_C["border"]};font-size:12px;text-align:center;">{q["question_type"].capitalize()}</td><td style="padding:7px 10px;border-bottom:1px solid {_C["border"]};font-size:12px;text-align:center;">{req}</td></tr>'
+        return f"""<div style="margin:18px 0;">
+            <p style="margin:0 0 8px;font-size:12px;font-weight:600;color:{_C['text']};text-transform:uppercase;letter-spacing:.5px;">Estructura del formulario</p>
+            <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid {_C['border']};border-collapse:collapse;">
+            <thead><tr style="background:{_C['bg']};">
+                <th style="{hdr_s}">Pregunta</th><th style="{hdr_s}text-align:center;">Tipo</th><th style="{hdr_s}text-align:center;">Requerida</th>
+            </tr></thead><tbody>{rows}</tbody></table>
+            <p style="margin:8px 0 0;font-size:12px;color:{_C['text_muted']};">Sin respuestas registradas.</p>
+        </div>"""
+
+    headers = [q['question_text'] for q in form_data['questions']]
+    hcells = f'<th style="{hdr_s}text-align:center;">ID</th>'
+    for h in headers:
+        hcells += f'<th style="{hdr_s}">{h}</th>'
+
+    brows = ""
+    for i, resp in enumerate(form_data['responses']):
+        bg = _C['bg'] if i % 2 == 0 else _C['white']
+        amap = {a['question_id']: a['answer_text'] for a in resp.get('answers', [])}
+        cells = f'<td style="padding:7px 10px;border-bottom:1px solid {_C["border"]};font-size:12px;font-weight:600;text-align:center;">{resp["id"]}</td>'
+        for q in form_data['questions']:
+            v = amap.get(q['id'], '—')
+            if len(str(v)) > 80:
+                v = str(v)[:80] + "…"
+            cells += f'<td style="padding:7px 10px;border-bottom:1px solid {_C["border"]};font-size:12px;">{v}</td>'
+        brows += f'<tr style="background:{bg};">{cells}</tr>'
+
+    return f"""<div style="margin:18px 0;">
+        <p style="margin:0 0 8px;font-size:12px;font-weight:600;color:{_C['text']};text-transform:uppercase;letter-spacing:.5px;">Reporte de respuestas ({len(form_data['responses'])})</p>
+        <div style="overflow-x:auto;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid {_C['border']};border-collapse:collapse;">
+        <thead><tr style="background:{_C['bg']};">{hcells}</tr></thead>
+        <tbody>{brows}</tbody></table></div>
+    </div>"""
+
+
+# Alias para compatibilidad
+generate_report_table_html = _generate_report_table_html
+
+
+async def send_action_notification_email(
+    action: str, recipient: str, form, current_date: str,
+    pdf_bytes=None, pdf_filename=None, db=None, current_user=None,
+    response_id: int = None,
+):
     """
-    
-    # Agregar encabezados de preguntas
-    for header in headers:
-        table_html += f'<th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">{header}</th>'
-    
-    table_html += """
-                    </tr>
-                </thead>
-                <tbody>
+    ★ CORREGIDO v3.1 ★
+    Notificación de acción de cierre de formato.
+    Ahora busca la respuesta y genera PDF/Excel INTERNAMENTE.
+
+    Acciones:
+      send_download_link  → Adjunta Excel (.xlsx) con la respuesta
+      send_pdf_attachment → Adjunta PDF (.pdf) con la respuesta
+      generate_report     → Adjunta PDF (.pdf) con la respuesta
+
+    Si no se pasa response_id, busca la respuesta más reciente del form.
     """
-    
-    # Agregar filas con respuestas
-    for i, response in enumerate(form_data['responses']):
-        row_color = "#f9f9f9" if i % 2 == 0 else "white"
-        
-        table_html += f"""
-                    <tr style="background-color: {row_color};">
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: 500;">{response['id']}</td>
-        """
-        
-        # Crear un diccionario de respuestas por question_id
-        answers_by_question = {}
-        for answer in response.get('answers', []):
-            answers_by_question[answer['question_id']] = answer['answer_text']
-        
-        # Agregar celdas para cada pregunta
-        for question in form_data['questions']:
-            answer_text = answers_by_question.get(question['id'], '-')
-            # Truncar texto muy largo
-            if len(answer_text) > 100:
-                answer_text = answer_text[:100] + "..."
-            
-            table_html += f'<td style="padding: 10px; border-bottom: 1px solid #ddd;">{answer_text}</td>'
-        
-        table_html += "</tr>"
-    
-    table_html += """
-                </tbody>
-            </table>
-        </div>
-        <p style="margin: 15px 0 0 0; color: #666; font-size: 13px;">
-            📈 Total de respuestas: """ + str(len(form_data['responses'])) + """
-        </p>
-    </div>
-    """
-    
-    return table_html
+    try:
+        titles = {
+            'send_download_link':  ("Respuestas adjuntas en Excel",  "Se adjunta el archivo Excel con las respuestas del formulario."),
+            'send_pdf_attachment': ("Respuestas adjuntas en PDF",    "Se adjunta el PDF con las respuestas del formulario."),
+            'generate_report':    ("Reporte de respuesta",           "Se adjunta el reporte en PDF con las respuestas del formulario."),
+        }
+        title, desc = titles.get(action, ("Notificación", f"Acción ejecutada: {action}"))
+
+        # ── Info del formulario ──
+        body = _p(desc)
+        body += _info_block("Formulario",
+            _info_row("Título", form.title) +
+            _info_row("Descripción", form.description or 'Sin descripción') +
+            _info_row("Tipo", form.format_type.value.capitalize()) +
+            _info_row("Creado por", f"{form.user.name} ({form.user.email})")
+        )
+
+        # ══════════════════════════════════════════════════════════
+        # ★ PASO 1: BUSCAR LA RESPUESTA
+        # ══════════════════════════════════════════════════════════
+        response_obj = None
+        if db:
+            if response_id:
+                response_obj = db.query(Response).filter(Response.id == response_id).first()
+                if response_obj:
+                    print(f"📋 Usando response_id proporcionado: #{response_id}")
+
+            if not response_obj:
+                # Fallback: respuesta más reciente del formulario
+                response_obj = (
+                    db.query(Response)
+                    .filter(Response.form_id == form.id)
+                    .order_by(Response.id.desc())
+                    .first()
+                )
+                if response_obj:
+                    print(f"📋 Usando respuesta más reciente: #{response_obj.id}")
+                else:
+                    print(f"⚠️ No se encontraron respuestas para form {form.id}")
+
+        # Mostrar info de la respuesta en el correo
+        if response_obj:
+            resp_user = db.query(User).filter(User.id == response_obj.user_id).first()
+            resp_user_name = resp_user.name if resp_user else f"Usuario {response_obj.user_id}"
+            submitted = current_date
+            if hasattr(response_obj, 'submitted_at') and response_obj.submitted_at:
+                submitted = str(response_obj.submitted_at)[:19]
+            elif hasattr(response_obj, 'created_at') and response_obj.created_at:
+                submitted = str(response_obj.created_at)[:19]
+
+            body += _info_block("Respuesta",
+                _info_row("ID", f'#{response_obj.id}') +
+                _info_row("Usuario", resp_user_name) +
+                _info_row("Fecha", submitted)
+            )
+
+        # ══════════════════════════════════════════════════════════
+        # ★ PASO 2: GENERAR ADJUNTO SEGÚN LA ACCIÓN
+        # ══════════════════════════════════════════════════════════
+        attachment_bytes = None
+        attachment_filename = None
+        attachment_maintype = "application"
+        attachment_subtype = "octet-stream"
+
+        safe_title = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in form.title)
+
+        if response_obj and db:
+
+            # ── Esperar a que los answers estén guardados ──
+            # (el background task puede arrancar antes de que se guarden)
+            import time
+            for attempt in range(1, 8):  # hasta 7 intentos (~7 seg máx)
+                answer_count = db.query(Answer).filter(
+                    Answer.response_id == response_obj.id
+                ).count()
+                if answer_count > 0:
+                    print(f"✅ Answers encontrados: {answer_count} para response #{response_obj.id} (intento {attempt})")
+                    break
+                print(f"⏳ Esperando answers para response #{response_obj.id}... (intento {attempt}/7)")
+                db.expire_all()  # forzar re-lectura de la DB
+                time.sleep(1)
+            else:
+                print(f"⚠️ Timeout: no se encontraron answers para response #{response_obj.id} después de 7 intentos")
+
+            if action == 'send_download_link':
+                # ★ EXCEL adjunto
+                print(f"📊 Generando Excel para response #{response_obj.id}...")
+                attachment_bytes = generate_response_excel_bytes(db, form, response_obj)
+                if attachment_bytes:
+                    attachment_filename = f"Respuesta_{response_obj.id}_{safe_title}.xlsx"
+                    attachment_subtype = "vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    body += _callout(f'Archivo adjunto: <strong>{attachment_filename}</strong>', 'success')
+                    print(f"✅ Excel listo: {attachment_filename} ({len(attachment_bytes)} bytes)")
+                else:
+                    body += _callout('No se pudo generar el archivo Excel adjunto.', 'warning')
+                    print(f"❌ Falló generación de Excel para response #{response_obj.id}")
+
+            elif action == 'send_pdf_attachment':
+                # ★ PDF adjunto
+                print(f"📄 Generando PDF para response #{response_obj.id}...")
+                attachment_bytes = generate_response_pdf_bytes(db, form, response_obj)
+                if attachment_bytes:
+                    attachment_filename = f"Respuesta_{response_obj.id}_{safe_title}.pdf"
+                    attachment_subtype = "pdf"
+                    body += _callout(f'Archivo adjunto: <strong>{attachment_filename}</strong>', 'success')
+                    print(f"✅ PDF listo: {attachment_filename} ({len(attachment_bytes)} bytes)")
+                elif pdf_bytes:
+                    # Fallback: pdf_bytes externo (compatibilidad con código viejo)
+                    attachment_bytes = pdf_bytes
+                    attachment_filename = pdf_filename or f"Formato_{safe_title}.pdf"
+                    attachment_subtype = "pdf"
+                    body += _callout(f'Archivo adjunto: <strong>{attachment_filename}</strong>', 'info')
+                    print(f"📎 Usando pdf_bytes fallback: {attachment_filename}")
+                else:
+                    body += _callout('No se pudo generar el archivo PDF adjunto.', 'warning')
+                    print(f"❌ Falló generación de PDF para response #{response_obj.id}")
+
+            elif action == 'generate_report':
+                # ★ PDF adjunto (reporte)
+                print(f"📊 Generando reporte PDF para response #{response_obj.id}...")
+                attachment_bytes = generate_response_pdf_bytes(db, form, response_obj)
+                if attachment_bytes:
+                    attachment_filename = f"Reporte_{response_obj.id}_{safe_title}.pdf"
+                    attachment_subtype = "pdf"
+                    body += _callout(f'Reporte adjunto: <strong>{attachment_filename}</strong>', 'success')
+                    print(f"✅ Reporte PDF listo: {attachment_filename} ({len(attachment_bytes)} bytes)")
+                else:
+                    body += _callout('No se pudo generar el reporte PDF adjunto.', 'warning')
+                    print(f"❌ Falló generación de reporte PDF para response #{response_obj.id}")
+
+        elif not response_obj:
+            body += _callout('No se encontraron respuestas para adjuntar.', 'warning')
+
+        # ══════════════════════════════════════════════════════════
+        # ★ PASO 3: CONSTRUIR Y ENVIAR CORREO
+        # ══════════════════════════════════════════════════════════
+        html = _base_email_html(title, body)
+        msg = _new_msg(f"{title} — {form.title}", recipient)
+        msg.set_content(f"{title}: {form.title}")
+        msg.add_alternative(html, subtype="html")
+
+        # Adjuntar archivo si se generó
+        if attachment_bytes and attachment_filename:
+            msg.add_attachment(
+                attachment_bytes,
+                maintype=attachment_maintype,
+                subtype=attachment_subtype,
+                filename=attachment_filename,
+            )
+            print(f"📎 Adjunto añadido al correo: {attachment_filename}")
+        else:
+            print(f"⚠️ Correo '{action}' se envía SIN adjunto a {recipient}")
+
+        return _send_msg(msg)
+
+    except Exception as e:
+        print(f"❌ Error correo acción '{action}' a {recipient}: {e}")
+        import traceback; traceback.print_exc()
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════
+#  10. CORREO CON RESPUESTAS DETALLADAS
+# ═══════════════════════════════════════════════════════════════
 
 def send_response_answers_email(
     to_emails: list[str],
@@ -930,472 +839,103 @@ def send_response_answers_email(
     answers: list[EmailAnswerItem],
 ):
     try:
-        current_date = datetime.now().strftime("%d de %B de %Y")
-        current_time = datetime.now().strftime("%H:%M")
-
-        answers_html = ""
-        for idx, item in enumerate(answers):
-            value = item.answer_text or '<span style="color:#94a3b8;font-style:italic;">Sin respuesta</span>'
-
+        rows = ""
+        for i, item in enumerate(answers):
+            bg = _C['bg'] if i % 2 == 0 else _C['white']
+            val = item.answer_text or f'<span style="color:{_C["text_muted"]};font-style:italic;">Sin respuesta</span>'
             if item.file_path:
-                value += f'''
-                    <br>
-                    <a href="{item.file_path}" 
-                       style="display:inline-flex;align-items:center;gap:6px;margin-top:8px;padding:6px 12px;background:#3b82f6;color:white;text-decoration:none;border-radius:6px;font-size:13px;font-weight:500;">
-                        <span>📎</span>
-                        <span>Ver archivo adjunto</span>
-                    </a>
-                '''
+                val += f'<br><a href="{item.file_path}" style="display:inline-block;margin-top:5px;padding:3px 10px;background:{_C["brand_bg"]};color:{_C["brand"]};text-decoration:none;border-radius:3px;font-size:12px;font-weight:500;">Ver archivo</a>'
+            rows += f"""<tr style="background:{bg};">
+                <td style="padding:10px 12px;border-bottom:1px solid {_C['border']};font-size:13px;font-weight:500;color:{_C['text']};width:40%;vertical-align:top;">{item.question_text}</td>
+                <td style="padding:10px 12px;border-bottom:1px solid {_C['border']};font-size:13px;color:{_C['text_sec']};vertical-align:top;">{val}</td>
+            </tr>"""
 
-            # Fila con alternancia de colores
-            row_bg = "#f8fafc" if idx % 2 == 0 else "#ffffff"
-            
-            answers_html += f'''
-                <tr style="background-color:{row_bg};">
-                    <td style="padding:16px 20px;border-bottom:1px solid #e2e8f0;font-weight:500;color:#334155;width:40%;vertical-align:top;">
-                        {item.question_text}
-                    </td>
-                    <td style="padding:16px 20px;border-bottom:1px solid #e2e8f0;color:#475569;width:60%;vertical-align:top;">
-                        {value}
-                    </td>
-                </tr>
-            '''
+        hdr_s = f'padding:10px 12px;text-align:left;font-size:11px;font-weight:600;color:{_C["text_muted"]};text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid {_C["border"]};'
 
-        html_content = f'''
-        <!DOCTYPE html>
-        <html lang="es">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Respuestas del Formulario</title>
-        </head>
-        <body style="margin:0;padding:0;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background-color:#f1f5f9;">
-            
-            <!-- Contenedor principal -->
-            <div style="max-width:800px;margin:40px auto;background-color:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
-                
-                <!-- Header con gradiente -->
-                <div style="background:linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);padding:40px 30px;text-align:center;">
-                    <div style="background-color:rgba(255,255,255,0.2);width:64px;height:64px;border-radius:50%;margin:0 auto 20px;display:flex;align-items:center;justify-content:center;font-size:32px;">
-                        📋
-                    </div>
-                    <h1 style="margin:0;color:#ffffff;font-size:28px;font-weight:600;letter-spacing:-0.5px;">
-                        Nueva Respuesta de Formulario
-                    </h1>
-                    <p style="margin:12px 0 0;color:#e0e7ff;font-size:16px;">
-                        {form_title}
-                    </p>
-                </div>
+        body = _p(f'Se ha registrado una nueva respuesta para el formulario <strong>"{form_title}"</strong>.')
+        body += _info_block("Información",
+            _info_row("Formulario", form_title) +
+            _info_row("ID Respuesta", f'<strong>#{response_id}</strong>') +
+            _info_row("Fecha", datetime.now().strftime("%d/%m/%Y %H:%M"))
+        )
+        body += f"""<div style="margin:18px 0;">
+            <p style="margin:0 0 8px;font-size:12px;font-weight:600;color:{_C['text']};text-transform:uppercase;letter-spacing:.5px;">Respuestas</p>
+            <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid {_C['border']};border-collapse:collapse;border-radius:4px;overflow:hidden;">
+            <thead><tr style="background:{_C['bg']};">
+                <th style="{hdr_s}">Pregunta</th><th style="{hdr_s}">Respuesta</th>
+            </tr></thead>
+            <tbody>{rows}</tbody></table>
+        </div>"""
 
-                <!-- Información del formulario -->
-                <div style="padding:30px;background-color:#f8fafc;border-bottom:1px solid #e2e8f0;">
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
-                        <div style="background-color:#ffffff;padding:20px;border-radius:8px;border-left:4px solid #3b82f6;">
-                            <div style="color:#64748b;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">
-                                ID de Respuesta
-                            </div>
-                            <div style="color:#1e293b;font-size:20px;font-weight:700;">
-                                #{response_id}
-                            </div>
-                        </div>
-                        <div style="background-color:#ffffff;padding:20px;border-radius:8px;border-left:4px solid #10b981;">
-                            <div style="color:#64748b;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">
-                                Fecha y Hora
-                            </div>
-                            <div style="color:#1e293b;font-size:16px;font-weight:600;">
-                                {current_date}
-                            </div>
-                            <div style="color:#64748b;font-size:14px;margin-top:4px;">
-                                {current_time}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Título de la tabla -->
-                <div style="padding:30px 30px 20px;">
-                    <h2 style="margin:0;color:#1e293b;font-size:20px;font-weight:600;display:flex;align-items:center;gap:10px;">
-                        <span style="display:inline-block;width:4px;height:24px;background:#3b82f6;border-radius:2px;"></span>
-                        Respuestas Detalladas
-                    </h2>
-                </div>
-
-                <!-- Tabla de respuestas -->
-                <div style="padding:0 30px 30px;">
-                    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:0;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0;">
-                        <thead>
-                            <tr style="background:linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);">
-                                <th style="padding:16px 20px;text-align:left;font-size:13px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #cbd5e1;">
-                                    Pregunta
-                                </th>
-                                <th style="padding:16px 20px;text-align:left;font-size:13px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #cbd5e1;">
-                                    Respuesta
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {answers_html}
-                        </tbody>
-                    </table>
-                </div>
-
-                <!-- Footer -->
-                <div style="padding:30px;background-color:#f8fafc;border-top:1px solid #e2e8f0;text-align:center;">
-                    <div style="margin-bottom:16px;">
-                        <img src="https://via.placeholder.com/120x40/3b82f6/ffffff?text=SafeMetrics" alt="SafeMetrics" style="height:32px;">
-                    </div>
-                    <p style="margin:0 0 8px;color:#64748b;font-size:14px;">
-                        Este correo fue generado automáticamente por SafeMetrics
-                    </p>
-                    <p style="margin:0;color:#94a3b8;font-size:12px;">
-                        © 2024 SafeMetrics. Todos los derechos reservados.
-                    </p>
-                </div>
-
-            </div>
-
-            <!-- Nota de confidencialidad -->
-            <div style="max-width:800px;margin:20px auto;padding:20px;text-align:center;">
-                <p style="margin:0;color:#94a3b8;font-size:12px;line-height:1.6;">
-                    <strong>Aviso de confidencialidad:</strong> Este mensaje y sus archivos adjuntos están dirigidos exclusivamente 
-                    a su destinatario y pueden contener información privilegiada o confidencial. Si no es el destinatario previsto, 
-                    elimínelo de inmediato.
-                </p>
-            </div>
-
-        </body>
-        </html>
-        '''
+        html = _base_email_html(f"Nueva respuesta — {form_title}", body)
 
         for email in to_emails:
-            msg = EmailMessage()
-            msg["Subject"] = f"✓ Nueva Respuesta: {form_title}"
-            msg["From"] = formataddr(("SafeMetrics Platform", MAIL_FROM_ADDRESS_ALT))
-            msg["To"] = email
-
-            # Texto plano alternativo
-            plain_text = f'''
-NUEVA RESPUESTA DE FORMULARIO
-════════════════════════════════
-
-Formulario: {form_title}
-ID de Respuesta: #{response_id}
-Fecha: {current_date} - {current_time}
-
-RESPUESTAS:
-────────────────────────────────
-'''
-            for item in answers:
-                plain_text += f'\n{item.question_text}\n'
-                plain_text += f'→ {item.answer_text or "Sin respuesta"}\n'
-                if item.file_path:
-                    plain_text += f'  📎 Archivo: {item.file_path}\n'
-                plain_text += '\n'
-
-            plain_text += '''
-────────────────────────────────
-Este correo fue generado automáticamente por SafeMetrics.
-© 2024 SafeMetrics. Todos los derechos reservados.
-'''
-
-            msg.set_content(plain_text)
-            msg.add_alternative(html_content, subtype="html")
-
-            with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
-                smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
-                smtp.send_message(msg)
-
+            msg = _new_msg(f"Nueva respuesta: {form_title} (#{response_id})", email)
+            msg.set_content(f"Nueva respuesta #{response_id} para {form_title}.")
+            msg.add_alternative(html, subtype="html")
+            _send_msg(msg)
         return True
-
     except Exception as e:
-        print(f"❌ Error al enviar correo: {str(e)}")
+        print(f"❌ Error correo respuestas: {e}")
         return False
-    
+
+
+# ═══════════════════════════════════════════════════════════════
+#  11. ALERTA DE VENCIMIENTO (REGLAS)
+# ═══════════════════════════════════════════════════════════════
+
 def send_rule_notification_email(
-    user_email: str,
-    user_name: str,
-    form_title: str,
-    form_description: str,
-    response_id: int,
-    date_limit: str,
-    days_remaining: int,
-    days_before_alert: int,
-    question_text: str,
-    user_document: str,
-    user_telephone: str
+    user_email: str, user_name: str, form_title: str, form_description: str,
+    response_id: int, date_limit: str, days_remaining: int,
+    days_before_alert: int, question_text: str,
+    user_document: str, user_telephone: str
 ) -> bool:
-    """
-    Envía un correo de alerta de vencimiento de respuesta según reglas configuradas.
-    
-    Args:
-        user_email (str): Email del usuario
-        user_name (str): Nombre del usuario
-        form_title (str): Título del formulario
-        form_description (str): Descripción del formulario
-        response_id (int): ID de la respuesta
-        date_limit (str): Fecha límite (formato: YYYY-MM-DD)
-        days_remaining (int): Días restantes hasta la fecha límite
-        days_before_alert (int): Días de anticipación configurados
-        question_text (str): Texto de la pregunta relacionada
-        user_document (str): Documento del usuario
-        user_telephone (str): Teléfono del usuario
-    
-    Returns:
-        bool: True si el envío fue exitoso
-    """
     try:
-        current_date = datetime.now().strftime("%d/%m/%Y")
-        current_time = datetime.now().strftime("%H:%M:%S")
-        
-        # Formatear fecha límite
         try:
-            if isinstance(date_limit, str):
-                date_obj = datetime.strptime(str(date_limit), "%Y-%m-%d")
-            else:
-                date_obj = date_limit
-            formatted_date = date_obj.strftime("%d/%m/%Y")
+            d = datetime.strptime(str(date_limit), "%Y-%m-%d") if isinstance(date_limit, str) else date_limit
+            fdate = d.strftime("%d/%m/%Y")
         except:
-            formatted_date = str(date_limit)
-        
-        # Determinar urgencia y color
+            fdate = str(date_limit)
+
         if days_remaining <= 2:
-            urgency_level = "URGENTE"
-            urgency_color = "#dc2626"
-            urgency_icon = "🚨"
-            urgency_bg = "#fee2e2"
+            urg, sty = "URGENTE", "error"
         elif days_remaining <= 5:
-            urgency_level = "IMPORTANTE"
-            urgency_color = "#f59e0b"
-            urgency_icon = "⚠️"
-            urgency_bg = "#fef3c7"
+            urg, sty = "IMPORTANTE", "warning"
         else:
-            urgency_level = "RECORDATORIO"
-            urgency_color = "#3b82f6"
-            urgency_icon = "📅"
-            urgency_bg = "#dbeafe"
-        
-        msg = EmailMessage()
-        msg["Subject"] = f"{urgency_icon} {urgency_level}: Vencimiento próximo - {form_title}"
-        msg["From"] = formataddr(("Safemetrics Alertas", MAIL_FROM_ADDRESS_ALT))
-        msg["To"] = formataddr((user_name, user_email))
-        
-        html_content = f"""
-        <!DOCTYPE html>
-        <html lang="es">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        </head>
-        <body style="margin:0;padding:0;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background-color:#f1f5f9;">
-            
-            <!-- Contenedor principal -->
-            <div style="max-width:700px;margin:40px auto;background-color:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
-                
-                <!-- Banner de urgencia -->
-                <div style="background:linear-gradient(135deg, {urgency_color} 0%, {urgency_color}dd 100%);padding:30px;text-align:center;">
-                    <div style="font-size:48px;margin-bottom:15px;">{urgency_icon}</div>
-                    <h1 style="margin:0;color:#ffffff;font-size:28px;font-weight:700;letter-spacing:-0.5px;">
-                        {urgency_level}
-                    </h1>
-                    <p style="margin:10px 0 0;color:#ffffff;font-size:16px;opacity:0.95;">
-                        Alerta de Vencimiento Programado
-                    </p>
-                </div>
-                
-                <!-- Contador de días -->
-                <div style="background-color:{urgency_bg};padding:25px;text-align:center;border-bottom:3px solid {urgency_color};">
-                    <div style="font-size:14px;color:{urgency_color};font-weight:600;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">
-                        Tiempo Restante
-                    </div>
-                    <div style="font-size:48px;font-weight:700;color:{urgency_color};line-height:1;">
-                        {days_remaining}
-                    </div>
-                    <div style="font-size:18px;color:{urgency_color};font-weight:500;margin-top:5px;">
-                        {'día' if days_remaining == 1 else 'días'}
-                    </div>
-                </div>
-                
-                <!-- Información del usuario -->
-                <div style="padding:30px;background-color:#f8fafc;border-bottom:1px solid #e2e8f0;">
-                    <h2 style="margin:0 0 20px 0;color:#1e293b;font-size:18px;font-weight:600;">
-                        👤 Destinatario de la Alerta
-                    </h2>
-                    <table width="100%" style="border-collapse:collapse;">
-                        <tr>
-                            <td style="padding:8px 0;color:#64748b;font-size:14px;width:35%;">
-                                <strong>Nombre:</strong>
-                            </td>
-                            <td style="padding:8px 0;color:#1e293b;font-size:14px;">
-                                {user_name}
-                            </td>
-                        </tr>
-                        <tr>
-                            <td style="padding:8px 0;color:#64748b;font-size:14px;">
-                                <strong>Email:</strong>
-                            </td>
-                            <td style="padding:8px 0;color:#1e293b;font-size:14px;">
-                                {user_email}
-                            </td>
-                        </tr>
-                        <tr>
-                            <td style="padding:8px 0;color:#64748b;font-size:14px;">
-                                <strong>Documento:</strong>
-                            </td>
-                            <td style="padding:8px 0;color:#1e293b;font-size:14px;">
-                                {user_document}
-                            </td>
-                        </tr>
-                        <tr>
-                            <td style="padding:8px 0;color:#64748b;font-size:14px;">
-                                <strong>Teléfono:</strong>
-                            </td>
-                            <td style="padding:8px 0;color:#1e293b;font-size:14px;">
-                                {user_telephone}
-                            </td>
-                        </tr>
-                    </table>
-                </div>
-                
-                <!-- Detalles del formulario -->
-                <div style="padding:30px;">
-                    <h2 style="margin:0 0 20px 0;color:#1e293b;font-size:18px;font-weight:600;display:flex;align-items:center;gap:10px;">
-                        <span style="display:inline-block;width:4px;height:24px;background:{urgency_color};border-radius:2px;"></span>
-                        📋 Detalles del Formulario
-                    </h2>
-                    
-                    <div style="background-color:#f8fafc;padding:20px;border-radius:8px;border-left:4px solid {urgency_color};margin-bottom:20px;">
-                        <div style="margin-bottom:15px;">
-                            <div style="color:#64748b;font-size:12px;font-weight:600;text-transform:uppercase;margin-bottom:5px;">
-                                Formulario
-                            </div>
-                            <div style="color:#1e293b;font-size:16px;font-weight:600;">
-                                {form_title}
-                            </div>
-                        </div>
-                        
-                        <div style="margin-bottom:15px;">
-                            <div style="color:#64748b;font-size:12px;font-weight:600;text-transform:uppercase;margin-bottom:5px;">
-                                Descripción
-                            </div>
-                            <div style="color:#475569;font-size:14px;">
-                                {form_description}
-                            </div>
-                        </div>
-                        
-                        <div style="margin-bottom:15px;">
-                            <div style="color:#64748b;font-size:12px;font-weight:600;text-transform:uppercase;margin-bottom:5px;">
-                                ID de Respuesta
-                            </div>
-                            <div style="color:#1e293b;font-size:14px;font-family:monospace;">
-                                #{response_id}
-                            </div>
-                        </div>
-                        
-                        <div>
-                            <div style="color:#64748b;font-size:12px;font-weight:600;text-transform:uppercase;margin-bottom:5px;">
-                                Pregunta Relacionada
-                            </div>
-                            <div style="color:#475569;font-size:14px;font-style:italic;">
-                                "{question_text}"
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Fechas importantes -->
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-top:20px;">
-                        <div style="background-color:#ffffff;padding:20px;border-radius:8px;border:2px solid #e2e8f0;">
-                            <div style="color:#64748b;font-size:12px;font-weight:600;text-transform:uppercase;margin-bottom:8px;">
-                                📅 Fecha Límite
-                            </div>
-                            <div style="color:#dc2626;font-size:20px;font-weight:700;">
-                                {formatted_date}
-                            </div>
-                        </div>
-                        <div style="background-color:#ffffff;padding:20px;border-radius:8px;border:2px solid #e2e8f0;">
-                            <div style="color:#64748b;font-size:12px;font-weight:600;text-transform:uppercase;margin-bottom:8px;">
-                                ⏰ Alerta Configurada
-                            </div>
-                            <div style="color:#3b82f6;font-size:20px;font-weight:700;">
-                                {days_before_alert} {'día' if days_before_alert == 1 else 'días'} antes
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Mensaje de acción -->
-                <div style="padding:30px;background-color:{urgency_bg};border-top:1px solid {urgency_color};">
-                    <div style="text-align:center;">
-                        <p style="margin:0 0 20px 0;color:{urgency_color};font-size:15px;font-weight:600;">
-                            ⚡ Se requiere su atención para esta respuesta antes de la fecha límite
-                        </p>
-                        <a href="https://forms.sfisas.com.co/" 
-                           style="display:inline-block;background-color:{urgency_color};color:white;padding:15px 40px;text-decoration:none;border-radius:8px;font-weight:600;font-size:16px;box-shadow:0 2px 4px rgba(0,0,0,0.1);">
-                            Ir a Safemetrics
-                        </a>
-                    </div>
-                </div>
-                
-                <!-- Footer -->
-                <div style="padding:25px;background-color:#1e293b;text-align:center;">
-                    <p style="margin:0 0 8px 0;color:#94a3b8;font-size:13px;">
-                        Este correo fue generado automáticamente por el sistema de alertas de Safemetrics
-                    </p>
-                    <p style="margin:0;color:#64748b;font-size:12px;">
-                        Enviado el {current_date} a las {current_time}
-                    </p>
-                </div>
-                
-            </div>
-            
-        </body>
-        </html>
-        """
-        
-        # Texto plano alternativo
-        plain_text = f"""
-{urgency_icon} {urgency_level}: VENCIMIENTO PRÓXIMO
-════════════════════════════════════════════════
+            urg, sty = "RECORDATORIO", "info"
 
-TIEMPO RESTANTE: {days_remaining} {'día' if days_remaining == 1 else 'días'}
+        day_word = "día" if days_remaining == 1 else "días"
 
-DESTINATARIO:
-────────────────────────────────
-Nombre: {user_name}
-Email: {user_email}
-Documento: {user_document}
-Teléfono: {user_telephone}
+        body = _callout(f'<strong>{urg}</strong> — Quedan <strong>{days_remaining} {day_word}</strong> para el vencimiento.', sty)
+        body += _p(f'Estimado/a <strong>{user_name}</strong>, se acerca la fecha límite para una respuesta del formulario.')
 
-FORMULARIO:
-────────────────────────────────
-Título: {form_title}
-Descripción: {form_description}
-ID Respuesta: #{response_id}
-Pregunta: "{question_text}"
+        body += _info_block("Formulario",
+            _info_row("Título", form_title) +
+            _info_row("Descripción", form_description) +
+            _info_row("ID Respuesta", f'#{response_id}') +
+            _info_row("Pregunta relacionada", f'<em>"{question_text}"</em>')
+        )
+        body += _info_block("Fechas",
+            _info_row("Fecha límite", f'<strong>{fdate}</strong>') +
+            _info_row("Días restantes", f'<strong>{days_remaining}</strong>') +
+            _info_row("Alerta configurada", f'{days_before_alert} días antes')
+        )
+        body += _info_block("Destinatario",
+            _info_row("Nombre", user_name) +
+            _info_row("Correo", user_email) +
+            _info_row("Documento", user_document) +
+            _info_row("Teléfono", user_telephone)
+        )
+        body += _btn(_APP_URL)
 
-FECHAS:
-────────────────────────────────
-Fecha Límite: {formatted_date}
-Alerta configurada: {days_before_alert} {'día' if days_before_alert == 1 else 'días'} antes
-
-⚡ Se requiere su atención antes de la fecha límite.
-Ir a: https://forms.sfisas.com.co/
-
-────────────────────────────────
-Enviado el {current_date} a las {current_time}
-Este correo fue generado automáticamente por Safemetrics.
-        """
-        
-        msg.set_content(plain_text)
-        msg.add_alternative(html_content, subtype="html")
-        
-        # Enviar correo
-        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
-            smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
-            smtp.send_message(msg)
-        
-        print(f"✅ Correo de alerta enviado exitosamente a {user_email}")
-        return True
-        
+        html = _base_email_html(
+            f"{urg}: Vencimiento próximo — {form_title}", body,
+            footer_note="Alerta generada por el sistema de reglas de SafeMetrics."
+        )
+        msg = _new_msg(f"{urg}: Vencimiento próximo — {form_title}", user_email, user_name)
+        msg.set_content(f"{urg}: Quedan {days_remaining} {day_word} para {form_title}. Respuesta #{response_id}.")
+        msg.add_alternative(html, subtype="html")
+        return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error al enviar correo de alerta a {user_email}: {str(e)}")
+        print(f"❌ Error correo alerta a {user_email}: {e}")
         return False

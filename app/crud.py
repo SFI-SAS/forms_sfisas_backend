@@ -4611,147 +4611,39 @@ def run_async_in_thread(async_func, db_session_factory, form_id, current_user_id
     thread = threading.Thread(target=wrapper, daemon=True)
     thread.start()
 
-async def send_form_action_emails_background(form_id: int, current_user_id: int, db, request):
-    """
-    Envía correos electrónicos según las acciones activas configuradas para un formulario.
-    Se ejecuta EN BACKGROUND sin bloquear.
-    """
-    try:
-        # OBTENER current_user CON LA NUEVA SESIÓN
-        from app.models import User, Form, FormCloseConfig
-        
-        current_user = db.query(User).filter(User.id == current_user_id).first()
-        
-        if not current_user:
-            print(f"❌ Usuario con ID {current_user_id} no encontrado")
-            return
-        
-        form = db.query(Form).filter(Form.id == form_id).first()
-        
-        if not form:
-            print(f"❌ Formulario con ID {form_id} no encontrado")
-            return
-        
-        # OBTENER LAS ACCIONES ACTIVAS
-        active_actions = get_active_form_actions(form_id, db)
-        
-        if not active_actions:
-            print(f"No hay acciones activas configuradas para el formulario {form_id}")
-            return
-        
-        results = {
-            "success": True,
-            "emails_sent": 0,
-            "failed_emails": 0,
-            "actions_processed": []
-        }
-        
-        current_date = datetime.now().strftime("%d/%m/%Y")
-        pdf_bytes = None
-        pdf_filename = f"form_{form_id}_response.pdf"
-        
-        # Verificar si necesitamos generar el PDF
-        needs_pdf = any(action in ['send_pdf_attachment', 'send_download_link'] for action, _ in active_actions)
-        
-        if needs_pdf:
-            try:
-                # pdf_bytes = await generate_pdf_from_form_id(
-                #     form_id=form_id,
-                #     db=db,
-                #     current_user=current_user,
-                #     request=request
-                # )
-                print(f"✅ PDF generado exitosamente para el formulario {form_id}")
-            except Exception as e:
-                print(f"❌ Error al generar PDF: {str(e)}")
-                # Filtrar acciones que requieren PDF
-                active_actions = [(action, recipients) for action, recipients in active_actions 
-                                if action not in ['send_pdf_attachment', 'send_download_link']]
-        
-        # Procesar cada acción activa
-        for action, recipients in active_actions:
-            if action == 'do_nothing':
-                print(f"Acción 'do_nothing' detectada - no se envía correo")
-                results["actions_processed"].append({
-                    "action": action,
-                    "status": "skipped",
-                    "message": "Acción configurada para no hacer nada"
-                })
-                continue
-            
-            # Iterar sobre cada destinatario
-            for recipient in recipients:
-                try:
-                    email_sent = await send_action_notification_email(
-                        action=action,
-                        recipient=recipient,
-                        form=form,
-                        current_date=current_date,
-                        pdf_bytes=pdf_bytes,
-                        pdf_filename=pdf_filename,
-                        db=db, 
-                        current_user=current_user,
-                    )
-                    
-                    if email_sent:
-                        results["emails_sent"] += 1
-                        results["actions_processed"].append({
-                            "action": action,
-                            "recipient": recipient,
-                            "status": "success"
-                        })
-                        print(f"✅ Correo enviado exitosamente a {recipient} para acción '{action}'")
-                    else:
-                        results["failed_emails"] += 1
-                        results["actions_processed"].append({
-                            "action": action,
-                            "recipient": recipient,
-                            "status": "failed",
-                            "error": "send_action_notification_email retornó False"
-                        })
-                        print(f"❌ Fallo al enviar correo a {recipient} para acción '{action}'")
-                        
-                except Exception as e:
-                    results["failed_emails"] += 1
-                    results["actions_processed"].append({
-                        "action": action,
-                        "recipient": recipient,
-                        "status": "failed",
-                        "error": str(e)
-                    })
-                    print(f"❌ Error al enviar correo a {recipient}: {str(e)}")
-        
-        print(f"✅ Proceso completado para formulario {form_id}. Resultado: {results}")
-        
-    except Exception as e:
-        print(f"❌ Error al procesar acciones del formulario {form_id}: {str(e)}")   
-        
+
 async def send_form_action_emails(form_id: int, db, current_user, request):
     """
-    Envía correos electrónicos según las acciones activas configuradas para un formulario.
-    Ahora soporta múltiples destinatarios por acción.
+    Envía correos según las acciones activas configuradas para un formulario.
+    Soporta múltiples destinatarios por acción.
     
-    Args:
-        form_id (int): ID del formulario
-        db: Instancia de la base de datos (session)
-        current_user: Usuario actual
-        request: Objeto request de FastAPI
-    
-    Returns:
-        dict: Resultados del envío de correos
+    ★ FIX v3.1: Busca la respuesta más reciente y la pasa para
+      que send_action_notification_email genere adjuntos internamente.
     """
     try:
-        # Obtener información del formulario
         form = db.query(Form).filter(Form.id == form_id).first()
         if not form:
             return {"success": False, "error": f"Formulario con ID {form_id} no encontrado", "emails_sent": 0}
         
-        # Obtener las acciones activas (ahora con listas de emails)
         active_actions = get_active_form_actions(form_id, db)
-        
         if not active_actions:
             print(f"No hay acciones activas configuradas para el formulario {form_id}")
             return {"success": True, "message": "No hay acciones configuradas", "emails_sent": 0}
+        
+        # ══════════════════════════════════════════════════════
+        # ★ FIX: Buscar la respuesta más reciente del formulario
+        # ══════════════════════════════════════════════════════
+        latest_response = (
+            db.query(Response)
+            .filter(Response.form_id == form_id)
+            .order_by(Response.id.desc())
+            .first()
+        )
+        response_id = latest_response.id if latest_response else None
+        if response_id:
+            print(f"📋 Form {form_id} — Respuesta más reciente: #{response_id}")
+        else:
+            print(f"⚠️ Form {form_id} — No se encontraron respuestas")
         
         results = {
             "success": True,
@@ -4762,40 +4654,7 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
         
         current_date = datetime.now().strftime("%d/%m/%Y")
         
-        # Generar PDF una sola vez si es necesario
-        pdf_bytes = None
-        pdf_filename = f"form_{form_id}_response.pdf"
-        
-        # Verificar si necesitamos generar el PDF
-        needs_pdf = any(action in ['send_pdf_attachment', 'send_download_link'] for action, _ in active_actions)
-        
-        if needs_pdf:
-            try:
-                # pdf_bytes = await generate_pdf_from_form_id(
-                #     form_id=form_id,
-                #     db=db,
-                #     current_user=current_user,
-                #     request=request
-                # )
-                print(f"✅ PDF generado exitosamente para el formulario {form_id}")
-            except Exception as e:
-                print(f"❌ Error al generar PDF: {str(e)}")
-                # Marcar acciones que requieren PDF como fallidas
-                for action, recipients in active_actions:
-                    if action in ['send_pdf_attachment', 'send_download_link']:
-                        results["failed_emails"] += len(recipients)
-                        for recipient in recipients:
-                            results["actions_processed"].append({
-                                "action": action,
-                                "recipient": recipient,
-                                "status": "failed",
-                                "error": f"Error al generar PDF: {str(e)}"
-                            })
-                # Filtrar acciones que no requieren PDF
-                active_actions = [(action, recipients) for action, recipients in active_actions 
-                                if action not in ['send_pdf_attachment', 'send_download_link']]
-        
-        # 🆕 Procesar cada acción activa con MÚLTIPLES destinatarios
+        # Procesar cada acción activa con múltiples destinatarios
         for action, recipients in active_actions:
             if action == 'do_nothing':
                 print(f"Acción 'do_nothing' detectada - no se envía correo")
@@ -4806,18 +4665,18 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
                 })
                 continue
             
-            # 🆕 Iterar sobre cada destinatario
             for recipient in recipients:
                 try:
+                    # ★ FIX: Pasar response_id — el adjunto se genera
+                    #   dentro de send_action_notification_email
                     email_sent = await send_action_notification_email(
                         action=action,
                         recipient=recipient,
                         form=form,
                         current_date=current_date,
-                        pdf_bytes=pdf_bytes,
-                        pdf_filename=pdf_filename,
-                        db=db, 
+                        db=db,
                         current_user=current_user,
+                        response_id=response_id,
                     )
                     
                     if email_sent:
@@ -4827,7 +4686,7 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
                             "recipient": recipient,
                             "status": "success"
                         })
-                        print(f"✅ Correo enviado exitosamente a {recipient} para acción '{action}'")
+                        print(f"✅ Correo enviado a {recipient} — acción '{action}' — response #{response_id}")
                     else:
                         results["failed_emails"] += 1
                         results["actions_processed"].append({
@@ -4853,6 +4712,114 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
     except Exception as e:
         print(f"❌ Error al procesar acciones del formulario {form_id}: {str(e)}")
         return {"success": False, "error": str(e), "emails_sent": 0}
+
+
+async def send_form_action_emails_background(form_id: int, current_user_id: int, db, request):
+    """
+    Envía correos según las acciones activas configuradas para un formulario.
+    Se ejecuta EN BACKGROUND sin bloquear.
+    
+    ★ FIX v3.1: Busca la respuesta más reciente y la pasa para
+      que send_action_notification_email genere adjuntos internamente.
+    """
+    try:
+        from app.models import User, Form, FormCloseConfig
+        
+        current_user = db.query(User).filter(User.id == current_user_id).first()
+        if not current_user:
+            print(f"❌ Usuario con ID {current_user_id} no encontrado")
+            return
+        
+        form = db.query(Form).filter(Form.id == form_id).first()
+        if not form:
+            print(f"❌ Formulario con ID {form_id} no encontrado")
+            return
+        
+        active_actions = get_active_form_actions(form_id, db)
+        if not active_actions:
+            print(f"No hay acciones activas configuradas para el formulario {form_id}")
+            return
+        
+        # ══════════════════════════════════════════════════════
+        # ★ FIX: Buscar la respuesta más reciente del formulario
+        # ══════════════════════════════════════════════════════
+        latest_response = (
+            db.query(Response)
+            .filter(Response.form_id == form_id)
+            .order_by(Response.id.desc())
+            .first()
+        )
+        response_id = latest_response.id if latest_response else None
+        if response_id:
+            print(f"📋 Form {form_id} — Respuesta más reciente: #{response_id}")
+        else:
+            print(f"⚠️ Form {form_id} — No se encontraron respuestas")
+        
+        results = {
+            "success": True,
+            "emails_sent": 0,
+            "failed_emails": 0,
+            "actions_processed": []
+        }
+        
+        current_date = datetime.now().strftime("%d/%m/%Y")
+        
+        for action, recipients in active_actions:
+            if action == 'do_nothing':
+                print(f"Acción 'do_nothing' detectada - no se envía correo")
+                results["actions_processed"].append({
+                    "action": action,
+                    "status": "skipped",
+                    "message": "Acción configurada para no hacer nada"
+                })
+                continue
+            
+            for recipient in recipients:
+                try:
+                    # ★ FIX: Pasar response_id
+                    email_sent = await send_action_notification_email(
+                        action=action,
+                        recipient=recipient,
+                        form=form,
+                        current_date=current_date,
+                        db=db,
+                        current_user=current_user,
+                        response_id=response_id,
+                    )
+                    
+                    if email_sent:
+                        results["emails_sent"] += 1
+                        results["actions_processed"].append({
+                            "action": action,
+                            "recipient": recipient,
+                            "status": "success"
+                        })
+                        print(f"✅ Correo enviado a {recipient} — acción '{action}' — response #{response_id}")
+                    else:
+                        results["failed_emails"] += 1
+                        results["actions_processed"].append({
+                            "action": action,
+                            "recipient": recipient,
+                            "status": "failed",
+                            "error": "send_action_notification_email retornó False"
+                        })
+                        print(f"❌ Fallo al enviar correo a {recipient} para acción '{action}'")
+                        
+                except Exception as e:
+                    results["failed_emails"] += 1
+                    results["actions_processed"].append({
+                        "action": action,
+                        "recipient": recipient,
+                        "status": "failed",
+                        "error": str(e)
+                    })
+                    print(f"❌ Error al enviar correo a {recipient}: {str(e)}")
+        
+        print(f"✅ Proceso completado para formulario {form_id}. Resultado: {results}")
+        
+    except Exception as e:
+        print(f"❌ Error al procesar acciones del formulario {form_id}: {str(e)}")
+
 async def update_response_approval_status(
     response_id: int,
     update_data: UpdateResponseApprovalRequest,
@@ -7403,6 +7370,155 @@ def disable_notification_rule(db: Session, rule_id: int) -> bool:
         db.rollback()
         print(f"❌ Error al deshabilitar regla ID {rule_id}: {str(e)}")
         return False
+    
+def _reconstruct_repeated_ids(form_design: list, answers_list: list, repeated_question_ids: set):
+    """
+    Reconstruye el campo repeated_id en cada answer dict,
+    SIN necesitar la columna en el modelo Answer.
+
+    Usa 3 fuentes de información:
+    1. form_design → hijos directos de cada repeater (element_id)
+    2. form_design → linkExternalId de hijos (question_id)
+    3. FormAnswer.is_repeated → questions marcadas como parte de repeater
+
+    Args:
+        form_design: Lista de elementos del diseño del formulario
+        answers_list: Lista de dicts de answers (se modifica in-place)
+        repeated_question_ids: Set de question_ids marcados como is_repeated en FormAnswer
+    """
+    # Paso 1: Encontrar todos los repeaters recursivamente
+    repeaters = []
+
+    def find_repeaters(items):
+        for item in items:
+            if item.get("type") == "repeater":
+                repeaters.append(item)
+            for child in (item.get("children") or []):
+                find_repeaters([child])
+
+    find_repeaters(form_design)
+
+    if not repeaters:
+        return  # No hay repeaters, nada que reconstruir
+
+    # Paso 2: Construir mapas de pertenencia
+    # element_id (UUID) → repeater_id
+    element_to_repeater = {}
+    # question_id (linkExternalId) → repeater_id
+    question_to_repeater = {}
+
+    for rep in repeaters:
+        rep_id = rep.get("id")
+        if not rep_id:
+            continue
+        for child in (rep.get("children") or []):
+            child_id = child.get("id")
+            if child_id:
+                element_to_repeater[child_id] = rep_id
+            link_id = child.get("linkExternalId")
+            if link_id is not None:
+                question_to_repeater[int(link_id)] = rep_id
+            sqid = (child.get("props") or {}).get("sourceQuestionId")
+            if sqid is not None:
+                question_to_repeater[int(sqid)] = rep_id
+
+    # Paso 3: Asignar repeated_id a cada answer
+    for ans in answers_list:
+        # Si ya tiene repeated_id (por si acaso), no sobreescribir
+        if ans.get("repeated_id"):
+            continue
+
+        elem_id = ans.get("form_design_element_id")
+        q_id = ans.get("question_id")
+
+        # Prioridad 1: element_id es hijo directo del repeater
+        if elem_id and elem_id in element_to_repeater:
+            ans["repeated_id"] = element_to_repeater[elem_id]
+            continue
+
+        # Prioridad 2: question_id matchea linkExternalId de un hijo
+        if q_id is not None and q_id in question_to_repeater:
+            ans["repeated_id"] = question_to_repeater[q_id]
+            continue
+
+        # Prioridad 3: question está marcada como is_repeated en FormAnswer
+        if q_id is not None and q_id in repeated_question_ids:
+            if len(repeaters) == 1:
+                # Solo hay un repeater → asignar directamente
+                ans["repeated_id"] = repeaters[0].get("id")
+            else:
+                # Múltiples repeaters → asignar al primero (heurística)
+                # TODO: mejorar con proximidad en form_design si es necesario
+                ans["repeated_id"] = repeaters[0].get("id")
+
+
+# ═══════════════════════════════════════════════════════════════
+# FUNCIÓN AUXILIAR: Obtener question_ids repetidos desde FormAnswer
+# ═══════════════════════════════════════════════════════════════
+
+def _get_repeated_question_ids(db, form_id: int) -> set:
+    """
+    Consulta FormAnswer para obtener los question_id marcados como is_repeated.
+    """
+    from app.models import FormAnswer
+
+    form_answers = (
+        db.query(FormAnswer.question_id)
+        .filter(
+            FormAnswer.form_id == form_id,
+            FormAnswer.is_repeated == True
+        )
+        .all()
+    )
+    return {fa.question_id for fa in form_answers}
+
+
+# ═══════════════════════════════════════════════════════════════
+# FUNCIÓN AUXILIAR: Serializar answers del ORM al formato del exportador
+# ═══════════════════════════════════════════════════════════════
+
+def _serialize_answers(answers_orm, db, form_id: int, form_design: list) -> list:
+    """
+    Convierte answers ORM a dicts y reconstruye repeated_id.
+    """
+    answers = []
+    for ans in answers_orm:
+        answers.append({
+            "id_answer":              ans.id,
+            "question_id":            ans.question_id,
+            "question_text":          ans.question.question_text if ans.question else "",
+            "question_type":          (
+                ans.question.question_type.value
+                if ans.question and ans.question.question_type
+                else "text"
+            ),
+            "answer_text":            ans.answer_text,
+            "file_path":              ans.file_path or "",
+            "repeated_id":            None,  # Se reconstruye abajo
+            "form_design_element_id": getattr(ans, "form_design_element_id", None),
+        })
+
+    # Reconstruir repeated_id
+    repeated_qids = _get_repeated_question_ids(db, form_id)
+    _reconstruct_repeated_ids(form_design, answers, repeated_qids)
+
+    return answers
+
+
+# ═══════════════════════════════════════════════════════════════
+# FUNCIÓN AUXILIAR: Extraer style_config del form_design
+# ═══════════════════════════════════════════════════════════════
+
+def _extract_style_config(form_design: list):
+    """Extrae el style_config del form_design."""
+    for item in form_design:
+        props = item.get("props") or {}
+        if props.get("styleConfig"):
+            return props["styleConfig"]
+        if item.get("headerTable") and not item.get("type"):
+            return item
+    return None
+
     
 def sanitize_template_design(design: list) -> list:
     """
