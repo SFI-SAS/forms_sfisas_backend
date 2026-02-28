@@ -4611,147 +4611,39 @@ def run_async_in_thread(async_func, db_session_factory, form_id, current_user_id
     thread = threading.Thread(target=wrapper, daemon=True)
     thread.start()
 
-async def send_form_action_emails_background(form_id: int, current_user_id: int, db, request):
-    """
-    Envía correos electrónicos según las acciones activas configuradas para un formulario.
-    Se ejecuta EN BACKGROUND sin bloquear.
-    """
-    try:
-        # OBTENER current_user CON LA NUEVA SESIÓN
-        from app.models import User, Form, FormCloseConfig
-        
-        current_user = db.query(User).filter(User.id == current_user_id).first()
-        
-        if not current_user:
-            print(f"❌ Usuario con ID {current_user_id} no encontrado")
-            return
-        
-        form = db.query(Form).filter(Form.id == form_id).first()
-        
-        if not form:
-            print(f"❌ Formulario con ID {form_id} no encontrado")
-            return
-        
-        # OBTENER LAS ACCIONES ACTIVAS
-        active_actions = get_active_form_actions(form_id, db)
-        
-        if not active_actions:
-            print(f"No hay acciones activas configuradas para el formulario {form_id}")
-            return
-        
-        results = {
-            "success": True,
-            "emails_sent": 0,
-            "failed_emails": 0,
-            "actions_processed": []
-        }
-        
-        current_date = datetime.now().strftime("%d/%m/%Y")
-        pdf_bytes = None
-        pdf_filename = f"form_{form_id}_response.pdf"
-        
-        # Verificar si necesitamos generar el PDF
-        needs_pdf = any(action in ['send_pdf_attachment', 'send_download_link'] for action, _ in active_actions)
-        
-        if needs_pdf:
-            try:
-                # pdf_bytes = await generate_pdf_from_form_id(
-                #     form_id=form_id,
-                #     db=db,
-                #     current_user=current_user,
-                #     request=request
-                # )
-                print(f"✅ PDF generado exitosamente para el formulario {form_id}")
-            except Exception as e:
-                print(f"❌ Error al generar PDF: {str(e)}")
-                # Filtrar acciones que requieren PDF
-                active_actions = [(action, recipients) for action, recipients in active_actions 
-                                if action not in ['send_pdf_attachment', 'send_download_link']]
-        
-        # Procesar cada acción activa
-        for action, recipients in active_actions:
-            if action == 'do_nothing':
-                print(f"Acción 'do_nothing' detectada - no se envía correo")
-                results["actions_processed"].append({
-                    "action": action,
-                    "status": "skipped",
-                    "message": "Acción configurada para no hacer nada"
-                })
-                continue
-            
-            # Iterar sobre cada destinatario
-            for recipient in recipients:
-                try:
-                    email_sent = await send_action_notification_email(
-                        action=action,
-                        recipient=recipient,
-                        form=form,
-                        current_date=current_date,
-                        pdf_bytes=pdf_bytes,
-                        pdf_filename=pdf_filename,
-                        db=db, 
-                        current_user=current_user,
-                    )
-                    
-                    if email_sent:
-                        results["emails_sent"] += 1
-                        results["actions_processed"].append({
-                            "action": action,
-                            "recipient": recipient,
-                            "status": "success"
-                        })
-                        print(f"✅ Correo enviado exitosamente a {recipient} para acción '{action}'")
-                    else:
-                        results["failed_emails"] += 1
-                        results["actions_processed"].append({
-                            "action": action,
-                            "recipient": recipient,
-                            "status": "failed",
-                            "error": "send_action_notification_email retornó False"
-                        })
-                        print(f"❌ Fallo al enviar correo a {recipient} para acción '{action}'")
-                        
-                except Exception as e:
-                    results["failed_emails"] += 1
-                    results["actions_processed"].append({
-                        "action": action,
-                        "recipient": recipient,
-                        "status": "failed",
-                        "error": str(e)
-                    })
-                    print(f"❌ Error al enviar correo a {recipient}: {str(e)}")
-        
-        print(f"✅ Proceso completado para formulario {form_id}. Resultado: {results}")
-        
-    except Exception as e:
-        print(f"❌ Error al procesar acciones del formulario {form_id}: {str(e)}")   
-        
+
 async def send_form_action_emails(form_id: int, db, current_user, request):
     """
-    Envía correos electrónicos según las acciones activas configuradas para un formulario.
-    Ahora soporta múltiples destinatarios por acción.
+    Envía correos según las acciones activas configuradas para un formulario.
+    Soporta múltiples destinatarios por acción.
     
-    Args:
-        form_id (int): ID del formulario
-        db: Instancia de la base de datos (session)
-        current_user: Usuario actual
-        request: Objeto request de FastAPI
-    
-    Returns:
-        dict: Resultados del envío de correos
+    ★ FIX v3.1: Busca la respuesta más reciente y la pasa para
+      que send_action_notification_email genere adjuntos internamente.
     """
     try:
-        # Obtener información del formulario
         form = db.query(Form).filter(Form.id == form_id).first()
         if not form:
             return {"success": False, "error": f"Formulario con ID {form_id} no encontrado", "emails_sent": 0}
         
-        # Obtener las acciones activas (ahora con listas de emails)
         active_actions = get_active_form_actions(form_id, db)
-        
         if not active_actions:
             print(f"No hay acciones activas configuradas para el formulario {form_id}")
             return {"success": True, "message": "No hay acciones configuradas", "emails_sent": 0}
+        
+        # ══════════════════════════════════════════════════════
+        # ★ FIX: Buscar la respuesta más reciente del formulario
+        # ══════════════════════════════════════════════════════
+        latest_response = (
+            db.query(Response)
+            .filter(Response.form_id == form_id)
+            .order_by(Response.id.desc())
+            .first()
+        )
+        response_id = latest_response.id if latest_response else None
+        if response_id:
+            print(f"📋 Form {form_id} — Respuesta más reciente: #{response_id}")
+        else:
+            print(f"⚠️ Form {form_id} — No se encontraron respuestas")
         
         results = {
             "success": True,
@@ -4762,40 +4654,7 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
         
         current_date = datetime.now().strftime("%d/%m/%Y")
         
-        # Generar PDF una sola vez si es necesario
-        pdf_bytes = None
-        pdf_filename = f"form_{form_id}_response.pdf"
-        
-        # Verificar si necesitamos generar el PDF
-        needs_pdf = any(action in ['send_pdf_attachment', 'send_download_link'] for action, _ in active_actions)
-        
-        if needs_pdf:
-            try:
-                # pdf_bytes = await generate_pdf_from_form_id(
-                #     form_id=form_id,
-                #     db=db,
-                #     current_user=current_user,
-                #     request=request
-                # )
-                print(f"✅ PDF generado exitosamente para el formulario {form_id}")
-            except Exception as e:
-                print(f"❌ Error al generar PDF: {str(e)}")
-                # Marcar acciones que requieren PDF como fallidas
-                for action, recipients in active_actions:
-                    if action in ['send_pdf_attachment', 'send_download_link']:
-                        results["failed_emails"] += len(recipients)
-                        for recipient in recipients:
-                            results["actions_processed"].append({
-                                "action": action,
-                                "recipient": recipient,
-                                "status": "failed",
-                                "error": f"Error al generar PDF: {str(e)}"
-                            })
-                # Filtrar acciones que no requieren PDF
-                active_actions = [(action, recipients) for action, recipients in active_actions 
-                                if action not in ['send_pdf_attachment', 'send_download_link']]
-        
-        # 🆕 Procesar cada acción activa con MÚLTIPLES destinatarios
+        # Procesar cada acción activa con múltiples destinatarios
         for action, recipients in active_actions:
             if action == 'do_nothing':
                 print(f"Acción 'do_nothing' detectada - no se envía correo")
@@ -4806,18 +4665,18 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
                 })
                 continue
             
-            # 🆕 Iterar sobre cada destinatario
             for recipient in recipients:
                 try:
+                    # ★ FIX: Pasar response_id — el adjunto se genera
+                    #   dentro de send_action_notification_email
                     email_sent = await send_action_notification_email(
                         action=action,
                         recipient=recipient,
                         form=form,
                         current_date=current_date,
-                        pdf_bytes=pdf_bytes,
-                        pdf_filename=pdf_filename,
-                        db=db, 
+                        db=db,
                         current_user=current_user,
+                        response_id=response_id,
                     )
                     
                     if email_sent:
@@ -4827,7 +4686,7 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
                             "recipient": recipient,
                             "status": "success"
                         })
-                        print(f"✅ Correo enviado exitosamente a {recipient} para acción '{action}'")
+                        print(f"✅ Correo enviado a {recipient} — acción '{action}' — response #{response_id}")
                     else:
                         results["failed_emails"] += 1
                         results["actions_processed"].append({
@@ -4853,6 +4712,114 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
     except Exception as e:
         print(f"❌ Error al procesar acciones del formulario {form_id}: {str(e)}")
         return {"success": False, "error": str(e), "emails_sent": 0}
+
+
+async def send_form_action_emails_background(form_id: int, current_user_id: int, db, request):
+    """
+    Envía correos según las acciones activas configuradas para un formulario.
+    Se ejecuta EN BACKGROUND sin bloquear.
+    
+    ★ FIX v3.1: Busca la respuesta más reciente y la pasa para
+      que send_action_notification_email genere adjuntos internamente.
+    """
+    try:
+        from app.models import User, Form, FormCloseConfig
+        
+        current_user = db.query(User).filter(User.id == current_user_id).first()
+        if not current_user:
+            print(f"❌ Usuario con ID {current_user_id} no encontrado")
+            return
+        
+        form = db.query(Form).filter(Form.id == form_id).first()
+        if not form:
+            print(f"❌ Formulario con ID {form_id} no encontrado")
+            return
+        
+        active_actions = get_active_form_actions(form_id, db)
+        if not active_actions:
+            print(f"No hay acciones activas configuradas para el formulario {form_id}")
+            return
+        
+        # ══════════════════════════════════════════════════════
+        # ★ FIX: Buscar la respuesta más reciente del formulario
+        # ══════════════════════════════════════════════════════
+        latest_response = (
+            db.query(Response)
+            .filter(Response.form_id == form_id)
+            .order_by(Response.id.desc())
+            .first()
+        )
+        response_id = latest_response.id if latest_response else None
+        if response_id:
+            print(f"📋 Form {form_id} — Respuesta más reciente: #{response_id}")
+        else:
+            print(f"⚠️ Form {form_id} — No se encontraron respuestas")
+        
+        results = {
+            "success": True,
+            "emails_sent": 0,
+            "failed_emails": 0,
+            "actions_processed": []
+        }
+        
+        current_date = datetime.now().strftime("%d/%m/%Y")
+        
+        for action, recipients in active_actions:
+            if action == 'do_nothing':
+                print(f"Acción 'do_nothing' detectada - no se envía correo")
+                results["actions_processed"].append({
+                    "action": action,
+                    "status": "skipped",
+                    "message": "Acción configurada para no hacer nada"
+                })
+                continue
+            
+            for recipient in recipients:
+                try:
+                    # ★ FIX: Pasar response_id
+                    email_sent = await send_action_notification_email(
+                        action=action,
+                        recipient=recipient,
+                        form=form,
+                        current_date=current_date,
+                        db=db,
+                        current_user=current_user,
+                        response_id=response_id,
+                    )
+                    
+                    if email_sent:
+                        results["emails_sent"] += 1
+                        results["actions_processed"].append({
+                            "action": action,
+                            "recipient": recipient,
+                            "status": "success"
+                        })
+                        print(f"✅ Correo enviado a {recipient} — acción '{action}' — response #{response_id}")
+                    else:
+                        results["failed_emails"] += 1
+                        results["actions_processed"].append({
+                            "action": action,
+                            "recipient": recipient,
+                            "status": "failed",
+                            "error": "send_action_notification_email retornó False"
+                        })
+                        print(f"❌ Fallo al enviar correo a {recipient} para acción '{action}'")
+                        
+                except Exception as e:
+                    results["failed_emails"] += 1
+                    results["actions_processed"].append({
+                        "action": action,
+                        "recipient": recipient,
+                        "status": "failed",
+                        "error": str(e)
+                    })
+                    print(f"❌ Error al enviar correo a {recipient}: {str(e)}")
+        
+        print(f"✅ Proceso completado para formulario {form_id}. Resultado: {results}")
+        
+    except Exception as e:
+        print(f"❌ Error al procesar acciones del formulario {form_id}: {str(e)}")
+
 async def update_response_approval_status(
     response_id: int,
     update_data: UpdateResponseApprovalRequest,
