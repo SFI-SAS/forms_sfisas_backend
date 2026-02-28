@@ -1,5 +1,6 @@
 from datetime import datetime
 import logging
+import math
 import os
 from pathlib import Path
 import shutil
@@ -12,7 +13,7 @@ from app.api.controllers.excel_form_exporter import generate_form_excel
 from app.api.controllers.mail import send_response_answers_email
 from app.redis_client import redis_client
 from app.database import get_db
-from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
+from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, PalabrasClave, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
 from app.crud import  _extract_style_config, _serialize_answers, add_category_approver, analyze_form_relations, apply_template_service, bulk_save_category_approvers, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, create_template_service, delete_form, delete_form_category, delete_template_service, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_categories_with_approvers, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_approvals, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_template_detail_service, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, list_templates_service, move_category, process_regisfacial_answer, remove_category_approver, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, sync_form_approvals_from_category, toggle_form_status, update_category_approver, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status, update_template_service
 from app.schemas import AlertMessageRequest, CategoryApprovalBulkSave, CategoryApprovalCreate, CategoryApprovalResponse, CategoryApprovalUpdate, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, FormTemplateCreate, FormTemplateDetail, FormTemplateResponse, FormTemplateUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
@@ -2949,71 +2950,23 @@ def update_category_endpoint(
 ):
     return update_form_category_1(db, category_id, category_update)
 
-
 @router.get("/users/form_by_user/search")
 def search_user_forms(
-    search: str,  # ← Término de búsqueda (obligatorio)
-    filter_type: str = Query("all", regex="^(all|user|response_user)$"),  # ← Nuevo parámetro
+    search: str,
+    filter_type: str = Query("all", pattern="^(all|user|response_user)$"),
     page: int = 1,
     page_size: int = 30,
-    db: Session = Depends(get_db), 
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Busca formularios del usuario autenticado según el tipo de filtro.
+    if not search or search.strip() == "":
+        raise HTTPException(status_code=400, detail="El término de búsqueda no puede estar vacío")
+    if page_size > 100:
+        page_size = 100
 
-    - **search**: Término de búsqueda (obligatorio, busca en title, description y category)
-    - **filter_type**: Tipo de filtro a aplicar:
-        - "all": Todos los formularios asignados al usuario (por defecto)
-        - "user": Solo formularios asignados que debe llenar
-        - "response_user": Solo formularios que ya ha completado/respondido
-    - **page**: Número de página (por defecto 1)
-    - **page_size**: Cantidad de registros por página (por defecto 30, máximo 100)
-    - **Requiere autenticación.**
-    """
-    try:
-        if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User does not have permission to search forms"
-            )
-        
-        if page_size > 100:
-            page_size = 100
-        
-        # Validar que el término de búsqueda no esté vacío
-        if not search or search.strip() == "":
-            raise HTTPException(
-                status_code=400,
-                detail="El término de búsqueda no puede estar vacío"
-            )
-        
-        forms_data = search_forms_by_user(
-            db, 
-            current_user.id, 
-            search.strip(), 
-            filter_type,
-            page, 
-            page_size
-        )
-        
-        if not forms_data["items"]:
-            return {
-                "items": [],
-                "total": 0,
-                "page": page,
-                "page_size": page_size,
-                "total_pages": 0,
-                "search": search,
-                "filter_type": filter_type
-            }
-        
-        return forms_data
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Llamar a la función de servicio
+    result = search_forms_by_user(db, current_user.id, search.strip(), filter_type, page, page_size)
+    return result
 
 
 # Mover categoría
