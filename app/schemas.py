@@ -120,12 +120,12 @@ class FormatTypeEnum(str, Enum):
     semi_abierto = "semi_abierto"
 
 class FormBaseUser(BaseModel):
-   
-    title: str = Field(..., example="Survey Form")
-    description: Optional[str] = Field(None, example="This is a survey form description.")
-    assign_user: List[int]  
-    format_type: FormatTypeEnum = Field(..., example="abierto") 
-    id_category: Optional[int] 
+    title: str
+    description: Optional[str] = None
+    assign_user: List[int]
+    format_type: str
+    id_category: Optional[int] = None
+    sync_approvers: Optional[bool] = True  # ← NUEVO
 
 class FormBaseUserCreate(BaseModel):
    
@@ -1302,7 +1302,9 @@ class CategoryWithApproversResponse(BaseModel):
     class Config:
         from_attributes = True
 
-
+class UpdateFormCategory(BaseModel):
+    id_category: Optional[int] = None
+    sync_approvers: Optional[bool] = True  # ← NUEVO
 
 
 

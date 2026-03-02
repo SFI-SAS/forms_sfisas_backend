@@ -13,7 +13,7 @@ from app.api.controllers.excel_form_exporter import generate_form_excel
 from app.api.controllers.mail import send_response_answers_email
 from app.redis_client import redis_client
 from app.database import get_db
-from app.models import Answer, AnswerHistory, ApprovalStatus, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, PalabrasClave, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
+from app.models import Answer, AnswerHistory, ApprovalStatus, CategoryApproval, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, PalabrasClave, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
 from app.crud import  _extract_style_config, _serialize_answers, add_category_approver, analyze_form_relations, apply_template_service, bulk_save_category_approvers, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, create_template_service, delete_form, delete_form_category, delete_template_service, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_categories_with_approvers, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_approvals, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_template_detail_service, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, list_templates_service, move_category, process_regisfacial_answer, remove_category_approver, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, sync_form_approvals_from_category, toggle_form_status, update_category_approver, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status, update_template_service
 from app.schemas import AlertMessageRequest, CategoryApprovalBulkSave, CategoryApprovalCreate, CategoryApprovalResponse, CategoryApprovalUpdate, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, FormTemplateCreate, FormTemplateDetail, FormTemplateResponse, FormTemplateUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user
@@ -107,6 +107,33 @@ def get_approvers_by_category(
         raise HTTPException(status_code=403, detail="Authentication required")
     return get_category_approvals(db, category_id)
 
+@router.get("/categories/{category_id}/has-approvers")
+def check_category_approvers(
+    category_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Verifica si una categoría tiene aprobadores definidos."""
+    approvers = db.query(CategoryApproval).options(
+        joinedload(CategoryApproval.user)
+    ).filter(
+        CategoryApproval.category_id == category_id,
+        CategoryApproval.is_active == True
+    ).order_by(CategoryApproval.sequence_number).all()
+
+    return {
+        "has_approvers": len(approvers) > 0,
+        "count": len(approvers),
+        "approvers": [
+            {
+                "user_id": a.user_id,
+                "user_name": a.user.name if a.user else f"Usuario #{a.user_id}",
+                "sequence_number": a.sequence_number,
+                "is_mandatory": a.is_mandatory,
+            }
+            for a in approvers
+        ]
+    }
 
 @router.post("/category-approvals/{category_id}", response_model=CategoryApprovalResponse, status_code=201)
 def add_approver_to_category(
@@ -2832,7 +2859,6 @@ def head_public_logo():
         "Access-Control-Allow-Headers": "*"
     })
 
-
 @router.put("/update_form_category/{form_id}/category")
 def update_form_category(
     form_id: int,
@@ -2841,16 +2867,13 @@ def update_form_category(
     current_user: User = Depends(get_current_user)
 ):
     if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tienes permiso para actualizar la categoría de un formulario"
-        )
+        raise HTTPException(status_code=403, detail="No tienes permiso")
 
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Formulario no encontrado")
 
-    old_category_id = form.id_category  # ✅ Guardar categoría anterior
+    old_category_id = form.id_category
 
     if category_data.id_category is not None:
         category = db.query(FormCategory).filter(FormCategory.id == category_data.id_category).first()
@@ -2861,8 +2884,10 @@ def update_form_category(
     db.commit()
     db.refresh(form)
 
-    # ✅ AUTO-SYNC: Si la categoría cambió, copiar aprobadores
-    if form.id_category != old_category_id and form.id_category is not None:
+    # ✅ SOLO sincronizar si el usuario lo aceptó
+    if (form.id_category != old_category_id 
+        and form.id_category is not None 
+        and category_data.sync_approvers):
         sync_form_approvals_from_category(
             db=db,
             form_id=form.id,
@@ -2873,7 +2898,8 @@ def update_form_category(
     return {
         "message": "Categoría actualizada correctamente",
         "form_id": form.id,
-        "new_category_id": form.id_category
+        "new_category_id": form.id_category,
+        "approvers_synced": category_data.sync_approvers and form.id_category is not None
     }
 
 # Endpoints para categorías de formularios

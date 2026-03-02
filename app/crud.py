@@ -191,15 +191,10 @@ def get_users(db: Session, skip: int = 0, limit: int = 10):
 
 def create_form(db: Session, form: FormBaseUser, user_id: int):
     try:
-        # Verificar que los usuarios asignados existan en la base de datos
         existing_users = db.query(User.id).filter(User.id.in_(form.assign_user)).all()
         if len(existing_users) != len(form.assign_user):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Uno o más usuarios asignados no existen"
-            )
+            raise HTTPException(status_code=404, detail="Uno o más usuarios asignados no existen")
 
-        # Crear el formulario base, incluyendo la categoría
         db_form = Form(
             user_id=user_id,
             title=form.title,
@@ -209,7 +204,6 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             created_at=datetime.utcnow()
         )
 
-        # Crear relaciones con FormModerators para los usuarios asignados
         for assigned_user_id in form.assign_user:
             db_form.form_moderators.append(FormModerators(user_id=assigned_user_id))
 
@@ -217,8 +211,8 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
         db.commit()
         db.refresh(db_form)
 
-        # ✅ AUTO-SYNC: Copiar aprobadores de la categoría al formulario
-        if db_form.id_category:
+        # ✅ SOLO sincronizar si el usuario lo aceptó
+        if db_form.id_category and getattr(form, 'sync_approvers', True):
             sync_form_approvals_from_category(
                 db=db,
                 form_id=db_form.id,
@@ -226,7 +220,6 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
                 replace=True
             )
 
-        # Crear y devolver la respuesta
         response = {
             "id": db_form.id,
             "user_id": db_form.user_id,
@@ -237,21 +230,14 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             "id_category": db_form.id_category,
             "assign_user": [moderator.user_id for moderator in db_form.form_moderators]
         }
-
         return response
 
     except IntegrityError:
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Error al crear el formulario con la información proporcionada"
-        )
+        raise HTTPException(status_code=400, detail="Error al crear el formulario")
     except Exception as e:
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error interno del servidor: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 def get_form_id_users(db: Session, form_id: int, user_id: int):
     """
@@ -7871,9 +7857,6 @@ def sync_form_approvals_from_category(
                 db.add(form_approval)
 
     db.commit()
-
-
-
 
 
 def search_forms_by_user(
