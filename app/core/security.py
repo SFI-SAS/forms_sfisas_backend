@@ -19,6 +19,9 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
 
 # Clave secreta y algoritmo utilizados para firmar y verificar JWT
 SECRET_KEY = os.getenv("SECRET_KEY")  # Define esto en tu configuración
+if not SECRET_KEY:
+    raise RuntimeError("SECRET_KEY no está configurada en variables de entorno. La app no puede iniciar.")
+
 ALGORITHM = "HS256"
 
 # Define el modelo de datos para el payload del token

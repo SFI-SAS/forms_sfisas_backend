@@ -103,7 +103,16 @@ def get_forms_by_project_endpoint(project_id: int, db: Session = Depends(get_db)
     return get_forms_by_project(db, project_id)
 
 @router.get("/responses-by-project/{project_id}")
-def get_responses_by_project_endpoint(project_id: int, db: Session = Depends(get_db)):
+def get_responses_by_project_endpoint(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     """
     Obtiene las respuestas de formularios asociadas a un proyecto específico.
 

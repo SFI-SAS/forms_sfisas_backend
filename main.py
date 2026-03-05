@@ -30,8 +30,9 @@ app = FastAPI(
 
 
 # 1. CORS debe ir primero
-origins = ["*"]  # Ajustar en producción: ["https://forms.sfisas.com.co", "https://app.safemetrics.co"]
+origins = ["https://forms.sfisas.com.co", "https://app.safemetrics.co", "*"]  # Ajustar en producción: ["https://forms.sfisas.com.co", "https://app.safemetrics.co"]
 
+# 1. CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -40,12 +41,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 2. ✅ GZIP debe ir después de CORS
+# 2. GZIP
 app.add_middleware(
     GZipMiddleware,
     minimum_size=1000
 )
 
+# 3. ✅ SECURITY HEADERS
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+
+    # Forzar HTTPS en el navegador por 1 año
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+    # Bloquear embedding en iframes (previene clickjacking)
+    response.headers["X-Frame-Options"] = "DENY"
+
+    # Evitar que el browser adivine el MIME type
+    response.headers["X-Content-Type-Options"] = "nosniff"
+
+    # No enviar referrer a sitios externos
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+    # Bloquear XSS en browsers antiguos
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+
+    # No permitir acceso a cámara, micrófono, geolocation, etc.
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+
+    # Content Security Policy — ajusta los dominios a los tuyos
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https:; "
+        "font-src 'self'; "
+        "connect-src 'self' https://app.safemetrics.co https://forms.sfisas.com.co; "
+        "frame-ancestors 'none';"
+    )
+
+    return response
 # ========================================
 # CONFIGURACIÓN DE TEMPLATES
 # ========================================

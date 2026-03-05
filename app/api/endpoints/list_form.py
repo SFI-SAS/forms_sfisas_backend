@@ -460,7 +460,15 @@ async def get_form_complete_info(form_id: int, db: Session = Depends(get_db),cur
 
 
 @router.get("/forms/available")
-async def get_available_forms(db: Session = Depends(get_db)):
+async def get_available_forms(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     """Obtiene todos los formularios disponibles para descarga"""
     forms = db.query(Form).options(
         joinedload(Form.category),
@@ -480,7 +488,16 @@ async def get_available_forms(db: Session = Depends(get_db)):
     ]
     
 @router.get("/forms/{form_id}/fields")
-async def get_form_fields(form_id: int, db: Session = Depends(get_db)):
+async def get_form_fields(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     """Obtiene todos los campos/preguntas de un formulario específico con sus labels desde form_design"""
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:

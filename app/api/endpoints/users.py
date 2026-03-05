@@ -891,7 +891,15 @@ def create_email(email_config: EmailConfigCreate, db: Session = Depends(get_db),
     
 
 @router.get("/email-config/", response_model=List[EmailConfigResponse])
-def get_email_configs(db: Session = Depends(get_db)):
+def get_email_configs(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     """
     Obtiene todas las configuraciones de correo electrónico disponibles.
 
@@ -1283,8 +1291,14 @@ def get_element_uuid_by_question(form_design, question_id):
 
 @router.post("/migrate/form-design-elements", response_model=MigrationResponse)
 async def migrate_form_design_elements(
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     """
     🔄 Migración mejorada con id_question
     Actualiza form_design_element_id en answers usando el nuevo campo id_question
@@ -1403,7 +1417,15 @@ async def migrate_form_design_elements(
 
 # 🆕 ENDPOINT ADICIONAL: Ver estadísticas de migración
 @router.get("/migrate/stats")
-async def get_migration_stats(db: Session = Depends(get_db)):
+async def get_migration_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     """📊 Estadísticas de migración"""
     
     result = db.execute(
@@ -1430,8 +1452,14 @@ async def get_migration_stats(db: Session = Depends(get_db)):
 @router.get("/migrate/problematic")
 async def get_problematic_answers(
     limit: int = 50,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     """🔍 Ver answers que no se pudieron migrar"""
     
     result = db.execute(

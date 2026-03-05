@@ -337,6 +337,12 @@ def get_forms_list(
     """
     Obtener solo id y título de los formatos del usuario autenticado.
     """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
+    
     forms = (
         db.query(Form.id, Form.title)
         .order_by(Form.created_at.desc())
@@ -358,6 +364,7 @@ def get_form_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):   
+
     """
     Obtener un formulario específico por su ID.
 
@@ -375,7 +382,12 @@ def get_form_endpoint(
     Raises:
         HTTPException: Error 404 si el formulario no se encuentra o no pertenece al usuario.
     """
-    form = get_form_id_users(db, form_id, current_user.id)
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
+    form = get_form_id_users(db, form_id)
     if not form:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Form not found")
     return form
@@ -396,6 +408,11 @@ def get_form_design(
     Returns:
         dict: Diseño del formulario (id, title, description, version, form_design)
     """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     # PASO 1: Verificar caché Redis
     cache_key = f"form_design:{form_id}"
     cached = redis_client.get(cache_key)  # Ahora usa tu método .get()
@@ -441,6 +458,11 @@ def get_form_questions(
     Returns:
         dict: Metadata de todas las preguntas del formulario
     """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     # PASO 1: Verificar caché Redis
     cache_key = f"form_questions:{form_id}"
     cached = redis_client.get(cache_key)
@@ -744,7 +766,10 @@ async def update_form_questions(
     
     
 @router.get("/emails/all-emails")
-def get_all_emails(db: Session = Depends(get_db)):
+def get_all_emails(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Obtiene todos los correos electrónicos de los usuarios registrados.
 
@@ -767,6 +792,12 @@ def get_all_emails(db: Session = Depends(get_db)):
         ]
     }
     """
+    if current_user is None:  # Ya con esto el IDE no marca warning
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
+    
     emails = db.query(User.email).all()
     return {"emails": [email[0] for email in emails]}
 
@@ -774,7 +805,12 @@ def get_all_emails(db: Session = Depends(get_db)):
 
 
 @router.post("/form_schedules/")
-def register_form_schedule(schedule_data: FormScheduleCreate, db: Session = Depends(get_db)):
+def register_form_schedule(
+    schedule_data: FormScheduleCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+
     """
     Registra o actualiza la programación de un formulario.
 
@@ -791,6 +827,11 @@ def register_form_schedule(schedule_data: FormScheduleCreate, db: Session = Depe
         FormSchedule: Objeto de programación recién creado o actualizado.
 
     """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     return create_form_schedule(
         db=db,
         form_id=schedule_data.form_id,
@@ -1098,7 +1139,10 @@ def get_responses_summary(
     return result
 
 @router.get("/all/list", response_model=List[dict])
-def get_forms_endpoint(db: Session = Depends(get_db)):
+def get_forms_endpoint(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Retorna una lista de todos los formularios registrados en la base de datos.
 
@@ -1107,6 +1151,12 @@ def get_forms_endpoint(db: Session = Depends(get_db)):
     - **Código 404**: No se encontraron formularios.
     - **Código 500**: Error interno del servidor.
     """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
+
     try:
         forms = get_all_forms(db)
         if not forms:
@@ -1119,8 +1169,10 @@ def get_forms_endpoint(db: Session = Depends(get_db)):
 def get_forms_paginated_endpoint(
     page: int = 1,
     page_size: int = 30,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
+
     """
     Retorna una lista paginada de todos los formularios registrados en la base de datos.
 
@@ -1131,6 +1183,12 @@ def get_forms_paginated_endpoint(
     - **Código 404**: No se encontraron formularios.
     - **Código 500**: Error interno del servidor.
     """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
+    
     try:
         # Validar page_size máximo
         if page_size > 100:
@@ -1169,7 +1227,7 @@ def get_user_forms(
         if current_user is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="User does not have permission to get all questions"
+                detail="User does not have permission"
             )
         
         # Validar page_size máximo
@@ -1418,7 +1476,12 @@ def delete_moderator_from_form(form_id: int, user_id: int, db: Session = Depends
     return remove_moderator_from_form(form_id, user_id, db)
 
 @router.post("/form-answers/")
-def create_form_answer(payload: FormAnswerCreate, db: Session = Depends(get_db)):
+def create_form_answer(
+    payload: FormAnswerCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+
     """
     Crea una nueva relación entre un formulario y una pregunta en la tabla FormAnswer.
     Esta relación se usa para definir si una pregunta está repetida en un formulario.
@@ -1433,6 +1496,12 @@ def create_form_answer(payload: FormAnswerCreate, db: Session = Depends(get_db))
     Returns:
         dict: Mensaje de confirmación y datos de la relación creada.
     """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
+    
     form_answer = FormAnswer(
         form_id=payload.form_id,
         question_id=payload.question_id,
@@ -1464,10 +1533,20 @@ def get_forms_by_answers(
     return forms
 
 @router.get("/{form_id}/questions-answers/excel")
-def download_questions_answers_excel(form_id: int, db: Session = Depends(get_db)):
+def download_questions_answers_excel(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    
     """
     Genera un archivo Excel con las preguntas y respuestas de un formulario específico.
     """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     data = get_questions_and_answers_by_form_id(db, form_id)
     if not data:
         raise HTTPException(status_code=404, detail="Formulario no encontrado")
@@ -1485,11 +1564,21 @@ def download_questions_answers_excel(form_id: int, db: Session = Depends(get_db)
 
 
 @router.get("/{form_id}/answers/excel/all-users")
-def download_questions_answers_excel_all_users(form_id: int, db: Session = Depends(get_db)):
+def download_questions_answers_excel_all_users(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+
     """
     Genera un archivo Excel con las preguntas y respuestas de un formulario específico.
     Ruta alternativa para uso en emails automáticos.
     """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     data = get_questions_and_answers_by_form_id(db, form_id)
     if not data:
         raise HTTPException(status_code=404, detail="Formulario no encontrado")
@@ -1895,7 +1984,7 @@ def get_form_schedules(form_id: int, user_id: int, db: Session = Depends(get_db)
     if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get all questions"
+            detail="User does not have permission"
         )
     else:
         schedules = db.query(FormSchedule).filter(
@@ -3472,7 +3561,7 @@ def get_forms_by_question(question_id: int, db: Session = Depends(get_db), curre
 
 INSTRUCTIVOS_FOLDER = "./form_instructivos"
 os.makedirs(INSTRUCTIVOS_FOLDER, exist_ok=True)
-
+ALLOWED_UPLOAD_DIR = os.path.realpath(INSTRUCTIVOS_FOLDER)
 # ==================== SUBIR INSTRUCTIVO ====================
 @router.put("/{form_id}/upload-instructivos")
 async def upload_form_instructivos(
@@ -3739,30 +3828,46 @@ async def download_instructivo(
                 detail="User not authenticated"
             )
 
-        # 🔥 SOLO ESTO: Normalizar la ruta
+        # Normalizar la ruta
         file_path = file_path.replace('\\', '/')
-        
-        if not os.path.exists(file_path):
+
+        # ═══════════════════════════════════════════
+        # 🔒 VALIDACIÓN CONTRA PATH TRAVERSAL
+        # ═══════════════════════════════════════════
+
+        # 1. Resolver ruta real (elimina ../, symlinks, etc.)
+        real_path = os.path.realpath(file_path)
+
+        # 2. Verificar que esté DENTRO del directorio permitido
+        if not real_path.startswith(ALLOWED_UPLOAD_DIR + os.sep):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Acceso denegado: ruta fuera del directorio permitido"
+            )
+
+        # ═══════════════════════════════════════════
+
+        if not os.path.exists(real_path):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="File not found"
             )
 
-        filename = os.path.basename(file_path)
-        
+        filename = os.path.basename(real_path)
+
         return FileResponse(
-            path=file_path,
+            path=real_path,
             filename=filename,
             media_type='application/octet-stream',
             headers={"Content-Disposition": f'attachment; filename="{filename}"'}
         )
 
-    except HTTPException as e:
-        raise e
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error: {str(e)}"
+            detail="Error al descargar archivo"
         )
         
 @router.get("/{form_id}/alert-message")

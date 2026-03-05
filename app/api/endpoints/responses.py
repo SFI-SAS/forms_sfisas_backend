@@ -215,6 +215,7 @@ async def close_response(
 
 UPLOAD_FOLDER = "./documents"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+ALLOWED_UPLOAD_DIR = os.path.realpath(UPLOAD_FOLDER)
 
 @router.post("/upload-file/")
 async def upload_file(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
@@ -276,45 +277,50 @@ async def upload_file(file: UploadFile = File(...), current_user: User = Depends
 
 @router.get("/download-file/{file_name}")
 async def download_file(file_name: str, current_user: User = Depends(get_current_user)):
-    """
-    Descarga un archivo previamente subido al servidor.
-
-    Este endpoint permite a un usuario autenticado descargar un archivo que fue previamente
-    subido y almacenado en la carpeta `UPLOAD_FOLDER`.
-
-    Parámetros:
-    -----------
-    file_name : str
-        Nombre del archivo a descargar (incluye extensión).
-
-    current_user : User
-        Usuario autenticado obtenido desde el token JWT.
-
-    Retorna:
-    --------
-    FileResponse:
-        Archivo descargado como `application/octet-stream`.
-
-    Errores:
-    --------
-    - 403: Si el usuario no está autenticado.
-    - 404: Si el archivo no existe en la ruta especificada.
-    """
-    if current_user == None:
-        raise HTTPException(   
+    if current_user is None:
+        raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get all questions"
-            )
-    else: 
-        file_path = os.path.join(UPLOAD_FOLDER, file_name)
-        if os.path.exists(file_path):
-            return FileResponse(path=file_path, filename=file_name, media_type='application/octet-stream')
-        else:
-            raise HTTPException(status_code=404, detail="File not found")
+            detail="User does not have permission"
+        )
 
+    # ═══════════════════════════════════════════
+    # 🔒 VALIDACIÓN CONTRA PATH TRAVERSAL
+    # ═══════════════════════════════════════════
+
+    # 1. Rechazar caracteres peligrosos en el nombre
+    if '..' in file_name or '/' in file_name or '\\' in file_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Nombre de archivo no válido"
+        )
+
+    # 2. Resolver ruta real y verificar que esté dentro de UPLOAD_FOLDER
+    file_path = os.path.realpath(os.path.join(UPLOAD_FOLDER, file_name))
+
+    if not file_path.startswith(ALLOWED_UPLOAD_DIR + os.sep):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acceso denegado"
+        )
+
+    # ═══════════════════════════════════════════
+
+    if os.path.exists(file_path):
+        return FileResponse(path=file_path, filename=os.path.basename(file_path), media_type='application/octet-stream')
+    else:
+        raise HTTPException(status_code=404, detail="File not found")
 
 @router.get("/db/columns/{table_name}")
-def get_table_columns(table_name: str, db: Session = Depends(get_db)):
+def get_table_columns(
+    table_name: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     """
     Obtiene las columnas de una tabla específica de la base de datos.
 
@@ -423,7 +429,16 @@ def update_answer_text(payload: UpdateAnswerText, db: Session = Depends(get_db),
     
     
 @router.post("/file-serials/")
-def create_file_serial(data: FileSerialCreate, db: Session = Depends(get_db)):
+def create_file_serial(
+    data: FileSerialCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     """
     Crea un nuevo serial asociado a una respuesta (`Answer`) existente.
 
@@ -468,7 +483,15 @@ def create_file_serial(data: FileSerialCreate, db: Session = Depends(get_db)):
     }
     
 @router.post("/file-serials/generate")
-def generate_serial(db: Session = Depends(get_db)):
+def generate_serial(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     """
     Genera un serial aleatorio único que no exista previamente en la base de datos.
 
@@ -698,7 +721,17 @@ def get_forms_questions_answers_by_question(question_id: int, db: Session = Depe
 
 
 @router.put("/set_reconsideration/{response_id}")
-def set_reconsideration_true(response_id: int, mensaje_reconsideracion: str, db: Session = Depends(get_db)):
+def set_reconsideration_true(
+    response_id: int,
+    mensaje_reconsideracion: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     """
     Marca una respuesta como reconsiderada, notifica a todos los aprobadores
     y envía un correo con los detalles de la solicitud.
@@ -1517,7 +1550,16 @@ def create_bitacora_log_endpoint(
     }
 
 @router.get("/bitacora/conversacion/{evento_id}", response_model=BitacoraResponse)
-def obtener_conversacion(evento_id: int, db: Session = Depends(get_db)):
+def obtener_conversacion(
+    evento_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     conversacion = obtener_conversacion_completa(db, evento_id)
     if not conversacion:
         raise HTTPException(status_code=404, detail="Evento no encontrado")

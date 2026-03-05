@@ -93,7 +93,7 @@ def create_form_approvals(
 
 APPROVAL_ATTACHMENTS_FOLDER = "./approval_attachments"
 os.makedirs(APPROVAL_ATTACHMENTS_FOLDER, exist_ok=True)
-
+ALLOWED_APPROVALS_DIR = os.path.realpath(APPROVAL_ATTACHMENTS_FOLDER)
 
 @router.put("/update-response-approval/{response_id}")
 async def update_response_approval(
@@ -333,7 +333,16 @@ def create_approval_requirements(
 
 
 @router.put("/form-approvals/bulk-update")
-def bulk_update_form_approvals(data: BulkUpdateFormApprovals, db: Session = Depends(get_db)):
+def bulk_update_form_approvals(
+    data: BulkUpdateFormApprovals,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     """
     Actualiza masivamente registros de aprobación (`FormApproval`) asociados a formularios.
 
@@ -1343,63 +1352,58 @@ async def download_file_approvers(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Descarga un archivo adjunto de las aprobaciones.
-    
-    Args:
-        file_name (str): Nombre del archivo almacenado (stored_name del archivo)
-        current_user (User): Usuario actual autenticado
-        db (Session): Sesión de base de datos
-    
-    Returns:
-        FileResponse: El archivo para descargar
-    """
-
-
-        # Verificar que el usuario esté autenticado
     if current_user is None:
-            logger.warning("Unauthenticated user attempt")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User authentication required"
-            )
-
-        # Construir la ruta completa del archivo
-    file_path = os.path.join(APPROVAL_ATTACHMENTS_FOLDER, file_name)
-
-        # Verificar que el archivo existe
-    if not os.path.exists(file_path):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"File '{file_name}' not found"
-            )
-        
-        # Verificar que es un archivo (no un directorio)
-    if not os.path.isfile(file_path):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid file path"
-            )
-
-        # Obtener el nombre original del archivo desde la base de datos
-    original_filename = get_original_filename_sync(file_name, db)
-        
-        # Determinar el tipo de contenido basado en la extensión del archivo
-    file_extension = Path(file_name).suffix.lower()
-    media_type = get_media_type_by_extension(file_extension)
-        
-        # Retornar el archivo
-    return FileResponse(
-            path=file_path,
-            filename=original_filename or file_name,
-            media_type=media_type,
-            headers={
-                "Content-Disposition": f"attachment; filename=\"{original_filename or file_name}\""
-            }
+        logger.warning("Unauthenticated user attempt")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User authentication required"
         )
 
+    # ═══════════════════════════════════════════
+    # 🔒 VALIDACIÓN CONTRA PATH TRAVERSAL
+    # ═══════════════════════════════════════════
 
+    if '..' in file_name or '/' in file_name or '\\' in file_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Nombre de archivo no válido"
+        )
 
+    file_path = os.path.realpath(os.path.join(APPROVAL_ATTACHMENTS_FOLDER, file_name))
+
+    if not file_path.startswith(ALLOWED_APPROVALS_DIR + os.sep):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acceso denegado"
+        )
+
+    # ═══════════════════════════════════════════
+
+    if not os.path.exists(file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File '{file_name}' not found"
+        )
+
+    if not os.path.isfile(file_path):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file path"
+        )
+
+    original_filename = get_original_filename_sync(file_name, db)
+
+    file_extension = Path(file_name).suffix.lower()
+    media_type = get_media_type_by_extension(file_extension)
+
+    return FileResponse(
+        path=file_path,
+        filename=original_filename or file_name,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{original_filename or file_name}\""
+        }
+    )
 
 def get_original_filename_sync(stored_name: str, db: Session) -> str:
     """

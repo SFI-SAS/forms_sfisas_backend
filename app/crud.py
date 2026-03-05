@@ -32,6 +32,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+# ✅ REEMPLAZAR POR:
 ENCRYPTION_KEY = 'OugiYqGaXdQElq1G5UtKD/jVwk4r/J041p9J7dHOFGo='
 # ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY')
 cipher_suite = Fernet(ENCRYPTION_KEY)
@@ -239,7 +240,7 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
-def get_form_id_users(db: Session, form_id: int, user_id: int):
+def get_form_id_users(db: Session, form_id: int):
     """
     Obtiene solo la información básica de un formulario.
     
@@ -371,14 +372,9 @@ def get_form(db: Session, form_id: int, user_id: int):
             return answer_text
         
         try:
-            # Debug: imprimir el contenido original
-            print(f"DEBUG - Processing regisfacial answer: {answer_text}")
-            print(f"DEBUG - Question type: {question_type}")
-            
             # Intentar parsear el JSON
             face_data = json.loads(answer_text)
-            print(f"DEBUG - Parsed JSON: {face_data}")
-            
+
             # Buscar en diferentes estructuras posibles
             person_name = "Usuario"
             success = False
@@ -399,18 +395,14 @@ def get_form(db: Session, form_id: int, user_id: int):
             if person_name == "Usuario":
                 person_name = face_data.get("name", face_data.get("user_name", "Usuario"))
             
-            print(f"DEBUG - Extracted - success: {success}, person_name: {person_name}")
-            
             if success:
                 result = f"Datos biométricos de {person_name} registrados"
             else:
                 result = f"Error en el registro de datos biométricos de {person_name}"
             
-            print(f"DEBUG - Final result: {result}")
             return result
             
         except (json.JSONDecodeError, KeyError, TypeError) as e:
-            print(f"DEBUG - Exception: {e}")
             # Si hay error al parsear JSON, devolver un mensaje genérico
             return "Datos biométricos procesados"
 
@@ -464,7 +456,7 @@ def invalidate_form_cache(form_id: int):
     ]
     
     deleted = redis_client.delete(*keys_to_delete)
-    print(f"🗑️ Invalidados {deleted} cachés del formulario {form_id}")
+    
     return deleted
 
 def process_regisfacial_answer(answer_text: str, question_type: str) -> str:
@@ -611,8 +603,6 @@ def update_question(db: Session, question_id: int, question: QuestionUpdate) -> 
 
 def add_questions_to_form(db: Session, form_id: int, question_ids: List[int]):
     try:
-        print(f"🧩 Iniciando proceso para agregar preguntas al formulario ID {form_id}")
-        print(f"🔍 Preguntas recibidas: {question_ids}")
 
         db_form = db.query(Form).filter(Form.id == form_id).first()
         if not db_form:
@@ -620,13 +610,11 @@ def add_questions_to_form(db: Session, form_id: int, question_ids: List[int]):
 
         current_question_ids = {fq.id for fq in db_form.questions}
 
-        print(f"📌 Preguntas ya asociadas al formulario: {current_question_ids}")
 
         new_question_ids = set(question_ids) - current_question_ids
-        print(f"➕ Nuevas preguntas a asociar: {new_question_ids}")
 
         if not new_question_ids:
-            print("⚠️ No hay nuevas preguntas para agregar.")
+      
             return db_form
 
         new_questions = db.query(Question).filter(Question.id.in_(new_question_ids)).all()
@@ -641,18 +629,15 @@ def add_questions_to_form(db: Session, form_id: int, question_ids: List[int]):
         for question in new_questions:
             fq = FormQuestion(form_id=form_id, question_id=question.id)
             form_questions.append(fq)
-            print(f"✅ Asociando pregunta ID {question.id} al formulario ID {form_id}")
 
         db.bulk_save_objects(form_questions)
         db.commit()
 
-        print(f"🎉 {len(form_questions)} preguntas asociadas correctamente al formulario.")
         db.refresh(db_form)
         return db_form
 
     except IntegrityError:
         db.rollback()
-        print("❌ Error de integridad al asignar preguntas al formulario.")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Error assigning questions to the form")
 
 # Option CRUD Operations
@@ -962,7 +947,7 @@ async def post_create_response(
                     current_user_id=current_user.id,
                     request=request
                 )
-                print("✅ Correos de cierre iniciados en background (en thread separado)")
+
         except Exception as e:
             print(f"❌ Error al iniciar correos de cierre: {str(e)}")
 
@@ -1062,9 +1047,7 @@ def save_single_answer(answer, db: Session, id_relation_bitacora: int, current_u
     """
     ✅ MODIFICADO: Ahora guarda form_design_element_id
     """
-    print(f"📝 Guardando respuesta para question_id: {answer.question_id}")
-    print(f"🔗 UUID del elemento: {answer.form_design_element_id}")
-    
+
     # Buscar respuesta existente (opcional, dependiendo de tu lógica)
     existing_answer = db.query(Answer).filter(
         Answer.response_id == answer.response_id,
@@ -2017,7 +2000,6 @@ def get_schedules_by_frequency(db: Session) -> List[dict]:
         # Lógica según el tipo de frecuencia
         if frequency_type == "daily":
             # Enviar todos los días
-            print("➡️  Es daily, se enviará.")
             user = db.query(User).filter(User.id == schedule.user_id).first()
             form = db.query(Form).filter(Form.id == schedule.form_id).first()
             if user and form:
@@ -2032,9 +2014,7 @@ def get_schedules_by_frequency(db: Session) -> List[dict]:
                 logs.append(f"Frecuencia diaria: No se pudo encontrar el usuario o el formulario para el ID de programación {schedule.id}.")
 
         elif frequency_type == "weekly":
-            print(f"    Revisando si '{today_english}' está en {repeat_days}")
             if today_english in repeat_days:
-                print("✅ El día coincide, se enviará correo.")
                 user = db.query(User).filter(User.id == schedule.user_id).first()
                 form = db.query(Form).filter(Form.id == schedule.form_id).first()
                 if user and form:
@@ -2052,7 +2032,6 @@ def get_schedules_by_frequency(db: Session) -> List[dict]:
 
         elif frequency_type == "monthly":
             if today_date.day == 1:
-                print("➡️  Es el primer día del mes, se enviará.")
                 user = db.query(User).filter(User.id == schedule.user_id).first()
                 form = db.query(Form).filter(Form.id == schedule.form_id).first()
                 if user and form:
@@ -2070,7 +2049,7 @@ def get_schedules_by_frequency(db: Session) -> List[dict]:
 
         elif frequency_type == "periodic":
             if interval_days and today_date.day % interval_days == 0:
-                print("➡️  Cumpsle el intervalo, se enviará.")
+                
                 user = db.query(User).filter(User.id == schedule.user_id).first()
                 form = db.query(Form).filter(Form.id == schedule.form_id).first()
                 if user and form:
@@ -2087,7 +2066,7 @@ def get_schedules_by_frequency(db: Session) -> List[dict]:
                 print("🛑 No cumple el intervalo, no se enviará.")
 
         elif frequency_type == "specific_date" and specific_date.date() == today_date:
-            print("➡️  Es la fecha específica, se enviará.")
+            
             user = db.query(User).filter(User.id == schedule.user_id).first()
             form = db.query(Form).filter(Form.id == schedule.form_id).first()
             if user and form:
@@ -2112,7 +2091,6 @@ def get_schedules_by_frequency(db: Session) -> List[dict]:
         )
 
     # Imprimir los logs para ver cuál frecuencia se cumplió
-    print("\n🔍 Logs de cumplimiento de frecuencias:")
     for log in logs:
         print(log)
 
@@ -4325,7 +4303,7 @@ def send_mails_to_next_supporters(response_id: int, db: Session):
     siguientes = aprobacion_info.get("siguientes_aprobadores", [])
 
     if not siguientes:
-        print("⏳ No hay aprobadores siguientes.")
+ 
         return False
 
     html_content = build_email_html_approvers(aprobacion_info)
@@ -4499,7 +4477,6 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
         
         active_actions = get_active_form_actions(form_id, db)
         if not active_actions:
-            print(f"No hay acciones activas configuradas para el formulario {form_id}")
             return {"success": True, "message": "No hay acciones configuradas", "emails_sent": 0}
         
         # ══════════════════════════════════════════════════════
