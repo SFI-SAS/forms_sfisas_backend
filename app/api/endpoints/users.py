@@ -170,8 +170,11 @@ def download_user_responses_pdf(
                                        ) else "text",
             "answer_text":             ans.answer_text or "",
             "file_path":               ans.file_path or "",
-            "repeated_id":             getattr(ans, "repeated_id", None),
+"repeated_id":             getattr(ans, "repeated_id", None),
             "form_design_element_id":  getattr(ans, "form_design_element_id", None),
+            "repeater_row_index":      getattr(ans, "repeater_row_index", None),
+            "parent_row_index":        getattr(ans, "parent_row_index", None),
+            "parent_repeated_id":      getattr(ans, "parent_repeated_id", None),
         })
 
     # 5. Extraer style_config
@@ -272,8 +275,11 @@ def download_user_responses_pdf_by_admin(
                                        ) else "text",
             "answer_text":             ans.answer_text or "",
             "file_path":               ans.file_path or "",
-            "repeated_id":             getattr(ans, "repeated_id", None),
+"repeated_id":             getattr(ans, "repeated_id", None),
             "form_design_element_id":  getattr(ans, "form_design_element_id", None),
+            "repeater_row_index":      getattr(ans, "repeater_row_index", None),
+            "parent_row_index":        getattr(ans, "parent_row_index", None),
+            "parent_repeated_id":      getattr(ans, "parent_repeated_id", None),
         })
 
     style_config = None
@@ -377,31 +383,23 @@ def download_all_responses_pdf(
             response_id=resp.id,
         )
 
-        # Obtener solo el HTML interno (sin <html><body> wrapper)
-        page_html = exporter._render_header_table_html()
-        page_html += exporter._render_document_number_html()
+        import html as _html_mod
+        fecha_str = str(resp.submitted_at)[:19]
+        user_name_esc = _html_mod.escape(user_name)
 
-        # Info del usuario
-        page_html += f'''
-        <div style="
-            margin-bottom:8px;padding:6px 10px;
-            background-color:#EFF6FF;border:1px solid #BFDBFE;
-            border-radius:4px;font-size:10px;color:#1E40AF;
-        ">
-            <b>Usuario:</b> {exporter._esc(user_name)} &nbsp;|&nbsp;
-            <b>Fecha:</b> {str(resp.submitted_at)[:19]}
-        </div>
-        '''
+        user_info_html = (
+            f'<div style="margin-bottom:8px;padding:6px 10px;'
+            f'background-color:#EFF6FF;border:1px solid #BFDBFE;'
+            f'border-radius:4px;font-size:10px;color:#1E40AF;">'
+            f'<b>Usuario:</b> {user_name_esc} &nbsp;|&nbsp;'
+            f'<b>Fecha:</b> {fecha_str}'
+            f'</div>'
+        )
 
-        filtered = exporter._filter_form_items(form_design)
-        for field in filtered:
-            fid = field.get("id")
-            ftype = field.get("type", "")
-            if fid and fid in exporter._consumed_by_repeater and ftype != "repeater":
-                continue
-            page_html += exporter._render_field_html(field)
-
-        page_html += exporter._render_footer_html()
+        page_html = exporter._header_html()
+        page_html += user_info_html
+        page_html += exporter._render_all_fields()
+        page_html += exporter._footer_html()
         pages_html.append(page_html)
 
     # Unir con page-break
@@ -418,9 +416,9 @@ def download_all_responses_pdf(
             size: letter landscape;
             margin: 1.5cm;
         }}
-        body {{
+body {{
             font-family: {font_family};
-            font-size: 12px;
+            font-size: 10px;
             color: #333333;
             margin: 0;
             padding: 0;

@@ -1,762 +1,916 @@
 """
-Módulo para exportar respuestas de formularios a Excel
-replicando el diseño visual del form_design.
-Compatible con FastAPI + openpyxl.
-
-v3.0 — Fixes:
-  - parse_css_size() para manejar rem, em, %, pt, px
-  - Descubrimiento dinámico ROBUSTO de columnas del repeater via answers
-  - Columnas descubiertas mantienen orden del form_design
-  - Campos consumidos por repeater se omiten del nivel superior
-  - Matching mejorado: form_design_element_id + question_id + linkExternalId
+FormExcelExporter v6.0
+Replica la lógica de renderizado de FormResponseRenderer (ResponsesModal.tsx).
+Genera un xlsx donde cada fila de respuesta queda claramente estructurada,
+los repeaters se muestran como sub-tablas y el header/footer se replica.
 """
-
-from openpyxl import Workbook
-from openpyxl.styles import (
-    Font, PatternFill, Alignment, Border, Side, numbers
-)
-from openpyxl.utils import get_column_letter
-from openpyxl.drawing.image import Image as XlImage
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional
 import json
-import requests
-import tempfile
-import os
-import re
+
+try:
+    import openpyxl
+    from openpyxl.styles import (
+        Font, PatternFill, Alignment, Border, Side
+    )
+    from openpyxl.utils import get_column_letter
+except ImportError:
+    openpyxl = None  # type: ignore
 
 
-# ─────────────────────────────────────────────────
-# UTILIDADES
-# ─────────────────────────────────────────────────
-
-def hex_to_argb(hex_color: str) -> str:
-    if not hex_color:
-        return "FFFFFFFF"
-    c = hex_color.lstrip("#")
-    if len(c) == 3:
-        c = "".join(ch * 2 for ch in c)
-    if len(c) == 6:
-        return f"FF{c.upper()}"
-    if len(c) == 8:
-        return c.upper()
-    return "FFFFFFFF"
+# ── colores (mismo que frontend) ─────────────────────────────────────────────
+C_TEAL_DARK  = "0f8594"   # repeater header bg
+C_TEAL_LIGHT = "f0fdfa"   # sub-repeater header bg
+C_TEAL_TEXT  = "0f766e"   # sub-repeater header text
+C_GRAY_HEADER= "f3f4f6"   # column headers bg
+C_GRAY_TEXT  = "374151"   # column headers text
+C_ALT_ROW    = "f9fafb"   # alternating row
+C_BORDER     = "d1d5db"   # default border
+C_EMPTY      = "9ca3af"   # "sin respuesta"
+C_WHITE      = "ffffff"
+C_LABEL_BG   = "f9fafb"
+C_LABEL_BORDER = "e5e7eb"
 
 
-def make_side(width: str = "1px", color: str = "#000000") -> Side:
-    w = width.replace("px", "").strip() if width else "1"
-    style = "thin"
-    if w.isdigit():
-        n = int(w)
-        if n >= 3:
-            style = "thick"
-        elif n >= 2:
-            style = "medium"
-    return Side(style=style, color=hex_to_argb(color))
-
-
-def make_border(bw: str = "1px", bc: str = "#000000") -> Border:
-    s = make_side(bw, bc)
+def _thin(color: str = C_BORDER) -> Border:
+    s = Side(style="thin", color=color)
     return Border(left=s, right=s, top=s, bottom=s)
 
 
-def parse_css_size(value, default: int = 12) -> int:
-    if value is None:
-        return default
-    s = str(value).strip().lower()
-    if not s:
-        return default
+def _fill(hex_color: str) -> PatternFill:
+    return PatternFill("solid", fgColor=hex_color)
+
+
+def _font(bold: bool = False, italic: bool = False, color: str = "000000",
+          size: int = 10) -> Font:
+    return Font(bold=bold, italic=italic, color=color, size=size, name="Calibri")
+
+
+def _align(h: str = "left", v: str = "center", wrap: bool = True) -> Alignment:
+    return Alignment(horizontal=h, vertical=v, wrap_text=wrap)
+
+
+# ── formateadores (misma lógica que PDF) ─────────────────────────────────────
+
+def _fmt_firm_text(answer_text: str) -> str:
+    """Devuelve texto plano de firma para celda Excel."""
     try:
-        return max(6, min(int(float(s)), 28))
-    except (ValueError, TypeError):
+        data = json.loads(answer_text)
+        firm = data.get("firmData", {})
+        if isinstance(firm, dict) and firm.get("qr_url"):
+            name = firm.get("person_name", "")
+            pid  = firm.get("person_id", "")
+        elif isinstance(firm, dict) and isinstance(firm.get("firmData"), dict):
+            inner = firm["firmData"]
+            name  = inner.get("person_name", "")
+            pid   = inner.get("person_id", "")
+            firm  = inner
+        else:
+            name = pid = ""
+        qr = firm.get("qr_url", "")
+        parts = ["✓ Firma validada"]
+        if name:
+            parts.append("por " + name)
+        if pid:
+            parts.append("ID: " + str(pid))
+        if qr:
+            parts.append("QR: " + qr)
+        return " | ".join(parts)
+    except Exception:
+        return str(answer_text)
+
+
+def _fmt_location_text(answer_text: str) -> str:
+    try:
+        loc = json.loads(answer_text)
+        parts = []
+        if loc.get("selection"):
+            parts.append(str(loc["selection"]))
+        coords = []
+        if loc.get("lat") is not None:
+            coords.append("Lat: " + str(loc["lat"]))
+        if loc.get("lng") is not None:
+            coords.append("Lng: " + str(loc["lng"]))
+        if coords:
+            parts.append(" | ".join(coords))
+        if loc.get("address"):
+            parts.append(str(loc["address"]))
+        return " — ".join(parts) if parts else str(answer_text)
+    except Exception:
+        return str(answer_text)
+
+
+def _fmt_checkbox_text(answer_text: str) -> str:
+    try:
+        vals = json.loads(answer_text)
+        if isinstance(vals, list):
+            return ", ".join(str(v) for v in vals)
+    except Exception:
         pass
-    match = re.match(r'^([+-]?\d*\.?\d+)\s*(px|pt|rem|em|%|vw|vh)?$', s)
-    if not match:
-        return default
-    num = float(match.group(1))
-    unit = match.group(2) or "px"
-    multipliers = {"px": 1.0, "pt": 1.0, "rem": 16.0, "em": 16.0, "%": 0.16, "vw": 0.16, "vh": 0.16}
-    result = num * multipliers.get(unit, 1.0)
-    return max(6, min(int(result), 28))
+    return str(answer_text)
 
 
-# ─────────────────────────────────────────────────
-# CLASE PRINCIPAL
-# ─────────────────────────────────────────────────
+def _fmt_number_text(answer_text: str, props: dict) -> str:
+    try:
+        num      = float(answer_text)
+        prefix   = str(props.get("currencyPrefix") or "")
+        suffix   = str(props.get("currencySuffix") or "")
+        decimals = int(props.get("decimalPlaces") or 2)
+        return prefix + "{:,.{d}f}".format(num, d=decimals) + suffix
+    except Exception:
+        return str(answer_text)
+
+
+def _fmt_date_text(answer_text: str) -> str:
+    from datetime import datetime
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
+        try:
+            return datetime.strptime(answer_text[:19], fmt).strftime("%d/%m/%Y")
+        except Exception:
+            pass
+    return str(answer_text)
+
+
+def _fmt_datetime_text(answer_text: str) -> str:
+    from datetime import datetime
+    try:
+        s = answer_text.replace("T", " ").split(".")[0]
+        return datetime.strptime(s[:16], "%Y-%m-%d %H:%M").strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return str(answer_text)
+
+
+def _cell_value_text(cell_data: Any) -> str:
+    """Texto plano para celdas de repeater (renderRepeaterCell)."""
+    if cell_data is None:
+        return "-"
+    if isinstance(cell_data, str):
+        try:
+            p = json.loads(cell_data)
+            fd = p.get("firmData", {})
+            if isinstance(fd, dict) and (fd.get("qr_url") or
+                    (isinstance(fd.get("firmData"), dict) and fd["firmData"].get("qr_url"))):
+                return _fmt_firm_text(cell_data)
+        except Exception:
+            pass
+        return cell_data or "-"
+    if isinstance(cell_data, dict):
+        qtype = cell_data.get("question_type", "")
+        atext = str(cell_data.get("answer_text") or "")
+        fpath = str(cell_data.get("file_path") or "")
+        if qtype == "firm" and atext:
+            try:
+                return _fmt_firm_text(atext)
+            except Exception:
+                pass
+        if atext:
+            try:
+                p = json.loads(atext)
+                fd = p.get("firmData", {})
+                if isinstance(fd, dict) and (fd.get("qr_url") or
+                        (isinstance(fd.get("firmData"), dict) and fd["firmData"].get("qr_url"))):
+                    return _fmt_firm_text(atext)
+            except Exception:
+                pass
+        parts = []
+        if atext:
+            parts.append(atext)
+        if fpath:
+            parts.append("[Archivo: " + fpath + "]")
+        return " | ".join(parts) if parts else "-"
+    return str(cell_data)
+
+
+def _build_sub_rows_excel(filtered: list, sub_normal: list) -> list:
+    """
+    Puerto EXACTO de subRows en renderSubRepeaterForRow (ResponsesModal.tsx línea 958-1000).
+    Sin repeater_row_index → reconstruir por columna+posición (igual que frontend).
+    """
+    sub_rows: list = []
+    has_ri = any(a.get("repeater_row_index") is not None for a in filtered)
+
+    if has_ri:
+        by_ri: dict = {}
+        for ans in filtered:
+            by_ri.setdefault(ans.get("repeater_row_index") or 0, []).append(ans)
+        for ri in sorted(by_ri):
+            rd: dict = {}
+            for c in sub_normal:
+                cid = c.get("id", "")
+                m   = next((a for a in by_ri[ri] if a.get("form_design_element_id") == cid), None)
+                if m:
+                    rd[cid] = {"answer_text": m.get("answer_text"),
+                               "file_path":   m.get("file_path"),
+                               "question_type": m.get("question_type")}
+            if rd:
+                sub_rows.append(rd)
+    else:
+        # Sin repeater_row_index: agrupar por COLUMNA y reconstruir por posición (frontend línea 979-998)
+        by_col: dict = {}
+        for c in sub_normal:
+            cid = c.get("id", "")
+            by_col[cid] = sorted(
+                [a for a in filtered if a.get("form_design_element_id") == cid],
+                key=lambda a: (a.get("id_answer") or 0),
+            )
+        max_r = max((len(v) for v in by_col.values()), default=0)
+        for i in range(max_r):
+            rd = {}
+            for c in sub_normal:
+                cid = c.get("id", "")
+                if i < len(by_col.get(cid, [])):
+                    a = by_col[cid][i]
+                    rd[cid] = {"answer_text": a.get("answer_text"),
+                               "file_path":   a.get("file_path"),
+                               "question_type": a.get("question_type")}
+            if rd:
+                sub_rows.append(rd)
+
+    return sub_rows
+
+
+# ── Clase principal ───────────────────────────────────────────────────────────
 
 class FormExcelExporter:
+    """
+    Genera Excel de una respuesta de formulario
+    replicando la lógica de FormResponseRenderer.
+    """
 
-    GRID_COLS = 12
-    DEFAULT_COL_WIDTH = 14
-    LABEL_FILL = PatternFill("solid", fgColor="FFF3F4F6")
-    ANSWER_FILL = PatternFill("solid", fgColor="FFFFFFFF")
-    HEADER_FONT = Font(name="Arial", bold=True, size=11)
-    LABEL_FONT = Font(name="Arial", bold=True, size=10, color="FF374151")
-    ANSWER_FONT = Font(name="Arial", size=10, color="FF1F2937")
-    DECORATIVE_FONT = Font(name="Arial", size=10, color="FF6B7280", italic=True)
+    def __init__(
+        self,
+        form_design: list,
+        answers: list,
+        style_config: Optional[dict] = None,
+        form_title: str = "",
+        submitted_at: str = "",
+        response_id: Optional[int] = None,
+    ):
+        if openpyxl is None:
+            raise RuntimeError("openpyxl no instalado: pip install openpyxl")
 
-    def __init__(self, form_design, answers, style_config=None, form_title="", response_id=None):
-        self.form_design = form_design
-        self.answers = answers
+        self.form_design  = form_design
+        self.answers      = answers
         self.style_config = style_config or {}
-        self.form_title = form_title
-        self.response_id = response_id
+        self.form_title   = form_title
+        self.submitted_at = submitted_at
+        self.response_id  = response_id
 
-        self.answers_map: Dict[str, dict] = {}
-        self._build_answers_map()
+        # answersMap — misma prioridad que el frontend
+        self._answers_map: Dict[str, Any] = {}
+        for ans in answers:
+            if ans.get("question_text"):
+                self._answers_map[str(ans["question_text"])] = ans
+            if ans.get("question_id") is not None:
+                self._answers_map[str(ans["question_id"])] = ans
+            if ans.get("form_design_element_id"):
+                self._answers_map[str(ans["form_design_element_id"])] = ans
 
-        # ═══ Descubrir estructura de repeaters ═══
-        self._repeater_columns: Dict[str, List[dict]] = {}
-        self._consumed_by_repeater: Set[str] = set()
-        self._discover_repeater_structure()
+        self._wb  = openpyxl.Workbook()
+        self._ws  = self._wb.active
+        self._ws.title = "Respuesta"
+        self._row = 1           # fila actual en la hoja
+        self._col_width = 30.0  # ancho default por columna
 
-        self.wb = Workbook()
-        self.ws = self.wb.active
-        self.ws.title = "Formato"
-        self.current_row = 1
-        for col in range(1, self.GRID_COLS + 1):
-            self.ws.column_dimensions[get_column_letter(col)].width = self.DEFAULT_COL_WIDTH
+    # ── getAnswerForField ─────────────────────────────────────────────────────
 
-    # ── Mapa de respuestas ──
-
-    def _build_answers_map(self):
-        for ans in self.answers:
-            qt = ans.get("question_text")
-            if qt:
-                self.answers_map[qt] = ans
-            qid = ans.get("question_id")
-            if qid is not None:
-                self.answers_map[str(qid)] = ans
-                self.answers_map[qid] = ans
-            uuid_key = ans.get("form_design_element_id")
-            if uuid_key:
-                self.answers_map[uuid_key] = ans
-
-    def _get_answer_for_field(self, field):
-        fid = field.get("id")
-        if fid and fid in self.answers_map:
-            return self.answers_map[fid]
-        link = field.get("linkExternalId")
-        if link is not None:
-            if link in self.answers_map:
-                return self.answers_map[link]
-            if str(link) in self.answers_map:
-                return self.answers_map[str(link)]
-        sqid = (field.get("props") or {}).get("sourceQuestionId")
-        if sqid is not None and sqid in self.answers_map:
-            return self.answers_map[sqid]
-        label = (field.get("props") or {}).get("label")
-        if label and label in self.answers_map:
-            return self.answers_map[label]
+    def _get_answer(self, field: dict) -> Optional[dict]:
+        fid   = str(field.get("id") or "")
+        props = field.get("props") or {}
+        if fid and fid in self._answers_map:
+            return self._answers_map[fid]
+        lex = str(field.get("linkExternalId") or "")
+        if lex and lex in self._answers_map:
+            return self._answers_map[lex]
+        sqid = str(props.get("sourceQuestionId") or "")
+        if sqid and sqid in self._answers_map:
+            return self._answers_map[sqid]
+        lbl = str(props.get("label") or "")
+        if lbl and lbl in self._answers_map:
+            return self._answers_map[lbl]
         return None
 
-    def _get_answer_text(self, answer):
-        if not answer:
-            return ""
-        val = answer.get("answer_text", "")
-        return str(val).strip() if val else ""
+    # ── shouldRenderLayout ────────────────────────────────────────────────────
 
-    # ── Descubrir columnas de repeaters (v3 ROBUSTO) ──
-
-    def _discover_repeater_structure(self):
-        """
-        Para cada repeater descubre TODAS sus columnas:
-        1. Hijos directos (children)
-        2. Campos de nivel superior cuyas respuestas tienen
-           repeated_id == repeater.id
-
-        Las columnas descubiertas se ordenan según su posición
-        en el form_design original.
-        """
-        repeaters = []
-        self._find_repeaters(self.form_design, repeaters)
-
-        # Índice de campos por ID
-        field_index: Dict[str, dict] = {}
-        # Orden de aparición en form_design (para ordenar columnas descubiertas)
-        field_order: Dict[str, int] = {}
-        self._index_all_fields(self.form_design, field_index, field_order)
-
-        for repeater in repeaters:
-            repeater_id = repeater.get("id")
-            if not repeater_id:
-                continue
-
-            children = repeater.get("children") or []
-            child_ids = {c.get("id") for c in children if c.get("id")}
-
-            # IDs de elementos encontrados en respuestas de este repeater
-            answer_element_ids = set()
-            for ans in self.answers:
-                if ans.get("repeated_id") == repeater_id:
-                    elem_id = ans.get("form_design_element_id")
-                    if elem_id:
-                        answer_element_ids.add(elem_id)
-
-            # Columnas descubiertas (no children) ordenadas por form_design
-            discovered = []
-            for elem_id in answer_element_ids:
-                if elem_id not in child_ids and elem_id in field_index:
-                    discovered.append(field_index[elem_id])
-
-            # Ordenar descubiertas por su posición original en form_design
-            discovered.sort(key=lambda f: field_order.get(f.get("id", ""), 9999))
-
-            # Columnas finales: children primero, luego descubiertas (en orden)
-            columns = list(children) + discovered
-
-            self._repeater_columns[repeater_id] = columns
-
-            # Marcar como consumidos
-            for col in columns:
-                col_id = col.get("id")
-                if col_id:
-                    self._consumed_by_repeater.add(col_id)
-
-    def _find_repeaters(self, items, result):
+    def _find_recursive(self, items: list, qid: str) -> Optional[dict]:
         for item in items:
-            if item.get("type") == "repeater":
-                result.append(item)
-            children = item.get("children") or []
-            if children:
-                self._find_repeaters(children, result)
-
-    def _index_all_fields(self, items, index, order=None, counter=None):
-        """Indexa todos los campos por ID y registra orden de aparición."""
-        if counter is None:
-            counter = [0]
-        for item in items:
-            fid = item.get("id")
-            if fid and item.get("type"):
-                index[fid] = item
-                if order is not None:
-                    order[fid] = counter[0]
-                    counter[0] += 1
-            children = item.get("children") or []
-            if children:
-                self._index_all_fields(children, index, order, counter)
-
-    # ── Filtrar elementos ──
-
-    def _filter_form_items(self, items):
-        result = []
-        for item in items:
-            if item.get("type") and item.get("id"):
-                result.append(item)
-            elif item.get("type") and item.get("props"):
-                result.append(item)
-        return result
-
-    def _extract_style_config(self):
-        if self.style_config:
-            return self.style_config
-        for item in self.form_design:
-            props = item.get("props") or {}
-            if props.get("styleConfig"):
-                return props["styleConfig"]
-            if item.get("headerTable") and not item.get("type"):
+            if str(item.get("id_question", "")) == qid:
                 return item
-        return {}
+            found = self._find_recursive(item.get("children") or [], qid)
+            if found:
+                return found
+        return None
 
-    # ── Header table ──
-
-    def _render_header_table(self):
-        sc = self._extract_style_config()
-        ht = sc.get("headerTable")
-        if not ht or not ht.get("enabled"):
-            return
-        cells_data = ht.get("cells", [])
-        if not cells_data:
-            return
-
-        border_width = ht.get("borderWidth", "1px")
-        border_color = ht.get("borderColor", "#000000")
-
-        max_logical_cols = 0
-        for row_cells in cells_data:
-            col_count = sum(c.get("colSpan", 1) for c in row_cells)
-            max_logical_cols = max(max_logical_cols, col_count)
-        cols_per_header = max(1, self.GRID_COLS // max_logical_cols) if max_logical_cols else 3
-
-        occupied = set()
-        start_row = self.current_row
-
-        for row_idx, row_cells in enumerate(cells_data):
-            excel_row = start_row + row_idx
-            logical_col = 0
-            for cell_data in row_cells:
-                while (excel_row, logical_col) in occupied:
-                    logical_col += 1
-
-                col_span = cell_data.get("colSpan", 1)
-                row_span = cell_data.get("rowSpan", 1)
-                content = cell_data.get("content", "")
-
-                start_col = 1 + logical_col * cols_per_header
-                end_col = min(start_col + (col_span * cols_per_header) - 1, self.GRID_COLS)
-                end_row = excel_row + row_span - 1
-
-                for r in range(excel_row, end_row + 1):
-                    for c in range(logical_col, logical_col + col_span):
-                        occupied.add((r, c))
-
-                if end_col > start_col or end_row > excel_row:
-                    self.ws.merge_cells(start_row=excel_row, start_column=start_col,
-                                        end_row=end_row, end_column=end_col)
-
-                cell = self.ws.cell(row=excel_row, column=start_col)
-                if "[LOGO]" in content:
-                    logo_url = sc.get("logo", {}).get("url")
-                    if not logo_url or not self._try_insert_logo(logo_url, excel_row, start_col):
-                        cell.value = "LOGO"
-                else:
-                    cell.value = content
-
-                size_pt = parse_css_size(cell_data.get("fontSize", "11px"), 11)
-                cell.font = Font(name="Arial", bold=cell_data.get("bold", False),
-                                 italic=cell_data.get("italic", False), size=size_pt,
-                                 color=hex_to_argb(cell_data.get("textColor", "#000000")))
-                cell.alignment = Alignment(horizontal=cell_data.get("align", "center"),
-                                           vertical="center", wrap_text=True)
-                cell.fill = PatternFill("solid", fgColor=hex_to_argb(cell_data.get("backgroundColor", "#ffffff")))
-
-                cell_border = make_border(cell_data.get("borderWidth", border_width),
-                                          cell_data.get("borderColor", border_color))
-                for r in range(excel_row, end_row + 1):
-                    for c in range(start_col, end_col + 1):
-                        self.ws.cell(row=r, column=c).border = cell_border
-
-                logical_col += col_span
-
-        for r in range(start_row, start_row + len(cells_data)):
-            self.ws.row_dimensions[r].height = 28
-        self.current_row = start_row + len(cells_data) + 1
-
-    def _try_insert_logo(self, url, row, col):
-        try:
-            resp = requests.get(url, timeout=5)
-            if resp.status_code != 200:
-                return False
-            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-            tmp.write(resp.content)
-            tmp.close()
-            img = XlImage(tmp.name)
-            img.width = 80
-            img.height = 40
-            self.ws.add_image(img, f"{get_column_letter(col)}{row}")
+    def _should_render(self, layout: dict) -> bool:
+        props = layout.get("props") or {}
+        if not props.get("hidden"):
             return True
-        except Exception:
+        condicion = str(props.get("condicion") or "")
+        valor     = str(props.get("valor") or "")
+        if not condicion or not valor:
             return False
+        parts = condicion.split("-")
+        if len(parts) < 2:
+            return False
+        cond_field = self._find_recursive(self.form_design, parts[1])
+        if not cond_field:
+            return False
+        answer  = self._get_answer(cond_field)
+        current = str((answer or {}).get("answer_text", "") or "")
+        allowed = [v.strip() for v in valor.split(",")]
+        return current in allowed
 
-    # ── Número de documento ──
+    # ── helpers de escritura ──────────────────────────────────────────────────
 
-    def _render_document_number(self):
-        if not self.response_id:
-            return
-        row = self.current_row
-        self.ws.merge_cells(start_row=row, start_column=9, end_row=row, end_column=12)
-        cell = self.ws.cell(row=row, column=9)
-        cell.value = f"Número del Documento: {self.response_id}"
-        cell.font = Font(name="Courier New", bold=True, size=10, color="FFB91C1C")
-        cell.alignment = Alignment(horizontal="right", vertical="center")
-        cell.border = make_border("1px", "#DC2626")
-        for c in range(9, 13):
-            self.ws.cell(row=row, column=c).border = make_border("1px", "#DC2626")
-        self.ws.row_dimensions[row].height = 24
-        self.current_row += 2
+    def _write_cell(
+        self, row: int, col: int, value: str,
+        bold: bool = False, italic: bool = False,
+        font_color: str = "000000", font_size: int = 10,
+        bg_color: Optional[str] = None,
+        h_align: str = "left", border: bool = True,
+        wrap: bool = True, col_span: int = 1,
+    ) -> None:
+        ws = self._ws
+        cell = ws.cell(row=row, column=col, value=value)
+        cell.font      = _font(bold=bold, italic=italic, color=font_color, size=font_size)
+        cell.alignment = _align(h=h_align, wrap=wrap)
+        if bg_color:
+            cell.fill = _fill(bg_color)
+        if border:
+            cell.border = _thin()
+        if col_span > 1:
+            end_col = col + col_span - 1
+            ws.merge_cells(
+                start_row=row, start_column=col,
+                end_row=row, end_column=end_col,
+            )
+            for c in range(col + 1, end_col + 1):
+                ws.cell(row=row, column=c).border = _thin()
 
-    # ── Renderizar campos ──
+    def _set_row_height(self, row: int, height: float = 20.0) -> None:
+        self._ws.row_dimensions[row].height = height
 
-    def _render_field(self, field, start_col=1, col_span=12):
-        field_type = field.get("type", "")
+    def _set_col_width(self, col: int, width: float) -> None:
+        letter = get_column_letter(col)
+        if self._ws.column_dimensions[letter].width < width:
+            self._ws.column_dimensions[letter].width = width
 
-        fid = field.get("id")
-        if fid and fid in self._consumed_by_repeater and field_type != "repeater":
-            return
+    # ── Header (HeaderTable + logo) ───────────────────────────────────────────
 
-        if field_type in ("label", "helpText", "divider", "image", "button"):
-            self._render_decorative(field, start_col, col_span)
-            return
+    def _write_header(self) -> None:
+        sc = self.style_config
+        ht = sc.get("headerTable") or {}
+        if ht.get("enabled") and ht.get("cells"):
+            self._write_header_table(ht)
+        elif self.form_title:
+            self._write_cell(
+                self._row, 1, self.form_title,
+                bold=True, font_size=14,
+                bg_color="0f8594", font_color=C_WHITE,
+                h_align="center", col_span=6,
+            )
+            self._set_row_height(self._row, 28)
+            self._row += 1
 
-        if field_type == "verticalLayout":
-            for child in (field.get("children") or []):
-                child_space = int((child.get("props") or {}).get("space", 12))
-                self._render_field(child, start_col, min(child_space, col_span))
-            return
+        if self.submitted_at or self.response_id:
+            parts = []
+            if self.response_id:
+                parts.append("Respuesta #" + str(self.response_id))
+            if self.submitted_at:
+                parts.append("Enviado: " + str(self.submitted_at))
+            self._write_cell(
+                self._row, 1, "  ".join(parts),
+                font_color="6B7280", italic=True,
+                bg_color=C_LABEL_BG, col_span=6, border=False,
+            )
+            self._set_row_height(self._row, 16)
+            self._row += 1
 
-        if field_type == "horizontalLayout":
-            children = field.get("children") or []
-            visible = [c for c in children if c.get("id") not in self._consumed_by_repeater]
-            if not visible:
-                return
-            target_row = self.current_row
-            current_col = start_col
-            for child in visible:
-                child_space = int((child.get("props") or {}).get("space", 6))
-                actual_cols = max(2, child_space)
-                self._render_field_inline(child, target_row, current_col, actual_cols)
-                current_col += actual_cols
-            self.ws.row_dimensions[target_row].height = 28
-            self.current_row = target_row + 1
-            return
+        self._row += 1  # espacio
 
-        if field_type == "repeater":
-            self._render_repeater(field)
-            return
+    def _write_header_table(self, ht: dict) -> None:
+        cells = ht.get("cells") or []
+        for row_cells in cells:
+            col = 1
+            for cell in row_cells:
+                cont  = cell.get("content", "")
+                cs    = int(cell.get("colSpan", 1))
+                cbg   = (cell.get("backgroundColor") or "f3f4f6").lstrip("#")
+                cc    = (cell.get("color") or "374151").lstrip("#")
+                fw    = cell.get("fontWeight", "normal") == "bold"
+                is_logo = cell.get("customClass") == "logo-cell" or cont == "[LOGO]"
+                if is_logo:
+                    cont = "[Logo]"
+                self._write_cell(
+                    self._row, col, cont if not is_logo else "[Logo]",
+                    bold=fw, font_color=cc, bg_color=cbg,
+                    col_span=cs,
+                )
+                self._set_col_width(col, max(self._col_width, len(cont) + 4))
+                col += cs
+            self._set_row_height(self._row, 22)
+            self._row += 1
 
-        # Campo normal
-        props = field.get("props") or {}
-        label = props.get("label", "Campo")
-        required = props.get("required", False)
-        answer = self._get_answer_for_field(field)
-        answer_text = self._get_answer_text(answer)
+    # ── Footer ────────────────────────────────────────────────────────────────
 
-        row = self.current_row
-        end_col = min(start_col + col_span - 1, self.GRID_COLS)
-        mid = start_col + max(1, col_span // 3) - 1
-
-        if mid > start_col:
-            self.ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=mid)
-        lbl_cell = self.ws.cell(row=row, column=start_col)
-        lbl_cell.value = f"{label} *" if required else label
-        lbl_cell.font = self.LABEL_FONT
-        lbl_cell.fill = self.LABEL_FILL
-        lbl_cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-        lbl_cell.border = make_border("1px", "#D1D5DB")
-        for c in range(start_col, mid + 1):
-            self.ws.cell(row=row, column=c).border = make_border("1px", "#D1D5DB")
-
-        ans_start = mid + 1
-        if end_col > ans_start:
-            self.ws.merge_cells(start_row=row, start_column=ans_start, end_row=row, end_column=end_col)
-        ans_cell = self.ws.cell(row=row, column=ans_start)
-
-        if answer and answer.get("question_type") == "firm":
-            ans_cell.value = self._format_firm_answer(answer_text)
-        elif answer and answer.get("file_path"):
-            display = answer_text or "Archivo adjunto"
-            ans_cell.value = f"{display} 📎 [{answer.get('file_path', '')}]"
-        else:
-            ans_cell.value = answer_text or "Sin respuesta"
-
-        ans_cell.font = self.ANSWER_FONT if answer_text else self.DECORATIVE_FONT
-        ans_cell.fill = self.ANSWER_FILL
-        ans_cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-        ans_cell.border = make_border("1px", "#D1D5DB")
-        for c in range(ans_start, end_col + 1):
-            self.ws.cell(row=row, column=c).border = make_border("1px", "#D1D5DB")
-
-        self.ws.row_dimensions[row].height = 28
-        self.current_row += 1
-
-    def _render_field_inline(self, field, row, start_col, col_span):
-        props = field.get("props") or {}
-        label = props.get("label", "Campo")
-        required = props.get("required", False)
-        answer = self._get_answer_for_field(field)
-        answer_text = self._get_answer_text(answer)
-
-        end_col = min(start_col + col_span - 1, self.GRID_COLS)
-        label_cols = max(1, col_span // 3)
-        mid = start_col + label_cols - 1
-
-        if mid > start_col:
-            self.ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=mid)
-        lbl = self.ws.cell(row=row, column=start_col)
-        lbl.value = f"{label} *" if required else label
-        lbl.font = self.LABEL_FONT
-        lbl.fill = self.LABEL_FILL
-        lbl.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-        for c in range(start_col, mid + 1):
-            self.ws.cell(row=row, column=c).border = make_border("1px", "#D1D5DB")
-
-        ans_start = mid + 1
-        if end_col > ans_start:
-            self.ws.merge_cells(start_row=row, start_column=ans_start, end_row=row, end_column=end_col)
-        ac = self.ws.cell(row=row, column=ans_start)
-        if answer and answer.get("question_type") == "firm":
-            ac.value = self._format_firm_answer(answer_text)
-        elif answer and answer.get("file_path"):
-            ac.value = f"{answer_text or 'Archivo adjunto'} 📎 [{answer.get('file_path', '')}]"
-        else:
-            ac.value = answer_text or "Sin respuesta"
-        ac.font = self.ANSWER_FONT if answer_text else self.DECORATIVE_FONT
-        ac.fill = self.ANSWER_FILL
-        ac.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-        for c in range(ans_start, end_col + 1):
-            self.ws.cell(row=row, column=c).border = make_border("1px", "#D1D5DB")
-
-    def _format_firm_answer(self, answer_text):
-        try:
-            data = json.loads(answer_text)
-            firm = data.get("firmData", {})
-            if isinstance(firm, dict):
-                nested = firm.get("firmData", firm)
-                name = nested.get("person_name", "")
-                pid = nested.get("person_id", "")
-                qr = nested.get("qr_url", "")
-                parts = ["✅ Firma validada"]
-                if name: parts.append(f"por {name}")
-                if pid: parts.append(f"(ID: {pid})")
-                if qr: parts.append(f"| QR: {qr}")
-                return " ".join(parts)
-        except (json.JSONDecodeError, TypeError):
-            pass
-        return answer_text
-
-    # ── Decorativos ──
-
-    def _render_decorative(self, field, start_col=1, col_span=12):
-        field_type = field.get("type", "")
-        props = field.get("props") or {}
-        row = self.current_row
-        end_col = min(start_col + col_span - 1, self.GRID_COLS)
-
-        if field_type == "label":
-            if end_col > start_col:
-                self.ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=end_col)
-            cell = self.ws.cell(row=row, column=start_col)
-            cell.value = props.get("text", "")
-            fw = props.get("fontWeight", "normal")
-            size = parse_css_size(props.get("fontSize", "12px"), 12)
-            cell.font = Font(name="Arial", bold=(fw == "bold"), size=size,
-                             color=hex_to_argb(props.get("color", "#333333")))
-            cell.alignment = Alignment(horizontal=props.get("align", "left"),
-                                       vertical="center", wrap_text=True)
-            self.ws.row_dimensions[row].height = 24
-            self.current_row += 1
-
-        elif field_type == "helpText":
-            if end_col > start_col:
-                self.ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=end_col)
-            cell = self.ws.cell(row=row, column=start_col)
-            cell.value = props.get("text", "")
-            cell.font = Font(name="Arial", italic=True, size=9, color="FF6B7280")
-            cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-            self.ws.row_dimensions[row].height = 20
-            self.current_row += 1
-
-        elif field_type == "divider":
-            thickness = parse_css_size(props.get("thickness", 1), 1)
-            color = hex_to_argb(props.get("color", "#E5E7EB"))
-            side = Side(style="thin" if thickness < 2 else "medium", color=color)
-            for c in range(start_col, end_col + 1):
-                self.ws.cell(row=row, column=c).border = Border(bottom=side)
-            self.ws.row_dimensions[row].height = 8
-            self.current_row += 1
-
-        elif field_type == "image":
-            if end_col > start_col:
-                self.ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=end_col)
-            cell = self.ws.cell(row=row, column=start_col)
-            cell.value = f"[Imagen: {props.get('label', props.get('src', ''))}]"
-            cell.font = self.DECORATIVE_FONT
-            self.current_row += 1
-
-        else:
-            self.current_row += 1
-
-    # ── Repeater (tabla) v3 ROBUSTO ──
-
-    def _render_repeater(self, field):
-        """
-        Renderiza repeater como tabla.
-        Usa columnas descubiertas dinámicamente (children + campos via answers).
-        Matching robusto: form_design_element_id → linkExternalId/question_id.
-        """
-        props = field.get("props") or {}
-        repeater_id = field.get("id")
-
-        columns = self._repeater_columns.get(repeater_id, field.get("children") or [])
-        if not columns:
-            return
-
-        # Filtrar respuestas por repeated_id
-        repeater_answers = [a for a in self.answers if a.get("repeated_id") == repeater_id]
-
-        # Agrupar respuestas por columna
-        answers_by_column: Dict[str, List[dict]] = {col.get("id"): [] for col in columns}
-
-        # Construir lookup rápido: linkExternalId → column_id
-        link_to_col: Dict[str, str] = {}
-        for col_def in columns:
-            col_id = col_def.get("id")
-            if not col_id:
-                continue
-            lid = col_def.get("linkExternalId")
-            if lid is not None:
-                link_to_col[str(lid)] = col_id
-            sqid = (col_def.get("props") or {}).get("sourceQuestionId")
-            if sqid is not None:
-                link_to_col[str(sqid)] = col_id
-
-        for ans in repeater_answers:
-            elem_id = ans.get("form_design_element_id")
-            q_id = ans.get("question_id")
-
-            # Prioridad 1: Match por form_design_element_id (UUID directo)
-            if elem_id and elem_id in answers_by_column:
-                answers_by_column[elem_id].append(ans)
-                continue
-
-            # Prioridad 2: Match por question_id → linkExternalId/sourceQuestionId
-            if q_id is not None:
-                col_id = link_to_col.get(str(q_id))
-                if col_id and col_id in answers_by_column:
-                    answers_by_column[col_id].append(ans)
-                    continue
-
-            # Prioridad 3: Match por question_text → label
-            qt = ans.get("question_text", "")
-            if qt:
-                for col_def in columns:
-                    col_label = (col_def.get("props") or {}).get("label", "")
-                    if col_label and col_label == qt:
-                        col_id = col_def.get("id")
-                        if col_id and col_id in answers_by_column:
-                            answers_by_column[col_id].append(ans)
-                            break
-
-        # Título
-        label = props.get("label", "")
-        if label:
-            row = self.current_row
-            self.ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=self.GRID_COLS)
-            cell = self.ws.cell(row=row, column=1)
-            cell.value = label
-            cell.font = Font(name="Arial", bold=True, size=11, color="FF1F2937")
-            cell.alignment = Alignment(horizontal="left", vertical="center")
-            self.ws.row_dimensions[row].height = 24
-            self.current_row += 1
-
-        # Estilos
-        ts = props.get("tableStyle", {})
-        header_bg = hex_to_argb(ts.get("headerBackgroundColor", "#F3F4F6"))
-        header_color = hex_to_argb(ts.get("headerTextColor", "#374151"))
-        cell_bg = hex_to_argb(ts.get("cellBackgroundColor", "#FFFFFF"))
-        alt_bg = hex_to_argb(ts.get("alternateRowColor", "#F9FAFB"))
-        striped = ts.get("enableStripedRows", True)
-        tb_border = make_border(ts.get("borderWidth", "1px"), ts.get("borderColor", "#D1D5DB"))
-
-        num_cols = len(columns)
-        col_width = max(1, self.GRID_COLS // num_cols)
-
-        # Encabezados
-        row = self.current_row
-        for i, col_def in enumerate(columns):
-            child_label = (col_def.get("props") or {}).get("label", f"Col {i+1}")
-            start_c = 1 + i * col_width
-            end_c = min(start_c + col_width - 1, self.GRID_COLS)
-            if i == num_cols - 1:
-                end_c = self.GRID_COLS  # Última columna ocupa el resto
-            if end_c > start_c:
-                self.ws.merge_cells(start_row=row, start_column=start_c, end_row=row, end_column=end_c)
-            cell = self.ws.cell(row=row, column=start_c)
-            cell.value = child_label
-            cell.font = Font(name="Arial", bold=True, size=10, color=header_color)
-            cell.fill = PatternFill("solid", fgColor=header_bg)
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            for c in range(start_c, end_c + 1):
-                self.ws.cell(row=row, column=c).border = tb_border
-        self.ws.row_dimensions[row].height = 28
-        self.current_row += 1
-
-        # Filas
-        max_rows = max((len(v) for v in answers_by_column.values()), default=0)
-        if max_rows == 0:
-            row = self.current_row
-            self.ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=self.GRID_COLS)
-            cell = self.ws.cell(row=row, column=1)
-            cell.value = "Sin datos registrados"
-            cell.font = self.DECORATIVE_FONT
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            self.current_row += 1
-            return
-
-        for row_idx in range(max_rows):
-            row = self.current_row
-            use_alt = striped and row_idx % 2 == 1
-            bg = PatternFill("solid", fgColor=alt_bg) if use_alt else PatternFill("solid", fgColor=cell_bg)
-
-            for i, col_def in enumerate(columns):
-                col_id = col_def.get("id")
-                col_answers = answers_by_column.get(col_id, [])
-                val = ""
-                if row_idx < len(col_answers):
-                    val = col_answers[row_idx].get("answer_text", "") or ""
-                    fp = col_answers[row_idx].get("file_path", "")
-                    if fp:
-                        val = f"{val} 📎 [{fp}]" if val else f"📎 [{fp}]"
-
-                start_c = 1 + i * col_width
-                end_c = min(start_c + col_width - 1, self.GRID_COLS)
-                if i == num_cols - 1:
-                    end_c = self.GRID_COLS
-                if end_c > start_c:
-                    self.ws.merge_cells(start_row=row, start_column=start_c, end_row=row, end_column=end_c)
-                cell = self.ws.cell(row=row, column=start_c)
-                cell.value = val or "-"
-                cell.font = self.ANSWER_FONT
-                cell.fill = bg
-                cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-                for c in range(start_c, end_c + 1):
-                    self.ws.cell(row=row, column=c).border = tb_border
-
-            self.ws.row_dimensions[row].height = 24
-            self.current_row += 1
-
-    # ── Footer ──
-
-    def _render_footer(self):
-        sc = self._extract_style_config()
-        footer = sc.get("footer", {})
+    def _write_footer(self) -> None:
+        footer = (self.style_config or {}).get("footer") or {}
         if not footer.get("show"):
             return
-        self.current_row += 1
-        row = self.current_row
-        side = Side(style="thin", color="FF999999")
-        for c in range(1, self.GRID_COLS + 1):
-            self.ws.cell(row=row, column=c).border = Border(top=side)
-        row += 1
-        self.ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=self.GRID_COLS)
-        cell = self.ws.cell(row=row, column=1)
-        cell.value = footer.get("text", "")
-        cell.font = Font(name="Arial", size=8, color="FF999999")
-        cell.alignment = Alignment(horizontal=footer.get("align", "center"), vertical="center")
-        self.current_row = row + 1
+        self._row += 1
+        self._write_cell(
+            self._row, 1, str(footer.get("text", "")),
+            italic=True, font_color="9CA3AF",
+            bg_color=C_LABEL_BG, col_span=6, border=False,
+            h_align=footer.get("align", "center"),
+        )
+        self._set_row_height(self._row, 16)
+        self._row += 1
 
-    # ── Generar ──
+    # ── renderDecorativeElement ───────────────────────────────────────────────
+
+    def _write_decorative(self, field: dict) -> None:
+        ftype = field.get("type", "")
+        props = field.get("props") or {}
+
+        if ftype == "label":
+            text  = str(props.get("text") or "Etiqueta")
+            bold  = str(props.get("fontWeight", "normal")).lower() in ("bold", "700", "600")
+            color = str(props.get("color") or "333333").lstrip("#")
+            self._write_cell(
+                self._row, 1, text,
+                bold=bold, font_color=color, font_size=12,
+                bg_color=None, border=False, col_span=6,
+            )
+            self._set_row_height(self._row, 18)
+            self._row += 1
+            return
+
+        if ftype == "helpText":
+            text = str(props.get("text") or "")
+            self._write_cell(
+                self._row, 1, text,
+                italic=True, font_color=C_EMPTY, font_size=9,
+                bg_color=None, border=False, col_span=6,
+            )
+            self._set_row_height(self._row, 14)
+            self._row += 1
+            return
+
+        if ftype == "divider":
+            # fila vacía como separador visual
+            self._set_row_height(self._row, 6)
+            self._row += 1
+            return
+
+        if ftype == "image":
+            lbl = str(props.get("label") or "Imagen")
+            src = str(props.get("src") or "")
+            self._write_cell(
+                self._row, 1, "[Imagen: " + lbl + ("] → " + src if src else "]"),
+                italic=True, font_color="6B7280",
+                bg_color=C_LABEL_BG, border=False, col_span=6,
+            )
+            self._set_row_height(self._row, 16)
+            self._row += 1
+            return
+
+        if ftype == "button":
+            text = str(props.get("text") or "Botón")
+            self._write_cell(
+                self._row, 1, text + " (deshabilitado)",
+                italic=True, font_color=C_EMPTY,
+                bg_color=C_LABEL_BG, border=False, col_span=6,
+            )
+            self._set_row_height(self._row, 16)
+            self._row += 1
+            return
+
+    # ── renderInputFieldResponse ──────────────────────────────────────────────
+
+    def _write_input_field(self, field: dict) -> None:
+        props  = field.get("props") or {}
+        label  = str(props.get("label") or "Campo")
+        req    = " *" if props.get("required") else ""
+        answer = self._get_answer(field)
+        ftype  = field.get("type", "")
+
+        # columna A = etiqueta, columna B = respuesta
+        self._write_cell(
+            self._row, 1, label + req,
+            bold=True, font_size=10,
+            bg_color=C_LABEL_BG, col_span=1,
+        )
+
+        if answer is not None:
+            atext = str(answer.get("answer_text") or "")
+            fpath = str(answer.get("file_path") or "")
+            qtype = str(answer.get("question_type") or ftype)
+
+            if qtype == "firm" and atext:
+                value = _fmt_firm_text(atext)
+            elif qtype == "location" and atext:
+                value = _fmt_location_text(atext)
+            elif qtype in ("checkbox", "multiselect") and atext:
+                value = _fmt_checkbox_text(atext)
+            elif qtype == "number" and atext:
+                value = _fmt_number_text(atext, props)
+            elif qtype == "date" and atext:
+                value = _fmt_date_text(atext)
+            elif qtype in ("datetime", "datetimelocal") and atext:
+                value = _fmt_datetime_text(atext)
+            elif atext:
+                value = atext
+            else:
+                value = ""
+
+            if fpath:
+                value = (value + " | " if value else "") + "[Archivo: " + fpath + "]"
+
+            if not value:
+                value = "Sin respuesta"
+
+            self._write_cell(
+                self._row, 2, value,
+                font_color="1F2937", bg_color=C_WHITE, col_span=5,
+            )
+        else:
+            self._write_cell(
+                self._row, 2, "Sin respuesta registrada",
+                italic=True, font_color=C_EMPTY,
+                bg_color=C_WHITE, col_span=5,
+            )
+
+        self._set_row_height(self._row, 20)
+        self._row += 1
+
+    # ── renderRepeaterResponse ────────────────────────────────────────────────
+
+    def _write_repeater(self, field: dict, indent_col: int = 1) -> None:
+        props    = field.get("props") or {}
+        children = field.get("children") or []
+
+        normal_ch = [c for c in children if c.get("type") != "repeater"]
+        sub_ch    = [c for c in children if c.get("type") == "repeater"]
+
+        if not children:
+            self._write_cell(
+                self._row, indent_col, "Tabla sin columnas configuradas",
+                italic=True, font_color=C_EMPTY, col_span=6,
+            )
+            self._row += 1
+            return
+
+        # Encabezado del repeater (teal)
+        lbl = str(props.get("label") or "")
+        if lbl:
+            n_cols = max(len(normal_ch), 1)
+            self._write_cell(
+                self._row, indent_col, "▤ " + lbl.upper(),
+                bold=True, font_color=C_WHITE,
+                bg_color=C_TEAL_DARK, font_size=10,
+                col_span=n_cols,
+            )
+            self._set_row_height(self._row, 20)
+            self._row += 1
+
+        # Construir parentRows — PORT EXACTO del frontend (ResponsesModal.tsx línea 735-808)
+        col_ids  = [c["id"] for c in normal_ch if c.get("id")]
+        col_qids = [
+            str(c.get("linkExternalId") or (c.get("props") or {}).get("sourceQuestionId") or "")
+            for c in normal_ch
+        ]
+        col_qids = [q for q in col_qids if q]
+
+        rep_answers = [
+            ans for ans in self.answers
+            if (ans.get("repeated_id") not in (None, "", "null"))
+            and not ans.get("parent_repeated_id")
+            and (
+                (ans.get("form_design_element_id") and ans["form_design_element_id"] in col_ids)
+                or (ans.get("question_id") and str(ans["question_id"]) in col_qids)
+            )
+        ]
+
+        # Ordenar antes de agrupar para estabilidad
+        rep_answers = sorted(
+            rep_answers,
+            key=lambda a: (
+                a.get("repeater_row_index") if a.get("repeater_row_index") is not None else 999999,
+                a.get("id_answer") or 0,
+            )
+        )
+
+        parent_rows: List[Dict] = []
+        grouped: Dict[str, List] = {}
+        group_first_ri: Dict[str, int] = {}
+        for ans in rep_answers:
+            rid = str(ans["repeated_id"])
+            if rid not in grouped:
+                grouped[rid] = []
+                group_first_ri[rid] = (
+                    int(ans["repeater_row_index"]) if ans.get("repeater_row_index") is not None
+                    else (ans.get("id_answer") or 0)
+                )
+            grouped[rid].append(ans)
+
+        for repeated_id, grp in grouped.items():
+            by_col: Dict[str, List] = {}
+            for child in normal_ch:
+                cid  = child.get("id", "")
+                qid  = str(child.get("linkExternalId") or (child.get("props") or {}).get("sourceQuestionId", "") or "")
+                col  = [a for a in grp if a.get("form_design_element_id") == cid]
+                if not col and qid:
+                    col = [a for a in grp if str(a.get("question_id", "")) == qid]
+                has_idx = any(a.get("repeater_row_index") is not None for a in col)
+                col = sorted(col, key=lambda a: ((a.get("repeater_row_index") or 0) if has_idx else (a.get("id_answer") or 0)))
+                by_col[cid] = col
+
+            max_r = max((len(v) for v in by_col.values()), default=1)
+            for row_index in range(max_r):
+                row_data: Dict[str, Any] = {}
+                for child in normal_ch:
+                    cid = child.get("id", "")
+                    col = by_col.get(cid, [])
+                    if row_index < len(col):
+                        a = col[row_index]
+                        row_data[cid] = {
+                            "answer_text":  a.get("answer_text"),
+                            "file_path":    a.get("file_path"),
+                            "question_type": a.get("question_type"),
+                        }
+                if row_data:
+                    parent_rows.append({
+                        "rowIndex":   row_index,   # índice LOCAL (igual que frontend)
+                        "repeatedId": repeated_id,
+                        "rowData":    row_data,
+                    })
+
+        # Sort por rowIndex, sort secundario por group_first_ri para estabilidad
+        parent_rows.sort(key=lambda r: (r["rowIndex"], group_first_ri.get(r["repeatedId"], 999999)))
+
+        n_parent_rows = len(parent_rows)
+
+        if not normal_ch and not sub_ch:
+            return
+
+        # Encabezados de columnas
+        if normal_ch:
+            for ci, child in enumerate(normal_ch):
+                c_lbl = str((child.get("props") or {}).get("label") or "Campo")
+                c_req = " *" if (child.get("props") or {}).get("required") else ""
+                self._write_cell(
+                    self._row, indent_col + ci, c_lbl + c_req,
+                    bold=True, font_color=C_GRAY_TEXT,
+                    bg_color=C_GRAY_HEADER, font_size=10,
+                )
+                self._set_col_width(indent_col + ci, max(self._col_width, len(c_lbl) + 6))
+            self._set_row_height(self._row, 20)
+            self._row += 1
+
+            if parent_rows:
+                for disp_idx, prow in enumerate(parent_rows):
+                    row_data    = prow["rowData"]
+                    repeated_id = prow["repeatedId"]
+                    row_idx     = prow["rowIndex"]    # índice LOCAL (igual que frontend)
+                    bg = C_ALT_ROW if disp_idx % 2 == 1 else C_WHITE
+
+                    for ci, child in enumerate(normal_ch):
+                        cid      = child.get("id", "")
+                        lex      = str(child.get("linkExternalId") or "")
+                        cell_val = row_data.get(cid) or (row_data.get(lex) if lex else None)
+                        text     = _cell_value_text(cell_val)
+                        is_empty = (text == "-")
+                        self._write_cell(
+                            self._row, indent_col + ci, text,
+                            italic=is_empty, font_color=C_EMPTY if is_empty else "1F2937",
+                            bg_color=bg,
+                        )
+                        self._set_col_width(indent_col + ci, max(self._col_width, min(len(text) + 4, 60)))
+                    self._set_row_height(self._row, 20)
+                    self._row += 1
+
+                    # sub-repeaters de esta fila
+                    for sf in sub_ch:
+                        self._write_sub_repeater(
+                            sf, row_idx, repeated_id, indent_col + 1,
+                            parent_field_id=str(field.get("id") or ""),
+                            n_parent_rows=n_parent_rows,
+                        )
+            else:
+                # sin datos
+                self._write_cell(
+                    self._row, indent_col, "Sin datos registrados",
+                    italic=True, font_color=C_EMPTY,
+                    bg_color=C_WHITE, col_span=len(normal_ch),
+                )
+                self._row += 1
+        else:
+            # Solo sub-repeaters sin columnas normales
+            pfid = str(field.get("id") or "")
+            if parent_rows:
+                for prow in parent_rows:
+                    self._write_cell(
+                        self._row, indent_col,
+                        "Registro " + str(prow["rowIndex"] + 1),
+                        italic=True, font_color=C_EMPTY,
+                        bg_color=C_LABEL_BG, border=False,
+                    )
+                    self._row += 1
+                    for sf in sub_ch:
+                        self._write_sub_repeater(
+                            sf, prow["rowIndex"], prow["repeatedId"],
+                            indent_col + 1,
+                            parent_field_id=pfid,
+                            n_parent_rows=n_parent_rows,
+                        )
+            else:
+                for sf in sub_ch:
+                    self._write_sub_repeater(sf, 0, "", indent_col + 1,
+                                             parent_field_id=pfid, n_parent_rows=1)
+
+        self._row += 1  # espacio post-repeater
+
+    def _write_sub_repeater(
+        self,
+        sub_field: dict,
+        parent_row_idx: int,           # rowIndex LOCAL del grupo
+        parent_repeated_id: str,       # repeatedId del padre
+        indent_col: int,
+        parent_field_id: str = "",     # field.id del repeater PADRE (estrategia 2)
+        n_parent_rows: int = 1,        # len(parentRows) — para estrategia 3
+    ) -> None:
+        sub_children = sub_field.get("children") or []
+        sub_normal   = [c for c in sub_children if c.get("type") != "repeater"]
+        sub_col_ids  = [c["id"] for c in sub_normal if c.get("id")]
+
+        all_sub = [
+            ans for ans in self.answers
+            if ans.get("form_design_element_id") in sub_col_ids
+            and ans.get("repeated_id") not in (None, "", "null")
+        ]
+        if not all_sub:
+            return
+
+        # ── ESTRATEGIA 1: parent_repeated_id === UUID de la fila padre ──────────
+        filtered = [
+            a for a in all_sub
+            if str(a.get("parent_repeated_id") or "") == str(parent_repeated_id or "")
+            and (parent_repeated_id not in (None, "", "null"))
+        ]
+
+        # ── ESTRATEGIA 2: parent_repeated_id === field.id + parent_row_index ────
+        if not filtered and parent_field_id:
+            filtered = [
+                a for a in all_sub
+                if str(a.get("parent_repeated_id") or "") == str(parent_field_id)
+                and a.get("parent_row_index") == parent_row_idx
+            ]
+
+        # ── ESTRATEGIA 3: fallback exacto del frontend (línea 909-943) ──────────
+        if not filtered and all_sub:
+            col_count          = len(sub_col_ids) or 1
+            total_sub_rows     = round(len(all_sub) / col_count)
+            total_parent_rows  = max(1, n_parent_rows)
+            sub_rows_per_parent = max(1, -(-total_sub_rows // total_parent_rows))
+            sub_row_start      = parent_row_idx * sub_rows_per_parent
+            sub_row_end        = sub_row_start + sub_rows_per_parent
+
+            has_ri = any(a.get("repeater_row_index") is not None for a in all_sub)
+            if has_ri:
+                filtered = [
+                    a for a in all_sub
+                    if sub_row_start <= (a.get("repeater_row_index") or 0) < sub_row_end
+                ]
+            else:
+                sorted_sub         = sorted(all_sub, key=lambda a: (a.get("id_answer") or 0))
+                answers_per_parent = sub_rows_per_parent * col_count
+                start_idx          = parent_row_idx * answers_per_parent
+                filtered           = sorted_sub[start_idx: start_idx + answers_per_parent]
+
+        if not filtered:
+            return
+
+        sub_rows = _build_sub_rows_excel(filtered, sub_normal)
+
+        # Encabezado sub-repeater (teal light)
+        lbl = str((sub_field.get("props") or {}).get("label") or "Sub-tabla")
+        n_sub = max(len(sub_normal), 1)
+        self._write_cell(
+            self._row, indent_col, "↳ " + lbl.upper(),
+            bold=True, font_color=C_TEAL_TEXT,
+            bg_color=C_TEAL_LIGHT, font_size=9,
+            col_span=n_sub,
+        )
+        self._set_row_height(self._row, 16)
+        self._row += 1
+
+        # Encabezados de columnas del sub
+        for ci, child in enumerate(sub_normal):
+            c_lbl = str((child.get("props") or {}).get("label") or "Campo")
+            self._write_cell(
+                self._row, indent_col + ci, c_lbl,
+                bold=True, font_color=C_GRAY_TEXT,
+                bg_color=C_GRAY_HEADER, font_size=9,
+            )
+            self._set_col_width(indent_col + ci, max(self._col_width, len(c_lbl) + 4))
+        self._set_row_height(self._row, 16)
+        self._row += 1
+
+        for ri, rd in enumerate(sub_rows):
+            bg = C_ALT_ROW if ri % 2 == 1 else C_WHITE
+            for ci, child in enumerate(sub_normal):
+                cid      = child.get("id", "")
+                cell_val = rd.get(cid)
+                text     = _cell_value_text(cell_val)
+                is_empty = (text == "-")
+                self._write_cell(
+                    self._row, indent_col + ci, text,
+                    italic=is_empty, font_color=C_EMPTY if is_empty else "1F2937",
+                    bg_color=bg, font_size=9,
+                )
+            self._set_row_height(self._row, 16)
+            self._row += 1
+
+    # ── render field dispatch ─────────────────────────────────────────────────
+
+    def _write_field(self, field: dict) -> None:
+        ftype = field.get("type", "")
+        if not ftype or not field.get("id"):
+            return
+
+        if ftype == "verticalLayout":
+            if not self._should_render(field):
+                return
+            for child in (field.get("children") or []):
+                self._write_field(child)
+            return
+
+        if ftype == "horizontalLayout":
+            if not self._should_render(field):
+                return
+            for child in (field.get("children") or []):
+                self._write_field(child)
+            return
+
+        if ftype in ("label", "helpText", "divider", "image", "button"):
+            self._write_decorative(field)
+            return
+
+        if ftype == "repeater":
+            self._write_repeater(field)
+            return
+
+        self._write_input_field(field)
+
+    # ── renderFieldsWithAutoLayout ────────────────────────────────────────────
+
+    def _write_all_fields(self) -> None:
+        for field in self.form_design:
+            self._write_field(field)
+
+    # ── configurar anchos de columnas ─────────────────────────────────────────
+
+    def _setup_columns(self) -> None:
+        ws = self._ws
+        # col 1: etiqueta
+        ws.column_dimensions["A"].width = 28
+        # cols 2-6: contenido
+        for i in range(2, 8):
+            letter = get_column_letter(i)
+            if ws.column_dimensions[letter].width < 20:
+                ws.column_dimensions[letter].width = 20
+
+    # ── API pública ───────────────────────────────────────────────────────────
 
     def generate(self) -> BytesIO:
-        self._render_header_table()
-        self._render_document_number()
+        self._write_header()
+        self._write_all_fields()
+        self._write_footer()
+        self._setup_columns()
 
-        filtered = self._filter_form_items(self.form_design)
-        for field in filtered:
-            field_type = field.get("type", "")
-            fid = field.get("id")
-            if fid and fid in self._consumed_by_repeater and field_type != "repeater":
-                continue
-            if field_type in ("horizontalLayout", "verticalLayout"):
-                self._render_field(field)
-            else:
-                space = int((field.get("props") or {}).get("space", 12))
-                self._render_field(field, start_col=1, col_span=space)
+        # congelar primera fila si hay encabezado
+        self._ws.freeze_panes = "A2"
 
-        self._render_footer()
-        self.ws.sheet_properties.pageSetUpPr = None
-        self.ws.page_setup.orientation = "landscape"
-        self.ws.page_setup.fitToWidth = 1
-        self.ws.page_setup.fitToHeight = 0
-
-        output = BytesIO()
-        self.wb.save(output)
-        output.seek(0)
-        return output
+        buf = BytesIO()
+        self._wb.save(buf)
+        buf.seek(0)
+        return buf
 
 
-def generate_form_excel(form_design, answers, style_config=None, form_title="", response_id=None) -> BytesIO:
+def generate_form_excel(
+    form_design: list,
+    answers: list,
+    style_config: Optional[dict] = None,
+    form_title: str = "",
+    submitted_at: str = "",
+    response_id: Optional[int] = None,
+) -> BytesIO:
     return FormExcelExporter(
-        form_design=form_design, answers=answers,
-        style_config=style_config, form_title=form_title, response_id=response_id,
+        form_design=form_design,
+        answers=answers,
+        style_config=style_config,
+        form_title=form_title,
+        submitted_at=submitted_at,
+        response_id=response_id,
     ).generate()
