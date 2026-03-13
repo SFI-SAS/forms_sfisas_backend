@@ -324,20 +324,17 @@ def download_all_responses_pdf(
 ):
     """
     Genera un PDF con TODAS las respuestas de todos los usuarios.
-    Cada respuesta ocupa una sección con salto de página.
+    Cada respuesta ocupa una página separada.
     """
     from sqlalchemy.orm import joinedload
-    from xhtml2pdf import pisa
+    from weasyprint import HTML as WH  # ← reemplaza xhtml2pdf
 
-    FormModel = Form
-    form = db.query(FormModel).filter(FormModel.id == form_id).first()
-
+    form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Formulario no encontrado")
 
     form_design = form.form_design
     if isinstance(form_design, str):
-        import json
         try:
             form_design = json.loads(form_design)
         except json.JSONDecodeError:
@@ -358,7 +355,14 @@ def download_all_responses_pdf(
 
     style_config = _extract_style_config(form_design)
 
-    # Generar HTML de cada respuesta y unirlas con page-break
+    sc = style_config or {}
+    font_family = (
+        sc.get("font", {}).get("family", "Arial, sans-serif")
+        if isinstance(sc, dict) else "Arial, sans-serif"
+    )
+    bg_color = sc.get("backgroundColor", "#ffffff") if isinstance(sc, dict) else "#ffffff"
+
+    # ── Construir HTML de cada respuesta ─────────────────────────────────────
     pages_html = []
 
     for resp in all_responses:
@@ -372,7 +376,6 @@ def download_all_responses_pdf(
         user = db.query(User).filter(User.id == resp.user_id).first()
         user_name = user.name if user else f"Usuario_{resp.user_id}"
 
-        # ✅ CORREGIDO: Usar _serialize_answers para reconstruir repeated_id
         answers = _serialize_answers(answers_orm, db, form_id, form_design)
 
         exporter = FormPdfExporter(
@@ -396,53 +399,140 @@ def download_all_responses_pdf(
             f'</div>'
         )
 
-        page_html = exporter._header_html()
-        page_html += user_info_html
-        page_html += exporter._render_all_fields()
-        page_html += exporter._footer_html()
+        page_html = (
+            exporter._header_html()
+            + user_info_html
+            + exporter._render_all_fields()
+            + exporter._footer_html()
+        )
         pages_html.append(page_html)
 
-    # Unir con page-break
-    sc = style_config or {}
-    font_family = sc.get("font", {}).get("family", "Arial, sans-serif") if isinstance(sc, dict) else "Arial, sans-serif"
-
-    combined_html = f'''
-<!DOCTYPE html>
-<html>
+    # ── Unir todas las páginas en un solo HTML ────────────────────────────────
+    # weasyprint usa @page y print-page-break, soporta calc() sin problema
+    combined_html = f"""<!DOCTYPE html>
+<html lang="es">
 <head>
-    <meta charset="utf-8"/>
-    <style>
-        @page {{
-            size: letter landscape;
-            margin: 1.5cm;
-        }}
+<meta charset="UTF-8"/>
+<style>
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+@page {{
+    size: letter landscape;
+    margin: 12mm 14mm;
+}}
 body {{
-            font-family: {font_family};
-            font-size: 10px;
-            color: #333333;
-            margin: 0;
-            padding: 0;
-        }}
-        .page-section {{
-            page-break-after: always;
-        }}
-        .page-section:last-child {{
-            page-break-after: auto;
-        }}
-    </style>
+    font-family: {font_family};
+    font-size: 10px;
+    color: #333333;
+    background: #f0f2f5;
+    line-height: 1.5;
+}}
+.page-section {{
+    background: {bg_color};
+    page-break-after: always;
+    padding: 12px 14px;
+}}
+.page-section:last-child {{
+    page-break-after: auto;
+}}
+/* ── field-row (igual que FormPdfExporter) ── */
+.field-row {{
+    display: flex;
+    align-items: stretch;
+    margin-bottom: 8px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid #e5e7eb;
+}}
+.field-label {{
+    flex: 0 0 32%;
+    max-width: 32%;
+    padding: 7px 10px;
+    background: #f8fafc;
+    border-right: 1px solid #e5e7eb;
+    font-weight: 600;
+    font-size: 9.5px;
+    color: #374151;
+    word-break: break-word;
+    display: flex;
+    align-items: center;
+}}
+.field-label .req {{ color: #ef4444; margin-left: 3px; }}
+.field-value {{
+    flex: 1;
+    padding: 7px 10px;
+    font-size: 10px;
+    color: #1f2937;
+    background: #ffffff;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+}}
+.field-empty {{ color: #9ca3af; font-style: italic; font-size: 9px; }}
+.repeater-wrap {{
+    margin-bottom: 14px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    overflow: hidden;
+}}
+.repeater-header {{
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    background: #0f8594;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}}
+.rep-table {{ width: 100%; border-collapse: collapse; }}
+.sub-wrap {{
+    margin: 6px 0;
+    border-left: 3px solid #0f8594;
+    border-radius: 0 6px 6px 0;
+    background: #f8fafc;
+}}
+.sub-header {{
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 10px;
+    background: #e6f7f8;
+    color: #0f8594;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    border-bottom: 1px solid #b2e8ec;
+}}
+.sub-table {{ width: 100%; border-collapse: collapse; }}
+.sub-td {{
+    padding: 6px 10px 10px 18px;
+    background: #f8fafc;
+    border-top: 1px solid #e2e8f0;
+}}
+.file-badge {{
+    font-size: 8.5px;
+    color: #2563eb;
+    background: #eff6ff;
+    padding: 1px 6px;
+    border-radius: 3px;
+    border: 1px solid #bfdbfe;
+}}
+.cell-empty {{ color: #9ca3af; font-style: italic; }}
+table {{ border-collapse: collapse; }}
+img {{ max-width: 100%; }}
+</style>
 </head>
 <body>
-    {"".join(f'<div class="page-section">{p}</div>' for p in pages_html)}
+{"".join(f'<div class="page-section">{p}</div>' for p in pages_html)}
 </body>
-</html>
-    '''
+</html>"""
 
+    # ── Generar PDF con weasyprint ────────────────────────────────────────────
     output = io.BytesIO()
-    pisa_status = pisa.CreatePDF(combined_html, dest=output)
-
-    if pisa_status.err:
-        raise HTTPException(status_code=500, detail="Error generando PDF")
-
+    WH(string=combined_html).write_pdf(output)
     output.seek(0)
 
     filename = f"Todas_Respuestas_{form.title.replace(' ', '_')}_{form_id}.pdf"
@@ -450,9 +540,8 @@ body {{
     return StreamingResponse(
         output,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-
 
 
 @router.put("/{user_id}", response_model=UserResponse)

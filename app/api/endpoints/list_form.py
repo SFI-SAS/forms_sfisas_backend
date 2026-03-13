@@ -13,7 +13,9 @@ from datetime import datetime
 from docx import Document
 from starlette.concurrency import run_in_threadpool
 from app.api.controllers.excel_form_exporter import generate_form_excel
+from app.api.controllers.pdf_form_exporter import FormPdfExporter, generate_form_pdf
 from app.core.security import get_current_user
+from app.crud import _serialize_answers
 from app.database import get_db
 from app.models import Answer, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCloseConfig, FormModerators, FormQuestion, FormSchedule, Question, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, Response, ResponseApproval, User
 from app.schemas import DownloadRequest,FilterCondition
@@ -760,256 +762,215 @@ class DownloadFormat(str, Enum):
 class FinalDownloadRequest(DownloadRequest):
     format: DownloadFormat
     
-def _generate_visual_export(
-    db: Session,
-    the_form,
-    form_design: list,
-    style_config,
-    request_format,   # DownloadFormat
-    date_filter,
-    selected_fields: list,
-):
-    """
-    Genera PDF o Excel con diseño visual usando FormPdfExporter / FormExcelExporter.
-    Esta función es SINCRÓNICA - se ejecuta en un thread separado vía run_in_threadpool.
-    Retorna: (dict_resultado, None) o (None, mensaje_error)
-    """
+# ─────────────────────────────────────────────────────────────────────────────
+# helpers de filtrado — agregar junto a las otras funciones utilitarias
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _filter_form_design(form_design: list, selected_fields: list) -> list:
+    if not selected_fields:
+        return form_design
+
+    # Convertir a set de strings para comparar contra cualquier tipo
+    field_set = {str(f) for f in selected_fields}
+
+    def _keep(field: dict):
+        ftype = field.get("type", "")
+        props = field.get("props") or {}
+
+        if ftype in ("verticalLayout", "horizontalLayout"):
+            children = field.get("children") or []
+            kept = [r for r in (_keep(c) for c in children) if r is not None]
+            return {**field, "children": kept} if kept else None
+
+        if ftype == "repeater":
+            children = field.get("children") or []
+            kept = [r for r in (_keep(c) for c in children) if r is not None]
+            return {**field, "children": kept}
+
+        if ftype in ("label", "helpText", "divider", "image", "button"):
+            return field
+
+        # campo input: buscar por todos los identificadores posibles
+        fid   = str(field.get("id") or "")
+        lex   = str(field.get("linkExternalId") or "")
+        sqid  = str(props.get("sourceQuestionId") or "")
+        label = str(props.get("label") or "")
+
+        if fid in field_set or lex in field_set or sqid in field_set or label in field_set:
+            return field
+        return None
+
+    return [r for r in (_keep(item) for item in form_design) if r is not None]
+
+
+def _parse_naive_dt(dt_str):
+    """Convierte string ISO / datetime a datetime naive UTC para comparación."""
+    if not dt_str:
+        return None
+    from datetime import datetime
+    try:
+        s = str(dt_str).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        return dt.replace(tzinfo=None) if dt.tzinfo else dt
+    except Exception:
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _generate_visual_export — reemplaza la función existente completa
+# ─────────────────────────────────────────────────────────────────────────────
+def _generate_visual_export(db, the_form, form_design, style_config, fmt, date_filter, selected_fields):
+    import io
+    import html as _html_mod
     from sqlalchemy.orm import joinedload
+    from weasyprint import HTML as WH
     from app.models import Response as ResponseModel, Answer as AnswerModel, User as UserModel
-    from io import BytesIO
-    from copy import copy
 
-    form_id = the_form.id
+    sc          = style_config or {}
+    font_family = sc.get("font", {}).get("family", "Arial, sans-serif") if isinstance(sc, dict) else "Arial, sans-serif"
+    bg_color    = sc.get("backgroundColor", "#ffffff") if isinstance(sc, dict) else "#ffffff"
 
-    # ── Consulta de respuestas ───────────────────────────────────────────────
-    query = db.query(ResponseModel).filter(ResponseModel.form_id == form_id)
-
+    # ── Filtro de fecha ───────────────────────────────────────────────────────
+    query = db.query(ResponseModel).filter(ResponseModel.form_id == the_form.id)
     if date_filter:
-        if getattr(date_filter, "start_date", None):
-            query = query.filter(ResponseModel.submitted_at >= date_filter.start_date)
-        if getattr(date_filter, "end_date", None):
-            query = query.filter(ResponseModel.submitted_at <= date_filter.end_date)
+        from_dt = _parse_naive_dt(getattr(date_filter, "from_date", None))
+        to_dt   = _parse_naive_dt(getattr(date_filter, "to_date", None))
+        if from_dt:
+            query = query.filter(ResponseModel.submitted_at >= from_dt)
+        if to_dt:
+            query = query.filter(ResponseModel.submitted_at <= to_dt)
 
     all_responses = query.order_by(ResponseModel.submitted_at.desc()).all()
-
     if not all_responses:
-        return None, "No se encontraron respuestas con los filtros aplicados"
+        return None, "No se encontraron respuestas en el rango de fechas especificado"
 
-    # ── Helper: serializar answers ────────────────────────────────────────────
-    def serialize_answers(response_obj):
+    # form_design COMPLETO para _serialize_answers (necesita todos los IDs)
+    # form_design FILTRADO para el exporter (solo renderiza campos seleccionados)
+    filtered_design = _filter_form_design(form_design, selected_fields)
+
+    # ── PDF ───────────────────────────────────────────────────────────────────
+    if fmt == DownloadFormat.pdf:
+        pages_html = []
+
+        for resp in all_responses:
+            answers_orm = (
+                db.query(AnswerModel)
+                .options(joinedload(AnswerModel.question))
+                .filter(AnswerModel.response_id == resp.id)
+                .all()
+            )
+            user      = db.query(UserModel).filter(UserModel.id == resp.user_id).first()
+            user_name = user.name if user else f"Usuario_{resp.user_id}"
+
+            # _serialize_answers recibe form_design COMPLETO
+            answers = _serialize_answers(answers_orm, db, the_form.id, form_design)
+
+            exporter = FormPdfExporter(
+                form_design=filtered_design,  # ← filtrado
+                answers=answers,
+                style_config=style_config,
+                form_title=the_form.title,
+                response_id=resp.id,
+            )
+
+            fecha_str     = str(resp.submitted_at)[:19]
+            user_name_esc = _html_mod.escape(user_name)
+
+            user_info_html = (
+                f'<div style="margin-bottom:8px;padding:6px 10px;'
+                f'background-color:#EFF6FF;border:1px solid #BFDBFE;'
+                f'border-radius:4px;font-size:10px;color:#1E40AF;">'
+                f'<b>Usuario:</b> {user_name_esc} &nbsp;|&nbsp;'
+                f'<b>Fecha:</b> {fecha_str}'
+                f'</div>'
+            )
+
+            pages_html.append(
+                exporter._header_html()
+                + user_info_html
+                + exporter._render_all_fields()
+                + exporter._footer_html()
+            )
+
+        combined_html = f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"/>
+<style>
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+@page {{ size: letter landscape; margin: 12mm 14mm; }}
+body {{ font-family: {font_family}; font-size: 10px; color: #333333; background: #f0f2f5; line-height: 1.5; }}
+.page-section {{ background: {bg_color}; page-break-after: always; padding: 12px 14px; }}
+.page-section:last-child {{ page-break-after: auto; }}
+.field-row {{ display: flex; align-items: stretch; margin-bottom: 8px; border-radius: 6px; overflow: hidden; border: 1px solid #e5e7eb; }}
+.field-label {{ flex: 0 0 32%; max-width: 32%; padding: 7px 10px; background: #f8fafc; border-right: 1px solid #e5e7eb; font-weight: 600; font-size: 9.5px; color: #374151; word-break: break-word; display: flex; align-items: center; }}
+.field-label .req {{ color: #ef4444; margin-left: 3px; }}
+.field-value {{ flex: 1; padding: 7px 10px; font-size: 10px; color: #1f2937; background: #ffffff; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }}
+.field-empty {{ color: #9ca3af; font-style: italic; font-size: 9px; }}
+.repeater-wrap {{ margin-bottom: 14px; border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden; }}
+.repeater-header {{ display: flex; align-items: center; gap: 6px; padding: 7px 12px; background: #0f8594; color: #fff; font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }}
+.rep-table {{ width: 100%; border-collapse: collapse; }}
+.sub-wrap {{ margin: 6px 0; border-left: 3px solid #0f8594; border-radius: 0 6px 6px 0; background: #f8fafc; }}
+.sub-header {{ display: flex; align-items: center; gap: 5px; padding: 5px 10px; background: #e6f7f8; color: #0f8594; font-size: 9px; font-weight: 700; text-transform: uppercase; border-bottom: 1px solid #b2e8ec; }}
+.sub-table {{ width: 100%; border-collapse: collapse; }}
+.sub-td {{ padding: 6px 10px 10px 18px; background: #f8fafc; border-top: 1px solid #e2e8f0; }}
+.file-badge {{ font-size: 8.5px; color: #2563eb; background: #eff6ff; padding: 1px 6px; border-radius: 3px; border: 1px solid #bfdbfe; }}
+.cell-empty {{ color: #9ca3af; font-style: italic; }}
+table {{ border-collapse: collapse; }} img {{ max-width: 100%; }}
+</style></head><body>
+{"".join(f'<div class="page-section">{p}</div>' for p in pages_html)}
+</body></html>"""
+
+        output = io.BytesIO()
+        WH(string=combined_html).write_pdf(output)
+        output.seek(0)
+        filename = f"Respuestas_{the_form.title.replace(' ', '_')}.pdf"
+        return {"output": output, "media_type": "application/pdf", "filename": filename}, None
+
+    # ── EXCEL ─────────────────────────────────────────────────────────────────
+    elif fmt == DownloadFormat.excel:
+        from app.api.controllers.form_excel_exporter import generate_form_excel
+
+        resp        = all_responses[0]
         answers_orm = (
             db.query(AnswerModel)
             .options(joinedload(AnswerModel.question))
-            .filter(AnswerModel.response_id == response_obj.id)
+            .filter(AnswerModel.response_id == resp.id)
             .all()
         )
-        answers = []
-        for ans in answers_orm:
-            if selected_fields and ans.question_id not in selected_fields:
-                continue
-            answers.append({
-                "id_answer":              ans.id,
-                "question_id":            ans.question_id,
-                "question_text":          ans.question.question_text if ans.question else "",
-                "question_type":          ans.question.question_type.value if (
-                                              ans.question and ans.question.question_type
-                                          ) else "text",
-                "answer_text":            ans.answer_text or "",
-                "file_path":              ans.file_path or "",
-                "repeated_id":            getattr(ans, "repeated_id", None),
-                "form_design_element_id": getattr(ans, "form_design_element_id", None),
-                # campos necesarios para repeater/sub-repeater
-                "repeater_row_index":     getattr(ans, "repeater_row_index", None),
-                "parent_repeated_id":     getattr(ans, "parent_repeated_id", None),
-                "parent_row_index":       getattr(ans, "parent_row_index", None),
-            })
-        return answers
+        # _serialize_answers recibe form_design COMPLETO
+        answers = _serialize_answers(answers_orm, db, the_form.id, form_design)
 
-    # ════════════════════════════════════════════════════════════════════════
-    # EXCEL CON DISEÑO
-    # ════════════════════════════════════════════════════════════════════════
-    if request_format == DownloadFormat.excel:
-        from app.api.controllers.pdf_form_exporter import generate_form_excel
-        from openpyxl import load_workbook
-
-        if len(all_responses) == 1:
-            resp    = all_responses[0]
-            answers = serialize_answers(resp)
-            output  = generate_form_excel(
-                form_design  = form_design,
-                answers      = answers,
-                style_config = style_config,
-                form_title   = the_form.title,
-                submitted_at = str(resp.submitted_at or ""),
-                response_id  = resp.id,
-            )
-        else:
-            import openpyxl as _openpyxl
-            wb_final = _openpyxl.Workbook()
-            wb_final.remove(wb_final.active)
-
-            for resp in all_responses:
-                answers   = serialize_answers(resp)
-                user      = db.query(UserModel).filter(UserModel.id == resp.user_id).first()
-                user_name = user.name if user else f"Usuario_{resp.user_id}"
-                safe_name = "".join(c for c in user_name if c.isalnum() or c in " _-")[:15]
-
-                single_output = generate_form_excel(
-                    form_design  = form_design,
-                    answers      = answers,
-                    style_config = style_config,
-                    form_title   = the_form.title,
-                    submitted_at = str(resp.submitted_at or ""),
-                    response_id  = resp.id,
-                )
-
-                temp_wb = load_workbook(single_output)
-                temp_ws = temp_wb.active
-
-                sheet_name = f"R{resp.id}_{safe_name}"[:31]
-                existing   = wb_final.sheetnames
-                if sheet_name in existing:
-                    counter = 2
-                    while f"{sheet_name[:28]}_{counter}" in existing:
-                        counter += 1
-                    sheet_name = f"{sheet_name[:28]}_{counter}"
-
-                new_ws = wb_final.create_sheet(title=sheet_name)
-
-                for row in temp_ws.iter_rows():
-                    for cell in row:
-                        new_cell = new_ws.cell(row=cell.row, column=cell.column, value=cell.value)
-                        if cell.has_style:
-                            new_cell.font         = copy(cell.font)
-                            new_cell.fill         = copy(cell.fill)
-                            new_cell.alignment    = copy(cell.alignment)
-                            new_cell.border       = copy(cell.border)
-                            new_cell.number_format = cell.number_format
-
-                for col_letter, dim in temp_ws.column_dimensions.items():
-                    new_ws.column_dimensions[col_letter].width = dim.width
-                for row_num, dim in temp_ws.row_dimensions.items():
-                    new_ws.row_dimensions[row_num].height = dim.height
-                for merge_range in temp_ws.merged_cells.ranges:
-                    new_ws.merge_cells(str(merge_range))
-
-            output = BytesIO()
-            wb_final.save(output)
-            output.seek(0)
-
-        filename = f"Formato_{the_form.title.replace(' ', '_')}_{form_id}.xlsx"
+        buf = generate_form_excel(
+            form_design=filtered_design,  # ← filtrado
+            answers=answers,
+            style_config=style_config,
+            form_title=the_form.title,
+            submitted_at=str(resp.submitted_at)[:19],
+            response_id=resp.id,
+        )
+        filename = f"Respuesta_{resp.id}_{the_form.title.replace(' ', '_')}.xlsx"
         return {
-            "output":     output,
+            "output": buf,
             "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "filename":   filename,
+            "filename": filename,
         }, None
 
-    # ════════════════════════════════════════════════════════════════════════
-    # PDF CON DISEÑO
-    # ════════════════════════════════════════════════════════════════════════
-    if request_format == DownloadFormat.pdf:
-        from app.api.controllers.pdf_form_exporter import FormPdfExporter, generate_form_pdf
-
-        if len(all_responses) == 1:
-            resp    = all_responses[0]
-            answers = serialize_answers(resp)
-            output  = generate_form_pdf(
-                form_design  = form_design,
-                answers      = answers,
-                style_config = style_config,
-                form_title   = the_form.title,
-                submitted_at = str(resp.submitted_at or ""),
-                response_id  = resp.id,
-            )
-        else:
-            # Múltiples respuestas: HTML completo por respuesta → un solo PDF
-            pages_html = []
-            for resp in all_responses:
-                answers   = serialize_answers(resp)
-                user      = db.query(UserModel).filter(UserModel.id == resp.user_id).first()
-                user_name = user.name if user else f"Usuario_{resp.user_id}"
-
-                exporter = FormPdfExporter(
-                    form_design  = form_design,
-                    answers      = answers,
-                    style_config = style_config,
-                    form_title   = the_form.title,
-                    submitted_at = str(resp.submitted_at or ""),
-                    response_id  = resp.id,
-                )
-                pages_html.append(exporter.generate_html())
-
-            # Combinar en un único PDF multi-página con weasyprint
-            try:
-                from weasyprint import HTML as WH
-            except ImportError:
-                return None, "weasyprint no instalado: pip install weasyprint"
-
-            import re
-
-            def _extract_body(full_html: str) -> str:
-                """Extrae el contenido entre <body> y </body>."""
-                m = re.search(r"<body[^>]*>(.*?)</body>", full_html, re.DOTALL | re.IGNORECASE)
-                return m.group(1) if m else full_html
-
-            sc = style_config or {}
-            ff = (sc.get("font") or {}).get("family", "Arial, sans-serif")
-            fc = (sc.get("font") or {}).get("color", "#111827")
-
-            bodies = []
-            for i, ph in enumerate(pages_html):
-                pb = ' style="page-break-after:always;"' if i < len(pages_html) - 1 else ""
-                bodies.append(f'<div class="resp-page"{pb}>{_extract_body(ph)}</div>')
-
-            combined_html = f"""<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8"/>
-<style>
-  @page {{ size: letter landscape; margin: 12mm 14mm; }}
-  body {{ font-family: {ff}; font-size: 10px; color: {fc}; margin: 0; padding: 0; }}
-  * {{ box-sizing: border-box; }}
-</style>
-</head>
-<body>{"".join(bodies)}</body>
-</html>"""
-
-            output = BytesIO()
-            WH(string=combined_html).write_pdf(output)
-            output.seek(0)
-
-        filename = f"Formato_{the_form.title.replace(' ', '_')}_{form_id}.pdf"
-        return {
-            "output":     output,
-            "media_type": "application/pdf",
-            "filename":   filename,
-        }, None
-
-    return None, "Formato no soportado para exportación con diseño visual"
-# ═══════════════════════════════════════════════════════
-# ENDPOINT PRINCIPAL (corregido)
-# ═══════════════════════════════════════════════════════
+    return None, "Formato no soportado"
 
 @router.post("/download/generate")
 async def generate_download(
     request: FinalDownloadRequest,
     db: Session = Depends(get_db)
 ):
-    """
-    Genera el archivo de descarga en el formato solicitado.
-    Si es 1 formulario con form_design + PDF/Excel → diseño visual.
-    """
     import json
 
-    # ═══ VERIFICAR: ¿Es 1 formulario con form_design? ═══
     use_visual_export = False
-    form_design = None
-    style_config = None
-    the_form = None
+    form_design       = None
+    style_config      = None
+    the_form          = None
 
-    if len(request.form_ids) == 1 and request.format in [DownloadFormat.pdf, DownloadFormat.excel]:
-        # Esta query es rápida, no bloquea significativamente
+    if len(request.form_ids) == 1 and request.format in (DownloadFormat.pdf, DownloadFormat.excel):
         from app.models import Form as FormModel
+
         the_form = db.query(FormModel).filter(FormModel.id == request.form_ids[0]).first()
 
         if the_form and the_form.form_design:
@@ -1024,6 +985,7 @@ async def generate_download(
                 form_design = fd
                 use_visual_export = True
 
+                # Extraer style_config igual que antes
                 for item in form_design:
                     props = item.get("props") or {}
                     if props.get("styleConfig"):
@@ -1033,9 +995,8 @@ async def generate_download(
                         style_config = item
                         break
 
-    # ═══ RUTA A: Exportación con diseño visual (en thread separado) ═══
+    # ═══ RUTA A: Exportación visual (PDF / Excel con diseño del formulario) ═══
     if use_visual_export and form_design and the_form:
-        # ⚡ Ejecutar en threadpool para NO bloquear el event loop
         result, error_msg = await run_in_threadpool(
             _generate_visual_export,
             db,
@@ -1043,8 +1004,8 @@ async def generate_download(
             form_design,
             style_config,
             request.format,
-            request.date_filter,
-            request.selected_fields or [],
+            request.date_filter,            # ← filtro de fecha aplicado
+            request.selected_fields or [],  # ← campos seleccionados aplicados
         )
 
         if error_msg:
@@ -1053,10 +1014,10 @@ async def generate_download(
         return StreamingResponse(
             result["output"],
             media_type=result["media_type"],
-            headers={"Content-Disposition": f'attachment; filename="{result["filename"]}"'}
+            headers={"Content-Disposition": f'attachment; filename="{result["filename"]}"'},
         )
 
-    # ═══ RUTA B: Exportación simple ═══
+    # ═══ RUTA B: Exportación simple (CSV / Word / formularios sin diseño) ════
     data = await get_filtered_data(request, db, limit=None)
 
     if request.format == DownloadFormat.excel:
@@ -1067,8 +1028,9 @@ async def generate_download(
         return generate_pdf_response(data)
     elif request.format == DownloadFormat.word:
         return generate_word_response(data)
-
-
+    
+    
+    
 async def get_filtered_data(request: FinalDownloadRequest, db: Session, limit: Optional[int] = None):
     """Función auxiliar que obtiene los datos filtrados con lógica inteligente"""
     # Construir query base
