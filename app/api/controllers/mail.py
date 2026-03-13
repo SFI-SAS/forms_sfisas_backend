@@ -263,6 +263,76 @@ def _extract_style_config(form_design: list):
 # GENERACIÓN DE ADJUNTOS CON DISEÑO COMPLETO
 # ═══════════════════════════════════════════════════════════════
 
+
+def _filter_form_design_for_email(form_design: list, selected_fields: list) -> list:
+    """Filtra form_design dejando solo campos en selected_fields. Decorativos siempre pasan."""
+    if not selected_fields:
+        return form_design
+    qid_set = set(str(q) for q in selected_fields)
+
+    def _item_matches(item: dict) -> bool:
+        lex  = str(item.get("linkExternalId") or "")
+        sqid = str((item.get("props") or {}).get("sourceQuestionId") or "")
+        return lex in qid_set or sqid in qid_set
+
+    def _filter_items(items: list) -> list:
+        result = []
+        for item in items:
+            t = item.get("type", "")
+            if not t:
+                result.append(item)
+                continue
+            if t in ("horizontalLayout", "verticalLayout"):
+                ch = _filter_items(item.get("children") or [])
+                if ch:
+                    result.append({**item, "children": ch})
+            elif t == "repeater":
+                ch = _filter_items(item.get("children") or [])
+                if ch:
+                    result.append({**item, "children": ch})
+            elif t in ("label", "divider", "helpText", "image"):
+                result.append(item)
+            elif _item_matches(item):
+                result.append(item)
+        return result
+
+    return _filter_items(form_design)
+
+
+def generate_custom_template_pdf_bytes(db, form, response_obj, selected_fields: list) -> Optional[bytes]:
+    """PDF con SOLO los campos del DownloadTemplate vinculado."""
+    from sqlalchemy.orm import joinedload
+    try:
+        fd = form.form_design
+        if isinstance(fd, str):
+            fd = json.loads(fd)
+        if not fd or not isinstance(fd, list):
+            return None
+        answers_orm = (
+            db.query(Answer).options(joinedload(Answer.question))
+            .filter(Answer.response_id == response_obj.id).all()
+        )
+        if not answers_orm:
+            return None
+        # Serializar con diseño COMPLETO (no pierde ningún answer)
+        answers         = _serialize_answers_for_export(answers_orm, db, form.id, fd)
+        sc              = _extract_style_config(fd)
+        # Renderizar solo los campos del template
+        filtered_design = _filter_form_design_for_email(fd, selected_fields)
+        exporter = FormPdfExporter(
+            form_design=filtered_design,
+            answers=answers,
+            style_config=sc,
+            form_title=form.title,
+            response_id=response_obj.id,
+        )
+        result = exporter.generate().getvalue()
+        print(f"✅ PDF personalizado: {len(result)} bytes — response #{response_obj.id} — {len(selected_fields)} campos")
+        return result
+    except Exception as e:
+        print(f"❌ Error PDF personalizado response {response_obj.id}: {e}")
+        import traceback; traceback.print_exc()
+        return None
 def generate_response_pdf_bytes(db, form, response_obj) -> Optional[bytes]:
     """Genera PDF con diseño completo (soporta repeaters). Retorna bytes o None."""
     from sqlalchemy.orm import joinedload
@@ -654,6 +724,7 @@ async def send_action_notification_email(
     action: str, recipient: str, form, current_date: str,
     pdf_bytes=None, pdf_filename=None, db=None, current_user=None,
     response_id: int = None,
+    action_meta: dict = None,
 ):
     """
     ★ CORREGIDO v3.1 ★
@@ -669,10 +740,11 @@ async def send_action_notification_email(
     """
     try:
         titles = {
-            'send_download_link':  ("Respuestas adjuntas en Excel",  "Se adjunta el archivo Excel con las respuestas del formulario."),
-            'send_pdf_attachment': ("Respuestas adjuntas en PDF",    "Se adjunta el PDF con las respuestas del formulario."),
-            'generate_report':    ("Reporte de respuesta",           "Se adjunta el reporte en PDF con las respuestas del formulario."),
-        }
+                    'send_download_link':    ("Respuestas adjuntas en Excel", "Se adjunta el archivo Excel con las respuestas del formulario."),
+                    'send_pdf_attachment':   ("Respuestas adjuntas en PDF",   "Se adjunta el PDF con las respuestas del formulario."),
+                    'generate_report':       ("Reporte de respuesta",         "Se adjunta el reporte en PDF con las respuestas del formulario."),
+                    'send_custom_template':  ("PDF personalizado de cierre",  "Se adjunta el PDF con los campos configurados en la plantilla de cierre."),
+                }
         title, desc = titles.get(action, ("Notificación", f"Acción ejecutada: {action}"))
 
         # ── Info del formulario ──
@@ -796,6 +868,66 @@ async def send_action_notification_email(
                 else:
                     body += _callout('No se pudo generar el reporte PDF adjunto.', 'warning')
                     print(f"❌ Falló generación de reporte PDF para response #{response_obj.id}")
+
+            elif action == 'send_custom_template':
+                meta        = action_meta or {}
+                template_id = meta.get('custom_template_id')
+                include_pdf = meta.get('include_pdf', False)
+
+                if not template_id:
+                    body += _callout('No hay plantilla personalizada configurada.', 'warning')
+                    print(f"⚠️ send_custom_template sin template_id para form {form.id}")
+                else:
+                    from app.models import DownloadTemplate as DLTemplate
+                    tpl = db.query(DLTemplate).filter(DLTemplate.id == template_id).first()
+
+                    if not tpl:
+                        body += _callout(f'Plantilla #{template_id} no encontrada.', 'warning')
+                        print(f"❌ Plantilla #{template_id} no existe en DB")
+                    else:
+                        selected_fields = tpl.selected_fields or []
+                        print(f"📋 Plantilla #{template_id} — {len(selected_fields)} campos")
+
+                        # PDF personalizado con solo los campos del template
+                        attachment_bytes = generate_custom_template_pdf_bytes(
+                            db, form, response_obj, selected_fields
+                        )
+                        if attachment_bytes:
+                            attachment_filename = f"Plantilla_{response_obj.id}_{safe_title}.pdf"
+                            attachment_subtype  = "pdf"
+                            body += _callout(
+                                f'PDF personalizado adjunto: <strong>{attachment_filename}</strong>',
+                                'success'
+                            )
+                            print(f"✅ PDF personalizado listo: {attachment_filename} ({len(attachment_bytes)} bytes)")
+                        else:
+                            body += _callout('No se pudo generar el PDF personalizado.', 'warning')
+
+                        # Si include_pdf=True → adjuntar también el PDF completo normal
+                        if include_pdf:
+                            normal_pdf = generate_response_pdf_bytes(db, form, response_obj)
+                            if normal_pdf:
+                                normal_filename = f"Completo_{response_obj.id}_{safe_title}.pdf"
+                                html_2 = _base_email_html(title, body)
+                                msg_2  = _new_msg(f"{title} — {form.title}", recipient)
+                                msg_2.set_content(f"{title}: {form.title}")
+                                msg_2.add_alternative(html_2, subtype="html")
+                                if attachment_bytes:
+                                    msg_2.add_attachment(
+                                        attachment_bytes,
+                                        maintype="application", subtype="pdf",
+                                        filename=attachment_filename,
+                                    )
+                                msg_2.add_attachment(
+                                    normal_pdf,
+                                    maintype="application", subtype="pdf",
+                                    filename=normal_filename,
+                                )
+                                print(f"📎 Correo con 2 PDFs → {recipient}")
+                                return _send_msg(msg_2)
+                            else:
+                                body += _callout('No se pudo generar el PDF completo adicional.', 'warning')
+
 
         elif not response_obj:
             body += _callout('No se encontraron respuestas para adjuntar.', 'warning')

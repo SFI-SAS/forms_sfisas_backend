@@ -927,7 +927,7 @@ table {{ border-collapse: collapse; }} img {{ max-width: 100%; }}
 
     # ── EXCEL ─────────────────────────────────────────────────────────────────
     elif fmt == DownloadFormat.excel:
-        from app.api.controllers.form_excel_exporter import generate_form_excel
+  
 
         resp        = all_responses[0]
         answers_orm = (
