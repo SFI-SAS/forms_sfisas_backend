@@ -364,13 +364,16 @@ class FormCloseConfig(Base):
     send_pdf_attachment = Column(Boolean, default=False, nullable=False)
     generate_report = Column(Boolean, default=False, nullable=False)
     do_nothing = Column(Boolean, default=True, nullable=False)
-    # ✅ USA AutoJSON para listas
+    send_custom_template = Column(Boolean, default=False, nullable=False)
+    custom_template_include_pdf = Column(Boolean, default=False, nullable=False)
     download_link_recipients = Column(AutoJSON, nullable=True, default=None)
     email_recipients = Column(AutoJSON, nullable=True, default=None)
     report_recipients = Column(AutoJSON, nullable=True, default=None)
+    custom_template_recipients = Column(AutoJSON, nullable=True, default=None)
+    custom_template_id = Column(BigInteger, ForeignKey('download_templates.id'), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-
+    
 class QuestionLocationRelation(Base):
     __tablename__ = 'question_location_relations'
     id = Column(BigInteger, primary_key=True, autoincrement=True)
