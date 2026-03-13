@@ -4421,9 +4421,25 @@ def get_active_form_actions(form_id: int, db):
             except Exception as e:
                 print(f"Error al parsear report_recipients: {str(e)}")
         
+        if config.send_custom_template and config.custom_template_recipients:
+                    try:
+                        recipients = json.loads(config.custom_template_recipients) if isinstance(config.custom_template_recipients, str) else config.custom_template_recipients
+                        if recipients:
+                            active_actions.append((
+                                'send_custom_template',
+                                recipients,
+                                {
+                                    'custom_template_id': config.custom_template_id,
+                                    'include_pdf': config.custom_template_include_pdf or False,
+                                }
+                            ))
+                    except Exception as e:
+                        print(f"Error al parsear custom_template_recipients: {str(e)}")
+
         if config.do_nothing:
             active_actions.append(('do_nothing', []))
-        
+                
+            
         return active_actions
         
     except Exception as e:
@@ -4502,9 +4518,12 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
         }
         
         current_date = datetime.now().strftime("%d/%m/%Y")
-        
         # Procesar cada acción activa con múltiples destinatarios
-        for action, recipients in active_actions:
+        for action_tuple in active_actions:
+            action      = action_tuple[0]
+            recipients  = action_tuple[1]
+            action_meta = action_tuple[2] if len(action_tuple) > 2 else {}
+
             if action == 'do_nothing':
                 print(f"Acción 'do_nothing' detectada - no se envía correo")
                 results["actions_processed"].append({
@@ -4513,11 +4532,9 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
                     "message": "Acción configurada para no hacer nada"
                 })
                 continue
-            
+
             for recipient in recipients:
                 try:
-                    # ★ FIX: Pasar response_id — el adjunto se genera
-                    #   dentro de send_action_notification_email
                     email_sent = await send_action_notification_email(
                         action=action,
                         recipient=recipient,
@@ -4526,8 +4543,9 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
                         db=db,
                         current_user=current_user,
                         response_id=response_id,
+                        action_meta=action_meta,
                     )
-                    
+
                     if email_sent:
                         results["emails_sent"] += 1
                         results["actions_processed"].append({
@@ -4545,7 +4563,7 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
                             "error": "send_action_notification_email retornó False"
                         })
                         print(f"❌ Fallo al enviar correo a {recipient} para acción '{action}'")
-                        
+
                 except Exception as e:
                     results["failed_emails"] += 1
                     results["actions_processed"].append({
@@ -4613,7 +4631,11 @@ async def send_form_action_emails_background(form_id: int, current_user_id: int,
         
         current_date = datetime.now().strftime("%d/%m/%Y")
         
-        for action, recipients in active_actions:
+        for action_tuple in active_actions:
+            action      = action_tuple[0]
+            recipients  = action_tuple[1]
+            action_meta = action_tuple[2] if len(action_tuple) > 2 else {}
+
             if action == 'do_nothing':
                 print(f"Acción 'do_nothing' detectada - no se envía correo")
                 results["actions_processed"].append({
@@ -4622,10 +4644,9 @@ async def send_form_action_emails_background(form_id: int, current_user_id: int,
                     "message": "Acción configurada para no hacer nada"
                 })
                 continue
-            
+
             for recipient in recipients:
                 try:
-                    # ★ FIX: Pasar response_id
                     email_sent = await send_action_notification_email(
                         action=action,
                         recipient=recipient,
@@ -4634,8 +4655,9 @@ async def send_form_action_emails_background(form_id: int, current_user_id: int,
                         db=db,
                         current_user=current_user,
                         response_id=response_id,
+                        action_meta=action_meta,
                     )
-                    
+
                     if email_sent:
                         results["emails_sent"] += 1
                         results["actions_processed"].append({
@@ -4653,7 +4675,7 @@ async def send_form_action_emails_background(form_id: int, current_user_id: int,
                             "error": "send_action_notification_email retornó False"
                         })
                         print(f"❌ Fallo al enviar correo a {recipient} para acción '{action}'")
-                        
+
                 except Exception as e:
                     results["failed_emails"] += 1
                     results["actions_processed"].append({
@@ -4663,6 +4685,8 @@ async def send_form_action_emails_background(form_id: int, current_user_id: int,
                         "error": str(e)
                     })
                     print(f"❌ Error al enviar correo a {recipient}: {str(e)}")
+                        
+    
         
         print(f"✅ Proceso completado para formulario {form_id}. Resultado: {results}")
         

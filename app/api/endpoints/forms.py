@@ -2703,38 +2703,30 @@ def get_form_relations_endpoint(form_id: int, db: Session = Depends(get_db), cur
 
 @router.post("/create_form_close_config", response_model=FormCloseConfigOut)
 def create_form_close_config(config: FormCloseConfigCreate, db: Session = Depends(get_db)):
-    """
-    Crea una nueva configuración de cierre para un formulario
-    """
-    
-    # Validar si ya existe una configuración para el form_id
     existing = db.query(FormCloseConfig).filter(FormCloseConfig.form_id == config.form_id).first()
     if existing:
         raise HTTPException(status_code=400, detail="Ya existe una configuración para este formulario.")
-    
-    # 🆕 Validar que si se selecciona una acción, haya al menos un email
-    if config.send_download_link and (not config.download_link_recipients or len(config.download_link_recipients) == 0):
+
+    if config.send_download_link and not config.download_link_recipients:
         raise HTTPException(status_code=400, detail="Se requiere al menos un destinatario para enviar enlace de descarga.")
-    
-    if config.send_pdf_attachment and (not config.email_recipients or len(config.email_recipients) == 0):
+    if config.send_pdf_attachment and not config.email_recipients:
         raise HTTPException(status_code=400, detail="Se requiere al menos un destinatario para enviar PDF como adjunto.")
-    
-    if config.generate_report and (not config.report_recipients or len(config.report_recipients) == 0):
+    if config.generate_report and not config.report_recipients:
         raise HTTPException(status_code=400, detail="Se requiere al menos un destinatario para generar reporte.")
-    
-    # 🆕 Convertir listas a JSON para almacenar
+    if config.send_custom_template and not config.custom_template_recipients:
+        raise HTTPException(status_code=400, detail="Se requiere al menos un destinatario para la plantilla personalizada.")
+
     config_dict = config.dict()
     config_dict['download_link_recipients'] = json.dumps(config.download_link_recipients or [])
     config_dict['email_recipients'] = json.dumps(config.email_recipients or [])
     config_dict['report_recipients'] = json.dumps(config.report_recipients or [])
-    
+    config_dict['custom_template_recipients'] = json.dumps(config.custom_template_recipients or [])
+
     new_config = FormCloseConfig(**config_dict)
     db.add(new_config)
     db.commit()
     db.refresh(new_config)
-    
     return new_config
-
 
 @router.get("/form_close_config/{form_id}", response_model=FormCloseConfigOut)
 def get_form_close_config(form_id: int, db: Session = Depends(get_db)):
@@ -2750,42 +2742,31 @@ def get_form_close_config(form_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/form_close_config/{form_id}", response_model=FormCloseConfigOut)
-def update_form_close_config(
-    form_id: int,
-    config: FormCloseConfigCreate,
-    db: Session = Depends(get_db)
-):
-    """
-    Actualiza la configuración de cierre de un formulario
-    """
+def update_form_close_config(form_id: int, config: FormCloseConfigCreate, db: Session = Depends(get_db)):
     existing_config = db.query(FormCloseConfig).filter(FormCloseConfig.form_id == form_id).first()
-    
     if not existing_config:
         raise HTTPException(status_code=404, detail="No existe configuración de cierre para este formulario")
-    
-    # 🆕 Validaciones con múltiples emails
-    if config.send_download_link and (not config.download_link_recipients or len(config.download_link_recipients) == 0):
+
+    if config.send_download_link and not config.download_link_recipients:
         raise HTTPException(status_code=400, detail="Se requiere al menos un destinatario para enviar enlace de descarga.")
-    
-    if config.send_pdf_attachment and (not config.email_recipients or len(config.email_recipients) == 0):
+    if config.send_pdf_attachment and not config.email_recipients:
         raise HTTPException(status_code=400, detail="Se requiere al menos un destinatario para enviar PDF como adjunto.")
-    
-    if config.generate_report and (not config.report_recipients or len(config.report_recipients) == 0):
+    if config.generate_report and not config.report_recipients:
         raise HTTPException(status_code=400, detail="Se requiere al menos un destinatario para generar reporte.")
-    
-    # 🆕 Convertir listas a JSON
+    if config.send_custom_template and not config.custom_template_recipients:
+        raise HTTPException(status_code=400, detail="Se requiere al menos un destinatario para la plantilla personalizada.")
+
     config_dict = config.dict()
     config_dict['download_link_recipients'] = json.dumps(config.download_link_recipients or [])
     config_dict['email_recipients'] = json.dumps(config.email_recipients or [])
     config_dict['report_recipients'] = json.dumps(config.report_recipients or [])
-    
-    # Actualizar campos
+    config_dict['custom_template_recipients'] = json.dumps(config.custom_template_recipients or [])
+
     for key, value in config_dict.items():
         setattr(existing_config, key, value)
-    
+
     db.commit()
     db.refresh(existing_config)
-    
     return existing_config
 
 
@@ -2803,6 +2784,37 @@ def delete_form_close_config(form_id: int, db: Session = Depends(get_db)):
     db.commit()
     
     return {"message": "Configuración de cierre eliminada exitosamente"}
+
+
+@router.patch("/form_close_config/{form_id}/custom_template")
+def set_custom_template_id(
+    form_id: int,
+    body: dict,  # { "custom_template_id": int }
+    db: Session = Depends(get_db)
+):
+    """Vincula o actualiza solo el custom_template_id sin tocar el resto de la config"""
+    config = db.query(FormCloseConfig).filter(FormCloseConfig.form_id == form_id).first()
+    
+    if not config:
+        # Si no existe config, crear una mínima con do_nothing=True
+        config = FormCloseConfig(
+            form_id=form_id,
+            do_nothing=True,
+            send_download_link=False,
+            send_pdf_attachment=False,
+            generate_report=False,
+            send_custom_template=False,
+            custom_template_include_pdf=False,
+            custom_template_id=body.get("custom_template_id")
+        )
+        db.add(config)
+    else:
+        config.custom_template_id = body.get("custom_template_id")
+    
+    db.commit()
+    db.refresh(config)  
+    return {"custom_template_id": config.custom_template_id, "form_id": form_id}
+
 
 UPLOAD_FOLDER = "logo"
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}

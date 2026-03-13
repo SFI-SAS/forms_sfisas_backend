@@ -569,13 +569,15 @@ class FormCloseConfigCreate(BaseModel):
     send_pdf_attachment: bool = False
     generate_report: bool = False
     do_nothing: bool = True
-    
-    # 🆕 Ahora son listas de strings
+    send_custom_template: bool = False
+    custom_template_include_pdf: bool = False
     download_link_recipients: Optional[List[str]] = None
     email_recipients: Optional[List[str]] = None
     report_recipients: Optional[List[str]] = None
-    
-    @validator('download_link_recipients', 'email_recipients', 'report_recipients', pre=True)
+    custom_template_recipients: Optional[List[str]] = None
+    custom_template_id: Optional[int] = None
+
+    @validator('download_link_recipients', 'email_recipients', 'report_recipients', 'custom_template_recipients', pre=True)
     def validate_emails(cls, v):
         if v is None:
             return []
@@ -585,7 +587,6 @@ class FormCloseConfigCreate(BaseModel):
             except:
                 return [v]
         return v
-
 class FormCloseConfigOut(BaseModel):
     id: int
     form_id: int
@@ -593,14 +594,18 @@ class FormCloseConfigOut(BaseModel):
     send_pdf_attachment: bool
     generate_report: bool
     do_nothing: bool
+    send_custom_template: bool
+    custom_template_include_pdf: bool
     download_link_recipients: Optional[List[str]] = None
     email_recipients: Optional[List[str]] = None
     report_recipients: Optional[List[str]] = None
-    
+    custom_template_recipients: Optional[List[str]] = None
+    custom_template_id: Optional[int] = None
+
     class Config:
         orm_mode = True
-        
-    @validator('download_link_recipients', 'email_recipients', 'report_recipients', pre=True)
+
+    @validator('download_link_recipients', 'email_recipients', 'report_recipients', 'custom_template_recipients', pre=True)
     def parse_json_field(cls, v):
         if v is None:
             return []
