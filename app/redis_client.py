@@ -29,9 +29,9 @@ class RedisClient:
                 socket_connect_timeout=5
             )
             self.client.ping()
-            print(f"✓ Redis conectado en {self.host}:{self.port}")
+            print(f"[OK] Redis conectado en {self.host}:{self.port}")
         except Exception as e:
-            print(f"✗ Error conectando a Redis: {e}")
+            print(f"[WARNING] Error conectando a Redis: {e}")
             self.client = None
     
     def check_connection(self) -> bool:

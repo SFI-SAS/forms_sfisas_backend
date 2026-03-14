@@ -233,7 +233,7 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
         }
         return response
 
-    except IntegrityError:
+    except IntegrityError as e:
         db.rollback()
         raise HTTPException(status_code=400, detail="Error al crear el formulario")
     except Exception as e:
@@ -497,6 +497,7 @@ def get_forms(db: Session, skip: int = 0, limit: int = 10):
 
 
 
+
 def get_question_by_id(db: Session, question_id: int) -> Question:
     return db.query(Question).filter(Question.id == question_id).first()
 
@@ -604,7 +605,10 @@ def update_question(db: Session, question_id: int, question: QuestionUpdate) -> 
 def add_questions_to_form(db: Session, form_id: int, question_ids: List[int]):
     try:
 
-        db_form = db.query(Form).filter(Form.id == form_id).first()
+        db_form = db.query(Form).options(
+            joinedload(Form.category),
+            joinedload(Form.questions)
+        ).filter(Form.id == form_id).first()
         if not db_form:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Form not found")
 
@@ -614,7 +618,7 @@ def add_questions_to_form(db: Session, form_id: int, question_ids: List[int]):
         new_question_ids = set(question_ids) - current_question_ids
 
         if not new_question_ids:
-      
+
             return db_form
 
         new_questions = db.query(Question).filter(Question.id.in_(new_question_ids)).all()

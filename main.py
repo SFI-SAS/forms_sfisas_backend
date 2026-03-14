@@ -124,18 +124,18 @@ Base.metadata.create_all(bind=engine)
 @app.on_event("startup")
 async def startup_event():
     """Se ejecuta al iniciar la aplicación"""
-    print("🚀 Iniciando aplicación...")
-    
+    print("[STARTUP] Iniciando aplicacion...")
+
     # Verificar conexión a Redis
     if redis_client.check_connection():
-        print("✅ Redis conectado correctamente")
+        print("[OK] Redis conectado correctamente")
     else:
-        print("⚠️ Advertencia: Redis no está disponible")
+        print("[WARNING] Advertencia: Redis no esta disponible")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Se ejecuta al apagar la aplicación"""
-    print("🛑 Apagando aplicación...")
+    print("[SHUTDOWN] Apagando aplicacion...")
     scheduler.shutdown()
 
 # ========================================
@@ -174,10 +174,10 @@ def daily_schedule_task():
     db = SessionLocal()
     try:
         schedules = get_schedules_by_frequency(db)
-        print(f"📆 Registros obtenidos para hoy: {len(schedules)}")
+        print(f"[CRON] Registros obtenidos para hoy: {len(schedules)}")
 
         response_details = get_response_details_logic(db)
-        print(f"📌 Detalles de respuestas obtenidos: {len(response_details)}")
+        print(f"[CRON] Detalles de respuestas obtenidos: {len(response_details)}")
 
     except Exception as e:
         print(f"⚠️ Error en la tarea diaria de formularios: {str(e)}")

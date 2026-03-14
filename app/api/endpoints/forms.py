@@ -468,11 +468,11 @@ def get_form_questions(
     cached = redis_client.get(cache_key)
     
     if cached:
-        print(f"✅ Cache HIT: {cache_key}")
+        print(f"[cache] HIT: {cache_key}")
         return cached
-    
+
     # PASO 2: Consultar BD (solo questions)
-    print(f"❌ Cache MISS: {cache_key}")
+    print(f"[cache] MISS: {cache_key}")
     
     # Obtener el formulario primero
     form = db.query(Form).filter(Form.id == form_id).first()
