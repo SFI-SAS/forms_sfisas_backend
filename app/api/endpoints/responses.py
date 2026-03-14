@@ -12,7 +12,7 @@ from typing import List, Optional, Union
 from app.api.controllers.mail import send_reconsideration_email
 from app.crud import crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, encrypt_object, finalizar_conversacion_completa, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, get_palabras_clave_by_form, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
 from app.database import get_db
-from app.schemas import AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, GetQuestionTextsRequest, GetQuestionTextsResponse, PalabrasClaveCreate, PalabrasClaveOut, PalabrasClaveUpdate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, QuestionTextValue, RegisfacialAnswerResponse, RelationOperationMathCreate, RelationOperationMathOut, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
+from app.schemas import UpdateMathOperationRequest, AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, GetQuestionTextsRequest, GetQuestionTextsResponse, PalabrasClaveCreate, PalabrasClaveOut, PalabrasClaveUpdate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, QuestionTextValue, RegisfacialAnswerResponse, RelationOperationMathCreate, RelationOperationMathOut, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
 from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, ClasificacionBitacoraRelacion, Form, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionTableRelation, QuestionType, RelationBitacora, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, UserType
 from app.core.security import get_current_user
 from typing import Dict
@@ -2363,3 +2363,61 @@ def obtener_operaciones_por_preguntas(
         "message": f"Se encontraron {len(operaciones_filtradas)} operación(es)",
         "operations": operaciones_filtradas
     }
+
+ 
+ 
+@router.put(
+    "/{form_id}/math-operations/{operation_id}",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="Editar una operación matemática existente"
+)
+def editar_operacion_matematica(
+    form_id: int,
+    operation_id: int,
+    body: UpdateMathOperationRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Actualiza la fórmula de una operación matemática existente.
+ 
+    **Parámetros:**
+    - form_id: ID del formulario (en la URL)
+    - operation_id: ID del registro en relation_operation_math
+    - body.operations: nueva fórmula (ej: "{12}*{13}", "+{139}")
+    """
+ 
+    # Verificar que el formulario existe
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="El formulario no existe."
+        )
+ 
+    # Buscar la operación
+    operacion = db.query(RelationOperationMath).filter(
+        RelationOperationMath.id == operation_id,
+        RelationOperationMath.id_form == form_id
+    ).first()
+ 
+    if not operacion:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Operación matemática no encontrada para este formulario."
+        )
+ 
+    # Actualizar la fórmula
+    operacion.operations = body.operations
+    db.commit()
+    db.refresh(operacion)
+ 
+    return {
+        "id": operacion.id,
+        "id_form": operacion.id_form,
+        "id_questions": operacion.id_questions,
+        "operations": operacion.operations,
+        "updated_at": operacion.updated_at.isoformat() if operacion.updated_at else None,
+    }
+ 

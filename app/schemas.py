@@ -1311,8 +1311,8 @@ class UpdateFormCategory(BaseModel):
     id_category: Optional[int] = None
     sync_approvers: Optional[bool] = True  # ← NUEVO
 
-
-
+class UpdateMathOperationRequest(BaseModel):
+    operations: str
 
 
 
