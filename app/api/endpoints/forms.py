@@ -4195,26 +4195,29 @@ def get_form_movimientos_endpoint(
         return []  # 👈 mejor que 404 para listas
 
     return movimientos
-
 def get_question_labels_from_form_design(form_design: list) -> dict:
-    """
-    Retorna un dict:
-    {
-        question_id: label
-    }
-    """
     labels = {}
 
     if not form_design:
         return labels
 
-    for element in form_design:
-        question_id = element.get("id_question")
-        props = element.get("props", {})
+    def extract(elements):
+        for element in elements:
+            if not isinstance(element, dict):
+                continue
 
-        if question_id and "label" in props:
-            labels[question_id] = props["label"]
+            question_id = element.get("id_question")
+            props = element.get("props", {})
 
+            if question_id and "label" in props:
+                labels[question_id] = props["label"]
+
+            # 👈 entrar en children (repeaters)
+            children = element.get("children", [])
+            if children:
+                extract(children)
+
+    extract(form_design)
     return labels
 @router.get(
     "/movimientos/{movement_id}/answers",
@@ -4287,7 +4290,10 @@ def get_answers_by_movement(
                 "answers": [
                     {
                         "question_id": a.question.id,
-                        "question_text": a.question.question_text,
+                        "question_text": question_labels.get(
+                            a.question.id,
+                            a.question.question_text
+                        ),
                         "question_label": question_labels.get(
                             a.question.id,
                             a.question.question_text
