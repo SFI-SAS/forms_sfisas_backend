@@ -1020,6 +1020,55 @@ def update_answer_text(data: UpdateAnswertHistory, db: Session = Depends(get_db)
         "answer_text": answer.answer_text
     }
 
+
+@router.delete("/answers/{answer_id}", status_code=status.HTTP_200_OK)
+async def delete_answer(
+    answer_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Elimina una respuesta (Answer) individual por su ID.
+    Solo el dueño de la Response puede eliminar sus answers.
+    Usado por EditResponseComponent cuando el usuario elimina filas de un repeater.
+    """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission"
+        )
+ 
+    answer = db.query(Answer).filter(Answer.id == answer_id).first()
+    if not answer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Answer {answer_id} not found"
+        )
+ 
+    # Verificar que la respuesta pertenece al usuario
+    response = db.query(Response).filter(Response.id == answer.response_id).first()
+    if not response:
+        raise HTTPException(status_code=404, detail="Response not found")
+ 
+    if response.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to delete this answer"
+        )
+ 
+    # Eliminar file_serial asociado si existe
+    if answer.file_serial:
+        db.delete(answer.file_serial)
+ 
+    db.delete(answer)
+    db.commit()
+ 
+    # Invalidar caché
+    cache_key = f"user_responses:{response.form_id}:{current_user.id}"
+    redis_client.delete(cache_key)
+ 
+    return {"message": f"Answer {answer_id} deleted successfully"}
+
 @router.get("/{response_id}/answers_and_history", response_model=ResponseWithAnswersAndHistorySchema)
 async def get_response_with_complete_answers_and_history(
     response_id: int,
