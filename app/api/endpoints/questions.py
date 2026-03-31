@@ -3,6 +3,7 @@
 #	modified:   app/api/endpoints/questions.py
 #
 
+from collections import defaultdict
 import hashlib
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,7 +12,7 @@ from pymysql import IntegrityError
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.database import get_db
-from app.models import Response, Form, Alias, FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationQuestionRule, User, UserType
+from app.models import Answer, Response, Form, Alias, FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationQuestionRule, User, UserType
 from app.crud import  create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_answers_by_question_id, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers_optimized, get_related_or_filtered_answers_with_forms, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
 from app.schemas import AnswerByQuestionResponse, AnswerSchema, DetectSelectRelationsRequest, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionWithCategory, RelationQuestionRuleCreate, RelationQuestionRuleResponse, UpdateQuestionCategory
 from app.core.security import get_current_user
@@ -1029,3 +1030,196 @@ def create_relation_question_rule(
     db.refresh(new_rule)
 
     return new_rule
+
+
+from app.models import ResponseStatus  # agregar a los imports existentes si no está
+
+@router.get("/question-table-relation/serials/{question_id}")
+def get_serials_for_field(
+    question_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(status_code=403, detail="No autorizado")
+
+    relation = (
+        db.query(QuestionTableRelation)
+        .filter(QuestionTableRelation.question_id == question_id)
+        .first()
+    )
+
+    if not relation or not relation.related_form_id:
+        return {"serials": [], "question_id": question_id}
+
+    responses = (
+        db.query(Response)
+        .filter(
+            Response.form_id == relation.related_form_id,
+            Response.status.in_([
+                ResponseStatus.submitted,
+                ResponseStatus.approved
+            ])
+        )
+        .order_by(Response.submitted_at.desc())
+        .all()
+    )
+
+    serials = []
+    for resp in responses:
+        label = str(resp.id)
+        if relation.field_name:
+            try:
+                label_q_id = int(relation.field_name)
+                label_answer = next(
+                    (a.answer_text for a in resp.answers
+                     if a.question_id == label_q_id and a.answer_text),
+                    None
+                )
+                if label_answer:
+                    label = f"#{resp.id} — {label_answer}"
+            except (ValueError, TypeError):
+                pass
+
+        serials.append({
+            "response_id": resp.id,
+            "label": label,
+            "submitted_at": str(resp.submitted_at)[:19]
+        })
+
+    return {
+        "serials": serials,
+        "question_id": question_id,
+        "related_form_id": relation.related_form_id
+    }
+    
+    
+@router.get("/serial-autofill/{response_id}")
+def get_answers_map_for_serial(
+    response_id: int,
+    target_form_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(status_code=403, detail="No autorizado")
+
+    answers = (
+        db.query(Answer)
+        .filter(Answer.response_id == response_id)
+        .all()
+    )
+
+    if not answers:
+        raise HTTPException(status_code=404, detail=f"No hay respuestas para el serial {response_id}")
+
+    def is_useful(a) -> bool:
+        fp = getattr(a, 'file_path', None)
+        if fp and str(fp).strip():
+            return False
+        txt = getattr(a, 'answer_text', None)
+        if not txt or not str(txt).strip():
+            return False
+        if str(txt).strip().startswith(("{", "[")):
+            return False
+        return True
+
+    def get_pk(a) -> int:
+        """Obtiene la PK del answer para ordenar por inserción."""
+        for attr in ('id', 'id_answer', 'pk'):
+            val = getattr(a, attr, None)
+            if val is not None:
+                return int(val)
+        return 0
+
+    useful = [a for a in answers if is_useful(a)]
+
+    # ── Detectar campos de repetidor ─────────────────────────────────────────
+    # Un question_id que aparece MÁS DE UNA VEZ en el mismo response
+    # necesariamente proviene de filas de un repetidor.
+    from collections import Counter
+    q_count = Counter(a.question_id for a in useful)
+    repeater_qids = {qid for qid, cnt in q_count.items() if cnt > 1}
+
+    flat_answers     = [a for a in useful if a.question_id not in repeater_qids]
+    repeater_answers = [a for a in useful if a.question_id in repeater_qids]
+
+    # Mapa plano: question_id → answer_text  (solo campos no-repetidor)
+    source_map = {str(a.question_id): a.answer_text for a in flat_answers}
+
+    # ── Reconstruir filas del repetidor sin depender de repeater_row_index ───
+    # Para cada question_id repetido, ordenar sus answers por PK (orden de inserción).
+    # La i-ésima answer de cada campo corresponde a la fila i del repetidor.
+    per_q: dict = defaultdict(list)
+    for a in repeater_answers:
+        per_q[a.question_id].append(a)
+
+    for qid in per_q:
+        per_q[qid].sort(key=get_pk)
+
+    num_rows = max((len(v) for v in per_q.values()), default=0)
+
+    repeater_rows_raw: list = []
+    for row_idx in range(num_rows):
+        row: dict = {}
+        for qid, ans_list in per_q.items():
+            if row_idx < len(ans_list):
+                row[str(qid)] = ans_list[row_idx].answer_text
+        if row:
+            repeater_rows_raw.append(row)
+
+    repeater_rows_source = (
+        {"__repeater__": repeater_rows_raw} if repeater_rows_raw else {}
+    )
+
+    # ── Resolver hacia IDs del formulario destino ─────────────────────────────
+    local_map: dict = {}
+    repeater_rows_local: list = []
+
+    if target_form_id:
+        form_q_ids = [
+            fq.question_id for fq in
+            db.query(FormQuestion).filter(FormQuestion.form_id == target_form_id).all()
+        ]
+        form_q_ids_set = set(str(q) for q in form_q_ids)
+
+        relations = db.query(QuestionTableRelation).filter(
+            QuestionTableRelation.question_id.in_(form_q_ids)
+        ).all()
+
+        # related_question_id (origen) → question_id (destino local)
+        rel_map = {
+            str(r.related_question_id): str(r.question_id)
+            for r in relations if r.related_question_id
+        }
+
+        # Mapa plano resuelto (campos flat)
+        for rel in relations:
+            if rel.related_question_id:
+                val = source_map.get(str(rel.related_question_id))
+                if val:
+                    local_map[str(rel.question_id)] = val
+
+        for src_qid, val in source_map.items():
+            if src_qid in form_q_ids_set and src_qid not in local_map:
+                local_map[src_qid] = val
+
+        # Filas del repetidor resueltas
+        for source_row in repeater_rows_raw:
+            local_row: dict = {}
+            for src_qid, val in source_row.items():
+                local_qid = rel_map.get(src_qid)
+                if local_qid:
+                    local_row[local_qid] = val
+                elif src_qid in form_q_ids_set:
+                    local_row[src_qid] = val
+            if local_row:
+                repeater_rows_local.append(local_row)
+
+    return {
+        "response_id": response_id,
+        "answers_by_question_id": source_map,
+        "answers_by_local_question_id": local_map,
+        "repeater_rows_local": repeater_rows_local,
+        "repeater_rows_source": {str(k): v for k, v in repeater_rows_source.items()},
+    }
