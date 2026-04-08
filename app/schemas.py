@@ -670,6 +670,15 @@ class AliasSchema(BaseModel):
     
     class Config:
         from_attributes = True
+        
+
+class FormBasicInfo(BaseModel):
+    id: int
+    title: str
+
+    class Config:
+        from_attributes = True
+        
 class QuestionWithCategory(BaseModel):
     id: int
     question_text: str
@@ -680,7 +689,7 @@ class QuestionWithCategory(BaseModel):
     category: CategorySchema | None
     related_question_id: Optional[int] = None
     related_question: Optional[dict] = None  # ← CAMBIAR A dict, no a objeto
-    
+    forms: List[FormBasicInfo] = []
     id_alias: Optional[int] = None
     alias: Optional[AliasSchema] = None
     class Config:
@@ -1315,6 +1324,9 @@ class UpdateMathOperationRequest(BaseModel):
     operations: str
 
 
-
-
-
+class QuestionUpdatePayload(BaseModel):
+    question_text: Optional[str] = None
+    description: Optional[str] = None
+    question_type: Optional[str] = None
+    id_category: Optional[int] = None
+    id_alias: Optional[int] = None

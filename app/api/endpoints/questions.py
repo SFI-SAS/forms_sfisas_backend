@@ -14,7 +14,7 @@ from typing import List, Optional
 from app.database import get_db
 from app.models import Answer, Response, Form, Alias, FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationQuestionRule, User, UserType
 from app.crud import  create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_answers_by_question_id, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers_optimized, get_related_or_filtered_answers_with_forms, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
-from app.schemas import AnswerByQuestionResponse, AnswerSchema, DetectSelectRelationsRequest, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionWithCategory, RelationQuestionRuleCreate, RelationQuestionRuleResponse, UpdateQuestionCategory
+from app.schemas import AnswerByQuestionResponse, AnswerSchema, DetectSelectRelationsRequest, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionUpdatePayload, QuestionWithCategory, RelationQuestionRuleCreate, RelationQuestionRuleResponse, UpdateQuestionCategory
 from app.core.security import get_current_user
 
 router = APIRouter()
@@ -1222,4 +1222,63 @@ def get_answers_map_for_serial(
         "answers_by_local_question_id": local_map,
         "repeater_rows_local": repeater_rows_local,
         "repeater_rows_source": {str(k): v for k, v in repeater_rows_source.items()},
+    }
+    
+    
+@router.put("/update_question_endpoint/{question_id}")
+def update_question_endpoint(
+    question_id: int,
+    payload: QuestionUpdatePayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission"
+        )
+
+    # 1. Verificar que la pregunta existe
+    question = db.query(Question).filter(Question.id == question_id).first()
+    if not question:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Pregunta no encontrada"
+        )
+
+    # 2. Solo bloquear el cambio de TIPO si está vinculada a formatos
+    #    Nombre y descripción siempre se pueden editar.
+    if payload.question_type is not None and payload.question_type != question.question_type:
+        linked_count = (
+            db.query(FormQuestion)
+            .filter(FormQuestion.question_id == question_id)
+            .count()
+        )
+        if linked_count > 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"No se puede cambiar el tipo: vinculada a {linked_count} formato(s)"
+            )
+
+    # 3. Aplicar los campos del payload
+    if payload.question_text is not None:
+        question.question_text = payload.question_text.strip()
+    if payload.description is not None:
+        question.description = payload.description.strip()
+    if payload.question_type is not None:
+        question.question_type = payload.question_type
+    if payload.id_category is not None:
+        question.id_category = payload.id_category
+    if payload.id_alias is not None:
+        question.id_alias = payload.id_alias
+    elif payload.id_alias is None and "id_alias" in (payload.model_fields_set or set()):
+        question.id_alias = None
+
+    db.commit()
+    db.refresh(question)
+
+    return {
+        "message": "Pregunta actualizada correctamente",
+        "id": question.id,
+        "question_text": question.question_text
     }

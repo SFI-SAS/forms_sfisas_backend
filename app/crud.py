@@ -507,29 +507,29 @@ def get_question_by_id_with_category(db: Session, question_id: int):
     return db.query(Question).options(joinedload(Question.category)).filter(Question.id == question_id).first()
 
 def get_questions(db: Session):
-    # ⭐ AGREGAR joinedload para alias
     questions = db.query(Question).options(
         joinedload(Question.category),
-        joinedload(Question.alias)  # ← NUEVA LÍNEA
+        joinedload(Question.alias),
+        joinedload(Question.forms)       # ← LÍNEA NUEVA: carga los formatos vinculados
     ).all()
-    
+
     for question in questions:
         relation = db.query(QuestionTableRelation).filter(
             QuestionTableRelation.question_id == question.id
         ).first()
-        
+
         if relation and relation.related_question_id:
             related_q = db.query(Question).filter(
                 Question.id == relation.related_question_id
             ).first()
-            
+
             if related_q:
                 question.related_question_id = relation.related_question_id
                 question.related_question = {
                     "id": related_q.id,
                     "question_text": related_q.question_text
                 }
-    
+
     return questions
 
 def get_questions_by_category_id(db: Session, category_id: Optional[int]):
