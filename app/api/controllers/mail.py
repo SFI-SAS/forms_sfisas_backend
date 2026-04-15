@@ -725,6 +725,8 @@ async def send_action_notification_email(
     pdf_bytes=None, pdf_filename=None, db=None, current_user=None,
     response_id: int = None,
     action_meta: dict = None,
+    custom_email_subject: str = None,
+    custom_email_body: str = None,
 ):
     """
     ★ CORREGIDO v3.1 ★
@@ -746,6 +748,12 @@ async def send_action_notification_email(
                     'send_custom_template':  ("PDF personalizado de cierre",  "Se adjunta el PDF con los campos configurados en la plantilla de cierre."),
                 }
         title, desc = titles.get(action, ("Notificación", f"Acción ejecutada: {action}"))
+
+        if custom_email_subject:
+            title = custom_email_subject
+        if custom_email_body:
+            desc = custom_email_body
+        subject_line = custom_email_subject if custom_email_subject else f"{title} — {form.title}"
 
         # ── Info del formulario ──
         body = _p(desc)
@@ -909,7 +917,7 @@ async def send_action_notification_email(
                             if normal_pdf:
                                 normal_filename = f"Completo_{response_obj.id}_{safe_title}.pdf"
                                 html_2 = _base_email_html(title, body)
-                                msg_2  = _new_msg(f"{title} — {form.title}", recipient)
+                                msg_2  = _new_msg(subject_line, recipient)
                                 msg_2.set_content(f"{title}: {form.title}")
                                 msg_2.add_alternative(html_2, subtype="html")
                                 if attachment_bytes:
@@ -936,7 +944,7 @@ async def send_action_notification_email(
         # ★ PASO 3: CONSTRUIR Y ENVIAR CORREO
         # ══════════════════════════════════════════════════════════
         html = _base_email_html(title, body)
-        msg = _new_msg(f"{title} — {form.title}", recipient)
+        msg = _new_msg(subject_line, recipient)
         msg.set_content(f"{title}: {form.title}")
         msg.add_alternative(html, subtype="html")
 

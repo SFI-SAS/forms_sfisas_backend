@@ -4373,19 +4373,7 @@ def send_rejection_email_to_all(response_id: int, db: Session):
 
 
     return True
-
 def get_active_form_actions(form_id: int, db):
-    """
-    Obtiene solo las acciones activas para un formulario en formato simplificado.
-    Ahora retorna listas de destinatarios en lugar de un solo destinatario.
-    
-    Args:
-        form_id (int): ID del formulario
-        db: Instancia de la base de datos (session)
-    
-    Returns:
-        list: Lista de tuplas (acción, [lista_de_destinatarios]) para las configuraciones activas
-    """
     try:
         config = db.query(FormCloseConfig).filter(
             FormCloseConfig.form_id == form_id
@@ -4394,14 +4382,17 @@ def get_active_form_actions(form_id: int, db):
         if not config:
             return []
         
+        custom_subject = getattr(config, 'custom_email_subject', None)
+        custom_body    = getattr(config, 'custom_email_body', None)
+        base_meta      = {'custom_email_subject': custom_subject, 'custom_email_body': custom_body}
+        
         active_actions = []
         
-        # 🆕 Parsear JSON a lista de emails
         if config.send_download_link and config.download_link_recipients:
             try:
                 recipients = json.loads(config.download_link_recipients) if isinstance(config.download_link_recipients, str) else config.download_link_recipients
-                if recipients:  # Solo agregar si hay emails
-                    active_actions.append(('send_download_link', recipients))
+                if recipients:
+                    active_actions.append(('send_download_link', recipients, dict(base_meta)))
             except Exception as e:
                 print(f"Error al parsear download_link_recipients: {str(e)}")
         
@@ -4409,7 +4400,7 @@ def get_active_form_actions(form_id: int, db):
             try:
                 recipients = json.loads(config.email_recipients) if isinstance(config.email_recipients, str) else config.email_recipients
                 if recipients:
-                    active_actions.append(('send_pdf_attachment', recipients))
+                    active_actions.append(('send_pdf_attachment', recipients, dict(base_meta)))
             except Exception as e:
                 print(f"Error al parsear email_recipients: {str(e)}")
         
@@ -4417,35 +4408,35 @@ def get_active_form_actions(form_id: int, db):
             try:
                 recipients = json.loads(config.report_recipients) if isinstance(config.report_recipients, str) else config.report_recipients
                 if recipients:
-                    active_actions.append(('generate_report', recipients))
+                    active_actions.append(('generate_report', recipients, dict(base_meta)))
             except Exception as e:
                 print(f"Error al parsear report_recipients: {str(e)}")
         
         if config.send_custom_template and config.custom_template_recipients:
-                    try:
-                        recipients = json.loads(config.custom_template_recipients) if isinstance(config.custom_template_recipients, str) else config.custom_template_recipients
-                        if recipients:
-                            active_actions.append((
-                                'send_custom_template',
-                                recipients,
-                                {
-                                    'custom_template_id': config.custom_template_id,
-                                    'include_pdf': config.custom_template_include_pdf or False,
-                                }
-                            ))
-                    except Exception as e:
-                        print(f"Error al parsear custom_template_recipients: {str(e)}")
+            try:
+                recipients = json.loads(config.custom_template_recipients) if isinstance(config.custom_template_recipients, str) else config.custom_template_recipients
+                if recipients:
+                    active_actions.append((
+                        'send_custom_template',
+                        recipients,
+                        {
+                            'custom_template_id': config.custom_template_id,
+                            'include_pdf': config.custom_template_include_pdf or False,
+                            'custom_email_subject': custom_subject,
+                            'custom_email_body': custom_body,
+                        }
+                    ))
+            except Exception as e:
+                print(f"Error al parsear custom_template_recipients: {str(e)}")
 
         if config.do_nothing:
             active_actions.append(('do_nothing', []))
-                
             
         return active_actions
         
     except Exception as e:
         print(f"Error al obtener acciones activas: {str(e)}")
-        return []
-    
+        return []  
 def run_async_in_thread(async_func, db_session_factory, form_id, current_user_id, request):
     """
     Ejecuta una función async en un thread separado con nueva sesión.
@@ -4544,6 +4535,8 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
                         current_user=current_user,
                         response_id=response_id,
                         action_meta=action_meta,
+                        custom_email_subject=action_meta.get('custom_email_subject'),
+                        custom_email_body=action_meta.get('custom_email_body'),
                     )
 
                     if email_sent:
@@ -4656,6 +4649,8 @@ async def send_form_action_emails_background(form_id: int, current_user_id: int,
                         current_user=current_user,
                         response_id=response_id,
                         action_meta=action_meta,
+                        custom_email_subject=action_meta.get('custom_email_subject'),
+                        custom_email_body=action_meta.get('custom_email_body'),
                     )
 
                     if email_sent:
