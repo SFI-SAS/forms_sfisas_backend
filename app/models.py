@@ -1,4 +1,3 @@
-
 from datetime import datetime
 from sqlalchemy import (
     Boolean, Column, BigInteger, DateTime, Integer, LargeBinary, String, Text, 
@@ -543,6 +542,16 @@ class RelationQuestionRule(Base):
     date_notification = Column(DateTime(timezone=True))# Tipo de regla
     time_alert = Column(String(100), nullable=True)  # Hora para alerta o notificación
     enabled = Column(Boolean, default=True, nullable=False)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # ✅ NUEVOS CAMPOS — soporte para email_notification combinado con date_notification
+    # Cuando `notification_email` tiene valor, el scheduler enviará el recordatorio
+    # a ese email en vez de al usuario que diligenció el response.
+    # Cuando está en NULL (reglas viejas de campos date_notification),
+    # el comportamiento sigue siendo idéntico al de antes: se usa user.email del response.
+    # ═══════════════════════════════════════════════════════════════════
+    notification_email = Column(String(255), nullable=True)   # Email destinatario custom (campos email_notification)
+    notification_message = Column(Text, nullable=True)        # Mensaje personalizado opcional
 
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

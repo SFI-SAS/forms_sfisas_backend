@@ -1047,7 +1047,7 @@ def send_rule_notification_email(
         day_word = "día" if days_remaining == 1 else "días"
 
         body = _callout(f'<strong>{urg}</strong> — Quedan <strong>{days_remaining} {day_word}</strong> para el vencimiento.', sty)
-        body += _p(f'Estimado/a <strong>{user_name}</strong>, se acerca la fecha límite para una respuesta del formulario.')
+        body += _p(f'Estimado/a, se acerca la fecha límite para una respuesta del formulario.')
 
         body += _info_block("Formulario",
             _info_row("Título", form_title) +
@@ -1061,10 +1061,10 @@ def send_rule_notification_email(
             _info_row("Alerta configurada", f'{days_before_alert} días antes')
         )
         body += _info_block("Destinatario",
-            _info_row("Nombre", user_name) +
-            _info_row("Correo", user_email) +
-            _info_row("Documento", user_document) +
-            _info_row("Teléfono", user_telephone)
+        #     _info_row("Nombre", user_name) +
+            _info_row("Correo", user_email) 
+        #     _info_row("Documento", user_document) +
+        #     _info_row("Teléfono", user_telephone)
         )
         body += _btn(_APP_URL)
 

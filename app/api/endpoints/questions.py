@@ -1,4 +1,3 @@
-
 # Changes to be committed:
 #	modified:   app/api/endpoints/questions.py
 #
@@ -6,8 +5,10 @@
 from collections import defaultdict
 import hashlib
 import uuid
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.params import Query
+from pydantic import BaseModel, Field
 from pymysql import IntegrityError
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -1030,6 +1031,143 @@ def create_relation_question_rule(
     db.refresh(new_rule)
 
     return new_rule
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ✅ NUEVO: ENDPOINT BULK PARA REGLAS DE RECORDATORIO POR EMAIL
+# ───────────────────────────────────────────────────────────────────────────
+# Este endpoint recibe N reglas de una sola vez, provenientes de los campos
+# con `email_notification = true` del formato. Cada regla contiene:
+#   - id_question       → la pregunta tipo email
+#   - notification_email→ el correo digitado (destinatario del recordatorio)
+#   - date_notification → fecha programada del recordatorio
+#   - time_alert        → días de anticipación (frontend envía "0")
+#   - notification_message → mensaje personalizado (opcional)
+#
+# NO reemplaza ni modifica el endpoint /relation-question-rule existente
+# (que sigue funcionando igual para los campos tipo date_notification).
+#
+# NO bloquea el envío inmediato por correo — ese flujo ocurre antes,
+# vía /forms/send-answers-by-email, y sigue funcionando como siempre.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class BulkEmailNotificationRuleItem(BaseModel):
+    id_question: int
+    notification_email: str
+    date_notification: datetime
+    time_alert: str = "0"
+    notification_message: Optional[str] = None
+    enabled: bool = True
+
+
+class BulkEmailNotificationRulesCreate(BaseModel):
+    id_form: int
+    id_response: Optional[int] = None
+    rules: List[BulkEmailNotificationRuleItem] = Field(default_factory=list)
+
+
+@router.post("/relation-question-rule/bulk-email-notifications")
+def create_bulk_email_notification_rules(
+    payload: BulkEmailNotificationRulesCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Crea en una sola transacción múltiples reglas de recordatorio por email,
+    provenientes de campos con props.email_notification = true.
+
+    Cada regla se guarda en la tabla `relation_question_rule` con
+    `notification_email` poblado, lo que indica al scheduler diario
+    (`notification_rules_task`) que el destinatario del recordatorio
+    es ese correo específico (no el user.email del response).
+    """
+
+    # 🔥 Validación del formato
+    form_exists = db.query(Form.id).filter(Form.id == payload.id_form).first()
+    if not form_exists:
+        raise HTTPException(404, "El formulario no existe")
+
+    # 🔥 Validación de la response (si viene)
+    if payload.id_response:
+        response_exists = db.query(Response.id).filter(
+            Response.id == payload.id_response
+        ).first()
+        if not response_exists:
+            raise HTTPException(404, "La response no existe")
+
+    if not payload.rules:
+        return {
+            "created": 0,
+            "skipped": 0,
+            "message": "No se recibieron reglas para crear",
+            "rule_ids": []
+        }
+
+    # 🔥 Validar todas las question_ids en un solo query
+    question_ids = [r.id_question for r in payload.rules]
+    existing_questions = {
+        q.id for q in db.query(Question.id).filter(
+            Question.id.in_(question_ids)
+        ).all()
+    }
+
+    created_rules = []
+    skipped = []
+
+    for rule_in in payload.rules:
+        if rule_in.id_question not in existing_questions:
+            skipped.append({
+                "id_question": rule_in.id_question,
+                "reason": "Question no existe"
+            })
+            continue
+
+        # Validación básica del email (el front ya valida, esto es defensa)
+        email_clean = (rule_in.notification_email or "").strip()
+        if not email_clean or "@" not in email_clean:
+            skipped.append({
+                "id_question": rule_in.id_question,
+                "reason": "Email inválido"
+            })
+            continue
+
+        new_rule = RelationQuestionRule(
+            id_form=payload.id_form,
+            id_question=rule_in.id_question,
+            id_response=payload.id_response,
+            date_notification=rule_in.date_notification,
+            time_alert=rule_in.time_alert or "0",
+            enabled=rule_in.enabled,
+            notification_email=email_clean,
+            notification_message=rule_in.notification_message,
+        )
+        db.add(new_rule)
+        created_rules.append(new_rule)
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error guardando reglas: {str(e)}"
+        )
+
+    # Refrescar para obtener IDs
+    rule_ids = []
+    for r in created_rules:
+        db.refresh(r)
+        rule_ids.append(r.id)
+
+    return {
+        "created": len(created_rules),
+        "skipped": len(skipped),
+        "skipped_detail": skipped,
+        "rule_ids": rule_ids,
+        "message": (
+            f"Se crearon {len(created_rules)} regla(s) de recordatorio por email"
+            + (f" — se omitieron {len(skipped)}" if skipped else "")
+        )
+    }
 
 
 from app.models import ResponseStatus  # agregar a los imports existentes si no está

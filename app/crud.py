@@ -7113,22 +7113,24 @@ def get_all_form_movimientos_basic(db: Session):
         for m in movimientos
     ]
 
-
 def get_pending_notification_rules(db: Session) -> List[Dict]:
     """
     Obtiene las reglas de notificación que deben enviarse hoy.
-    
+
     Lógica:
     1. Busca reglas habilitadas (enabled = True)
     2. Calcula: fecha_notificacion = date_notification - time_alert (días)
     3. Si fecha_notificacion == HOY, debe enviarse
-    
+    4. ✅ NUEVO: Si la regla tiene `notification_email` (campos email_notification),
+       el destinatario del correo es ese email. Si no, se usa `user.email`
+       del response, como siempre.
+
     Returns:
         List[Dict]: Lista de diccionarios con la información para enviar emails
     """
     today = datetime.now().date()
     notifications_to_send = []
-    
+
     # Obtener todas las reglas habilitadas con sus relaciones
     rules = db.query(RelationQuestionRule).filter(
         RelationQuestionRule.enabled == True,
@@ -7140,41 +7142,58 @@ def get_pending_notification_rules(db: Session) -> List[Dict]:
         joinedload(RelationQuestionRule.related_response).joinedload(Response.form),
         joinedload(RelationQuestionRule.question)
     ).all()
-    
+
     print(f"📊 Total de reglas habilitadas encontradas: {len(rules)}")
-    
+
     for rule in rules:
         try:
             # Convertir time_alert a entero (días antes de notificar)
             days_before = int(rule.time_alert)
-            
+
             # Calcular la fecha en que debe enviarse la notificación
             notification_date = rule.date_notification.date() - timedelta(days=days_before)
-            
+
             print(f"  🔍 Regla ID {rule.id}:")
             print(f"      - Fecha límite: {rule.date_notification.date()}")
             print(f"      - Días antes: {days_before}")
             print(f"      - Fecha notificación: {notification_date}")
             print(f"      - Hoy: {today}")
-            
+
             # Verificar si hoy es el día de enviar la notificación
             if notification_date == today:
                 response = rule.related_response
-                
+
                 if not response:
                     print(f"      ⚠️ No se encontró la respuesta asociada")
                     continue
-                
+
                 user = response.user
                 form = response.form
-                
+
                 if not user or not form:
                     print(f"      ⚠️ No se encontró el usuario o formulario asociado")
                     continue
-                
+
+                # ═══════════════════════════════════════════════════════════════
+                # ✅ NUEVO: Decidir el destinatario del correo
+                # ───────────────────────────────────────────────────────────────
+                # - Si la regla tiene `notification_email` → usarlo como destino
+                #   (campo email_notification del formato)
+                # - Si no → usar el `user.email` del response (comportamiento viejo)
+                # ═══════════════════════════════════════════════════════════════
+                custom_email = getattr(rule, "notification_email", None)
+                if custom_email and str(custom_email).strip():
+                    recipient_email = str(custom_email).strip()
+                    is_custom_recipient = True
+                    print(f"      📮 Destinatario CUSTOM (email_notification): {recipient_email}")
+                else:
+                    recipient_email = user.email
+                    is_custom_recipient = False
+                    print(f"      📮 Destinatario por defecto (user del response): {recipient_email}")
+
                 # Calcular días restantes hasta la fecha límite
                 days_remaining = (rule.date_notification.date() - today).days
-                
+
                 notification_data = {
                     'rule_id': rule.id,
                     'response_id': response.id,
@@ -7183,31 +7202,44 @@ def get_pending_notification_rules(db: Session) -> List[Dict]:
                     'form_description': form.description or 'Sin descripción',
                     'user_id': user.id,
                     'user_name': user.name,
-                    'user_email': user.email,
+
+                    # ✅ Destinatario resuelto (custom o fallback al user del response)
+                    'user_email': recipient_email,
+                    'is_custom_recipient': is_custom_recipient,
+
+                    # Datos de contacto del user que diligenció (siguen disponibles
+                    # para el template del correo — nombre de quien debe responder)
                     'user_telephone': user.telephone,
                     'user_document': user.num_document,
+
                     'date_limit': rule.date_notification.date(),
                     'days_remaining': days_remaining,
                     'days_before_alert': days_before,
-                    'question_text': rule.question.question_text if rule.question else 'Pregunta no disponible',
+                    'question_text': (
+                        rule.question.question_text
+                        if rule.question else 'Pregunta no disponible'
+                    ),
+
+                    # ✅ Mensaje personalizado opcional que viene del frontend
+                    'notification_message': getattr(rule, "notification_message", None),
+
                     'created_at': response.submitted_at
                 }
-                
+
                 notifications_to_send.append(notification_data)
-                print(f"      ✅ Notificación agregada para {user.email}")
+                print(f"      ✅ Notificación agregada para {recipient_email}")
             else:
                 print(f"      ⏭️ No es el día de notificar (será: {notification_date})")
-                
+
         except ValueError as e:
             print(f"      ❌ Error al convertir time_alert '{rule.time_alert}' a entero: {e}")
             continue
         except Exception as e:
             print(f"      ❌ Error procesando regla {rule.id}: {str(e)}")
             continue
-    
+
     print(f"\n📧 Total de notificaciones a enviar: {len(notifications_to_send)}")
     return notifications_to_send
-
 
 def disable_notification_rule(db: Session, rule_id: int) -> bool:
     """
