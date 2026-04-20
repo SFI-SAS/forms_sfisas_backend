@@ -3489,40 +3489,42 @@ def get_unanswered_forms_by_user(db: Session, user_id: int):
     ).all()
     
     return forms
+
 def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
     """
     Guarda las aprobaciones asociadas a un formulario.
-    
+ 
     - Verifica si el formulario existe.
+    - ✅ NUEVO: Actualiza el form.approval_mode si vino en el payload ('sequential' o 'parallel').
     - Revisa si ya existen aprobaciones activas para los usuarios.
     - Crea nuevas aprobaciones si no hay duplicados o si el `sequence_number` es diferente.
     - Retorna una lista de IDs de usuarios cuyas aprobaciones fueron creadas.
-    
-    Args:
-        data (FormApprovalCreateSchema): Datos del formulario y aprobadores a guardar.
-        db (Session): Sesión de la base de datos.
-    
-    Returns:
-        List[int]: Lista de IDs de usuarios aprobadores que fueron agregados.
     """
     # Verifica si el formulario existe
     form = db.query(Form).filter(Form.id == data.form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Formulario no encontrado.")
-    
+ 
+    # ═══════════════════════════════════════════════════════════════════════
+    # ✅ NUEVO: Si el frontend envió approval_mode, actualizar el formato
+    # ═══════════════════════════════════════════════════════════════════════
+    incoming_mode = getattr(data, "approval_mode", None)
+    if incoming_mode in ("sequential", "parallel"):
+        form.approval_mode = incoming_mode
+ 
     # Obtiene las aprobaciones existentes para este formulario
     existing_approvals = db.query(FormApproval).filter(FormApproval.form_id == data.form_id).all()
-    
+ 
     # Lista para guardar los nuevos IDs insertados
     newly_created_user_ids = []
-    
+ 
     # Solo agrega nuevos aprobadores (no duplicados) o crea un nuevo registro si el sequence_number es diferente
     for approver in data.approvers:
         # Filtra aprobaciones activas con el mismo user_id y form_id
         existing_active_approval = next(
             (fa for fa in existing_approvals if fa.user_id == approver.user_id and fa.is_active), None
         )
-        
+ 
         if existing_active_approval:
             # Si ya existe un aprobador activo con el mismo user_id y form_id y el sequence_number es diferente
             if existing_active_approval.sequence_number != approver.sequence_number:
@@ -3549,7 +3551,7 @@ def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
             )
             db.add(new_approval)
             newly_created_user_ids.append(approver.user_id)
-    
+ 
     db.commit()
     return newly_created_user_ids
 
@@ -3883,7 +3885,39 @@ def validate_approver_requirements_with_approval_line(response_id: int, approver
     """
     Valida si un aprobador puede aprobar una respuesta verificando que TODOS los aprobadores
     anteriores en la secuencia hayan cumplido sus requisitos de aprobación.
+ 
+    ✅ NUEVO: Si el formato está configurado en modo 'parallel', se omite la validación
+    de secuencia — cualquier aprobador puede aprobar en cualquier momento.
     """
+    # ═══════════════════════════════════════════════════════════════════════
+    # ✅ NUEVO: Modo paralelo — bypass de la validación de secuencia
+    # ───────────────────────────────────────────────────────────────────────
+    # En modo 'parallel' todos los aprobadores trabajan en paralelo, así que
+    # no se requiere verificar que los anteriores hayan aprobado primero.
+    # ═══════════════════════════════════════════════════════════════════════
+    response = db.query(Response).filter(Response.id == response_id).first()
+    if response and response.form and getattr(response.form, "approval_mode", "sequential") == "parallel":
+        # Igual validamos que el usuario SÍ sea aprobador de esta respuesta
+        is_approver = db.query(ResponseApproval).filter(
+            ResponseApproval.response_id == response_id,
+            ResponseApproval.user_id == approver_user_id
+        ).first()
+        if not is_approver:
+            return {
+                "can_approve": False,
+                "blocking_requirements": [{"reason": "Usuario no es aprobador de esta respuesta"}],
+                "validation_details": []
+            }
+        return {
+            "can_approve": True,
+            "blocking_requirements": [],
+            "validation_details": [],
+            "approval_mode": "parallel"
+        }
+    # ═══════════════════════════════════════════════════════════════════════
+    # FIN del nuevo bloque — debajo sigue la lógica original SIN cambios
+    # ═══════════════════════════════════════════════════════════════════════
+ 
     # Obtener la secuencia del aprobador actual
     current_approver = (
         db.query(ResponseApproval)
@@ -3893,16 +3927,16 @@ def validate_approver_requirements_with_approval_line(response_id: int, approver
         )
         .first()
     )
-    
+ 
     if not current_approver:
         return {
             "can_approve": False,
             "blocking_requirements": [{"reason": "Usuario no es aprobador de esta respuesta"}],
             "validation_details": []
         }
-    
+ 
     current_sequence = current_approver.sequence_number
-    
+ 
     # Obtener todos los aprobadores anteriores (secuencia menor)
     previous_approvers = (
         db.query(ResponseApproval)
@@ -3913,14 +3947,14 @@ def validate_approver_requirements_with_approval_line(response_id: int, approver
         )
         .all()
     )
-    
+ 
     if not previous_approvers:
         return {
             "can_approve": True,
             "blocking_requirements": [],
             "validation_details": []
         }
-    
+ 
     blocking_requirements = []
     validation_details = []
     
@@ -4096,11 +4130,14 @@ def get_next_mandatory_approver(response_id: int, db: Session):
     response = db.query(Response).filter(Response.id == response_id).first()
     if not response:
         raise HTTPException(status_code=404, detail="Respuesta no encontrada")
-
+ 
     # Obtener el formulario y el usuario que respondió
     form = response.form
     usuario_respondio = response.user
-
+ 
+    # ✅ NUEVO: detectar modo de aprobación
+    approval_mode = getattr(form, "approval_mode", "sequential")
+ 
     # Obtener la plantilla de aprobadores activa
     form_approval_template = (
         db.query(FormApproval)
@@ -4108,7 +4145,7 @@ def get_next_mandatory_approver(response_id: int, db: Session):
         .order_by(FormApproval.sequence_number)
         .all()
     )
-
+ 
     # Obtener aprobaciones realizadas
     response_approvals = (
         db.query(ResponseApproval)
@@ -4116,32 +4153,67 @@ def get_next_mandatory_approver(response_id: int, db: Session):
         .order_by(ResponseApproval.sequence_number)
         .all()
     )
-
-    # Buscar la última persona que aprobó
+ 
+    # ═══════════════════════════════════════════════════════════════════════
+    # ✅ Inicializar variables usadas por el return final
+    # Así ambos branches (sequential/parallel) las tienen definidas.
+    # ═══════════════════════════════════════════════════════════════════════
     ultima_aprobacion = next(
         (ra for ra in reversed(response_approvals) if ra.status == ApprovalStatus.aprobado),
         None
     )
-
     siguientes_aprobadores = []
     encontrado_obligatorio = False
-
-    for fa in form_approval_template:
-        if not ultima_aprobacion or fa.sequence_number > ultima_aprobacion.sequence_number:
-            siguientes_aprobadores.append({
-                "nombre": fa.user.name,
-                "email": fa.user.email,
-                "telefono": fa.user.telephone,
-                "secuencia": fa.sequence_number,
-                "es_obligatorio": fa.is_mandatory
-            })
-            if not encontrado_obligatorio and fa.is_mandatory:
-                encontrado_obligatorio = True
-                break
-
+ 
+    if approval_mode == "parallel":
+        # ═══════════════════════════════════════════════════════════════════
+        # ✅ MODO PARALELO
+        # Todos los aprobadores que aún no aprobaron son "siguientes",
+        # sin importar el sequence_number. El orden de notificación no
+        # bloquea a nadie — cualquiera puede aprobar.
+        # ═══════════════════════════════════════════════════════════════════
+        aprobadores_que_ya_aprobaron = {
+            ra.user_id for ra in response_approvals
+            if ra.status == ApprovalStatus.aprobado
+        }
+        for fa in form_approval_template:
+            if fa.user_id not in aprobadores_que_ya_aprobaron:
+                siguientes_aprobadores.append({
+                    "nombre": fa.user.name,
+                    "email": fa.user.email,
+                    "telefono": fa.user.telephone,
+                    "secuencia": fa.sequence_number,
+                    "es_obligatorio": fa.is_mandatory
+                })
+                # En paralelo, si hay al menos uno obligatorio en la lista,
+                # marcamos la flag (no hacemos break — notificamos a todos).
+                if fa.is_mandatory:
+                    encontrado_obligatorio = True
+    else:
+        # ═══════════════════════════════════════════════════════════════════
+        # MODO SECUENCIAL (original) — sin cambios
+        # ═══════════════════════════════════════════════════════════════════
+        for fa in form_approval_template:
+            if not ultima_aprobacion or fa.sequence_number > ultima_aprobacion.sequence_number:
+                siguientes_aprobadores.append({
+                    "nombre": fa.user.name,
+                    "email": fa.user.email,
+                    "telefono": fa.user.telephone,
+                    "secuencia": fa.sequence_number,
+                    "es_obligatorio": fa.is_mandatory
+                })
+                if not encontrado_obligatorio and fa.is_mandatory:
+                    encontrado_obligatorio = True
+                    break
+ 
+    # ═══════════════════════════════════════════════════════════════════════
+    # Parte final ORIGINAL — sin cambios. Ahora funciona en ambos modos
+    # porque ultima_aprobacion / encontrado_obligatorio ya están definidas.
+    # ═══════════════════════════════════════════════════════════════════════
+ 
     # Agregar todos los aprobadores del formato
     todos_los_aprobadores = []
-    
+ 
     for fa in response_approvals:
         todos_los_aprobadores.append({
             "nombre": fa.user.name,
@@ -4153,7 +4225,7 @@ def get_next_mandatory_approver(response_id: int, db: Session):
             "mensaje": fa.message,
             "reviewed_at": fa.reviewed_at,
         })
-
+ 
     return {
         "formato": {
             "id": form.id,
@@ -4165,7 +4237,7 @@ def get_next_mandatory_approver(response_id: int, db: Session):
                 "nombre": form.user.name,
                 "email": form.user.email
             },
-
+ 
         },
         "usuario_respondio": {
             "id": usuario_respondio.id,
@@ -4183,9 +4255,11 @@ def get_next_mandatory_approver(response_id: int, db: Session):
         } if ultima_aprobacion else None,
         "siguientes_aprobadores": siguientes_aprobadores,
         "obligatorio_encontrado": encontrado_obligatorio,
-        "todos_los_aprobadores": todos_los_aprobadores
+        "todos_los_aprobadores": todos_los_aprobadores,
+        # ✅ NUEVO: informar el modo de aprobación en la respuesta
+        "approval_mode": approval_mode,
     }
-
+ 
 def build_email_html_approvers(aprobacion_info: dict) -> str:
     nombre_formato = aprobacion_info["formato"]["titulo"]
     usuario_respondio = aprobacion_info["usuario_respondio"]

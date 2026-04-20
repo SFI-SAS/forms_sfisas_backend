@@ -362,7 +362,8 @@ class ApproverSchema(BaseModel):
 class FormApprovalCreateSchema(BaseModel):
     form_id: int
     approvers: List[ApproverSchema]
-
+    approval_mode: Optional[Literal["sequential", "parallel"]] = "sequential"
+    
     class Config:
         from_attributes = True
 

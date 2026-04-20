@@ -128,6 +128,19 @@ class Form(Base):
     # ✅ NUEVOS CAMPOS
     instructivo_url = Column(Text, nullable=True)
     alert_message = Column(Text, nullable=True)  # Texto de alerta antes de llenar el formato
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # ✅ NUEVO: Modo de aprobación
+    # ───────────────────────────────────────────────────────────────────────
+    #   'sequential' → jerárquico (como siempre). El aprobador #N solo puede
+    #                  aprobar si los anteriores (sequence_number menor) ya
+    #                  aprobaron. Un rechazo bloquea a los siguientes.
+    #   'parallel'   → todos pueden aprobar/rechazar en cualquier orden.
+    #                  El estado final sigue el mismo criterio: si alguien
+    #                  rechaza el formato queda 'rechazado'; si TODOS los
+    #                  obligatorios aprueban, queda 'aprobado'.
+    # ═══════════════════════════════════════════════════════════════════════
+    approval_mode = Column(String(20), nullable=False, default='sequential')
     
     user = relationship('User', back_populates='forms')
     form_moderators = relationship("FormModerators", back_populates="form", cascade="all, delete-orphan")
