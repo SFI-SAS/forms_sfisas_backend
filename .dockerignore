@@ -1,0 +1,83 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Secrets and local env (deben venir de CapRover env vars)
+.env
+.env.*
+*.env
+docker.env
+credentials.json
+*.pem
+*.key
+
+# Large / sensitive data (movido a S3 o storage persistente)
+form_instructivos/
+*.pdf
+*.docx
+*.xlsx
+*.pptx
+
+# Logs / outputs
+*.log
+logs/
+
+# Local uploads / generated files
+uploads/
+generated/
+tmp/
+.tmp/
+
+# Tests / dev only
+tests/
+test_*.py
+*_test.py
+pytest.ini
+conftest.py
+
+# Docs / markdown (no van en la imagen)
+README.md
+*.md
+docs/
+
+# Node (si hay scripts de frontend embebidos)
+node_modules/
