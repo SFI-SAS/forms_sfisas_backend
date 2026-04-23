@@ -15,7 +15,6 @@ import mimetypes
 import os
 import smtplib
 import json
-import io
 from email.message import EmailMessage
 from email.utils import formataddr
 from datetime import datetime
@@ -25,7 +24,7 @@ from fastapi import UploadFile
 
 from app.api.controllers.excel_form_exporter import generate_form_excel
 from app.api.controllers.pdf_form_exporter import FormPdfExporter
-from app.models import Response, Form, Answer, FormAnswer, User
+from app.models import Response, Answer, FormAnswer, User
 from app.schemas import EmailAnswerItem
 
 

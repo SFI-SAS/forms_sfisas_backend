@@ -2,12 +2,12 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import and_, func
+from sqlalchemy import and_
 from sqlalchemy.orm import Session, joinedload
 from app.crud import get_forms_by_approver, save_form_approvals, update_response_approval_status
 from app.database import get_db
@@ -1359,49 +1359,65 @@ async def download_file_approvers(
             detail="User authentication required"
         )
 
-    # ═══════════════════════════════════════════
-    # 🔒 VALIDACIÓN CONTRA PATH TRAVERSAL
-    # ═══════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════════════
+    # 🔒 VALIDACIÓN CONTRA PATH TRAVERSAL (defensa en capas)
+    # ═══════════════════════════════════════════════════════════════════════════
 
-    if '..' in file_name or '/' in file_name or '\\' in file_name:
+    # 1. Extraer SOLO el nombre (sin rutas). Path(...).name elimina
+    #    automáticamente cualquier "../" o directorio prefijado.
+    raw = (file_name or "").strip().replace("\\", "/")
+    safe_name = Path(raw).name
+
+    # 2. Rechazar nombres peligrosos / vacíos / ocultos / con null-bytes
+    if (not safe_name
+            or safe_name in (".", "..")
+            or safe_name.startswith(".")
+            or "/" in safe_name
+            or "\\" in safe_name
+            or "\x00" in safe_name):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Nombre de archivo no válido"
         )
 
-    file_path = os.path.realpath(os.path.join(APPROVAL_ATTACHMENTS_FOLDER, file_name))
+    # 3. Construir ruta absoluta dentro del directorio permitido
+    base = Path(ALLOWED_APPROVALS_DIR).resolve()
+    candidate = (base / safe_name).resolve()
 
-    if not file_path.startswith(ALLOWED_APPROVALS_DIR + os.sep):
+    # 4. Verificar que la ruta final sigue dentro del directorio base
+    try:
+        candidate.relative_to(base)
+    except ValueError:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Acceso denegado"
         )
 
-    # ═══════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════════════
 
-    if not os.path.exists(file_path):
+    # 5. Debe existir y ser un archivo regular (no symlink ni directorio)
+    if not candidate.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"File '{file_name}' not found"
+            detail=f"File '{safe_name}' not found"
         )
-
-    if not os.path.isfile(file_path):
+    if candidate.is_symlink() or not candidate.is_file():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid file path"
         )
 
-    original_filename = get_original_filename_sync(file_name, db)
+    original_filename = get_original_filename_sync(safe_name, db)
 
-    file_extension = Path(file_name).suffix.lower()
+    file_extension = Path(safe_name).suffix.lower()
     media_type = get_media_type_by_extension(file_extension)
 
     return FileResponse(
-        path=file_path,
-        filename=original_filename or file_name,
+        path=str(candidate),
+        filename=original_filename or safe_name,
         media_type=media_type,
         headers={
-            "Content-Disposition": f"attachment; filename=\"{original_filename or file_name}\""
+            "Content-Disposition": f"attachment; filename=\"{original_filename or safe_name}\""
         }
     )
 

@@ -2,7 +2,7 @@ import json
 from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Any, Literal, Optional, List, Dict, Union
-from datetime import date, datetime
+from datetime import datetime
 from enum import Enum
 
 from app.models import ApprovalStatus
@@ -363,7 +363,7 @@ class FormApprovalCreateSchema(BaseModel):
     form_id: int
     approvers: List[ApproverSchema]
     approval_mode: Optional[Literal["sequential", "parallel"]] = "sequential"
-    
+
     class Config:
         from_attributes = True
 

@@ -4,7 +4,6 @@
 
 from collections import defaultdict
 import hashlib
-import uuid
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.params import Query

@@ -1,7 +1,7 @@
 # pdf_generator_api/src/schemas/form_data.py
 
-from pydantic import BaseModel, Field, HttpUrl, RootModel
-from typing import List, Dict, Any, Optional
+from pydantic import BaseModel, HttpUrl, RootModel
+from typing import List, Any, Optional
 
 # Modelos para form_design -> props -> styleConfig -> headerTable -> cells
 class HeaderTableCell(BaseModel):

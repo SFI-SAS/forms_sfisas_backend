@@ -1,22 +1,19 @@
-from ast import Dict
-from collections import defaultdict
-from difflib import SequenceMatcher, diff_bytes
 import io
 import json
-from fastapi import APIRouter, Depends, File, Form as FastAPIForm, HTTPException, Request, UploadFile, status, Query
+from fastapi import APIRouter, Depends, File, Form as FastAPIForm, HTTPException, UploadFile, status, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from typing import Any, List, Optional
+from typing import List, Optional
 from app import models
 from app.api.controllers.mail import send_welcome_email
 # from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.api.controllers.pdf_form_exporter import FormPdfExporter, generate_form_pdf
 from app.database import get_db
 
-from app.models import Answer, EmailConfig, Form, Question, Response, User, UserCategory, UserType
-from app.crud import _extract_style_config, _serialize_answers, create_email_config, create_user, create_user_category, create_user_with_random_password, decrypt_object, delete_user_category_by_id, encrypt_object, fetch_all_users, get_all_email_configs, get_all_user_categories, get_response_details_logic, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
+from app.models import Answer, EmailConfig, Form, Response, User, UserCategory, UserType
+from app.crud import _extract_style_config, _serialize_answers, create_email_config, create_user, create_user_category, create_user_with_random_password, delete_user_category_by_id, fetch_all_users, get_all_email_configs, get_all_user_categories, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
 from app.schemas import EmailConfigCreate, EmailConfigResponse, EmailConfigUpdate, EmailStatusUpdate, UpdateRecognitionId, UpdateUserCategory, UserBaseCreate, UserCategoryCreate, UserCategoryResponse, UserCreate, UserResponse, UserUpdate, UserUpdateInfo
 from app.core.security import get_current_user, hash_password
 
@@ -1274,24 +1271,16 @@ def update_user_recognition_id(
     return user
 
 
-@router.post("/encrypt-test")
-async def encrypt_test():
-    """Endpoint simple para probar encriptación"""
-    data = {"mensaje": "MANUEL GOMEZ MACEA", "numero": 50, "activo": True}
-    encrypted = encrypt_object(data)
-    return {
-        "original": data,
-        "encrypted": encrypted
-    }
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🔒 ELIMINADO: /encrypt-test y /decrypt-test/{encrypted_data}
+# ───────────────────────────────────────────────────────────────────────────────
+# Eran oráculos criptográficos públicos (sin autenticación) que permitían a
+# cualquier atacante cifrar/descifrar datos arbitrarios con la clave del sistema.
+# Remediación: eliminados completamente. Si se necesitan tests de cifrado,
+# hacerlos en tests unitarios locales (pytest), nunca expuestos en el API.
+# ═══════════════════════════════════════════════════════════════════════════════
 
-@router.post("/decrypt-test/{encrypted_data}")
-async def decrypt_test(encrypted_data: str):
-    """Endpoint simple para probar desencriptación"""
-    decrypted = decrypt_object(encrypted_data)
-    return {
-        "decrypted": decrypted,
-        "encrypted_was": encrypted_data
-    }
+
 @router.patch("/asign-bitacora/{user_id}")
 def asignar_bitacora(
     user_id: int,

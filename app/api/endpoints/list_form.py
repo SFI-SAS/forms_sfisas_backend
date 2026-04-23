@@ -1,28 +1,22 @@
-import csv
 from enum import Enum
-from io import BytesIO
 import io
 from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.responses import StreamingResponse
 import pandas as pd
 from sqlalchemy.orm import Session, joinedload, selectinload
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 from datetime import datetime
-from docx import Document
 from starlette.concurrency import run_in_threadpool
 from app.api.controllers.excel_form_exporter import generate_form_excel
-from app.api.controllers.pdf_form_exporter import FormPdfExporter, generate_form_pdf
+from app.api.controllers.pdf_form_exporter import FormPdfExporter
 from app.core.security import get_current_user
 from app.crud import _serialize_answers
 from app.database import get_db
 from app.models import Answer, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCloseConfig, FormModerators, FormQuestion, FormSchedule, Question, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, Response, ResponseApproval, User
-from app.schemas import DownloadRequest,FilterCondition
-
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter, A4
+from app.schemas import DownloadRequest, FilterCondition
+from reportlab.lib.pagesizes import A4
 
 router = APIRouter()
 

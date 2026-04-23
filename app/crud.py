@@ -7,7 +7,7 @@ import math
 import os
 import threading
 import pytz
-from sqlalchemy import and_, exists, func, not_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, joinedload, defer
 from sqlalchemy.exc import IntegrityError
 from app import models
@@ -15,7 +15,7 @@ from app.api.controllers.mail import send_action_notification_email, send_email_
 # from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
 from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, CategoryApproval, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, FormTemplate, PalabrasClave, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, TemplateScope, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
-from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormMovimientoBase, FormTemplateCreate, FormTemplateUpdate, NotificationResponse, PalabrasClaveCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, OptionCreate, ResponseCreate, AnswerCreate, UserUpdate, QuestionUpdate, UserUpdateInfo
+from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormMovimientoBase, NotificationResponse, PalabrasClaveCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, OptionCreate, ResponseCreate, AnswerCreate, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
@@ -32,10 +32,40 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# ✅ REEMPLAZAR POR:
-ENCRYPTION_KEY = 'OugiYqGaXdQElq1G5UtKD/jVwk4r/J041p9J7dHOFGo='
-# ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY')
-cipher_suite = Fernet(ENCRYPTION_KEY)
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🔒 CONFIGURACIÓN DE CIFRADO (Fernet + MultiFernet para rotación de claves)
+# ───────────────────────────────────────────────────────────────────────────────
+# - ENCRYPTION_KEY      → clave ACTIVA (se usa para cifrar nuevos datos)
+# - ENCRYPTION_KEY_OLD  → claves VIEJAS separadas por coma, solo para descifrar
+#                         datos que aún no se han re-cifrado (opcional).
+#
+# Para ROTAR la clave sin perder datos:
+#   1. Generar una clave nueva:   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+#   2. Mover la clave actual a ENCRYPTION_KEY_OLD
+#   3. Poner la nueva en ENCRYPTION_KEY
+#   4. Reiniciar el servicio.  Datos nuevos usan la nueva clave, datos viejos
+#      se siguen descifrando con la antigua (MultiFernet.decrypt prueba todas).
+#   5. Cuando todos los datos estén re-cifrados (o después de un tiempo
+#      prudencial), retirar ENCRYPTION_KEY_OLD.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from cryptography.fernet import MultiFernet
+
+_PRIMARY_KEY = os.getenv('ENCRYPTION_KEY')
+if not _PRIMARY_KEY:
+    raise RuntimeError(
+        "ENCRYPTION_KEY no está configurada. Define la variable de entorno "
+        "con una clave Fernet válida (44 chars, base64 urlsafe). "
+        "Genera una con: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+    )
+
+# Claves viejas (opcional) — separadas por coma. Solo se usan para DESCIFRAR.
+_OLD_KEYS_ENV = os.getenv('ENCRYPTION_KEY_OLD', '').strip()
+_old_keys = [k.strip() for k in _OLD_KEYS_ENV.split(',') if k.strip()] if _OLD_KEYS_ENV else []
+
+# MultiFernet: cifra con la primera clave, descifra con cualquiera.
+_fernets = [Fernet(_PRIMARY_KEY)] + [Fernet(k) for k in _old_keys]
+cipher_suite = MultiFernet(_fernets)
 
 def encrypt_object(data: Any) -> str:
     """

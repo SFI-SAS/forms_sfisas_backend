@@ -1,19 +1,18 @@
-
 from datetime import datetime
 import json
-import logging
 import os
+from pathlib import Path
 import uuid
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
-from sqlalchemy import desc, inspect, text
+from sqlalchemy import inspect
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional, Union
 from app.api.controllers.mail import send_reconsideration_email
 from app.crud import crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, encrypt_object, finalizar_conversacion_completa, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, get_palabras_clave_by_form, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
 from app.database import get_db
 from app.schemas import UpdateMathOperationRequest, AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, GetQuestionTextsRequest, GetQuestionTextsResponse, PalabrasClaveCreate, PalabrasClaveOut, PalabrasClaveUpdate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, QuestionTextValue, RegisfacialAnswerResponse, RelationOperationMathCreate, RelationOperationMathOut, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
-from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, ClasificacionBitacoraRelacion, Form, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionTableRelation, QuestionType, RelationBitacora, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, UserType
+from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, ClasificacionBitacoraRelacion, Form, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionType, RelationBitacora, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User
 from app.core.security import get_current_user
 from typing import Dict
 from sqlalchemy import delete
@@ -283,32 +282,58 @@ async def download_file(file_name: str, current_user: User = Depends(get_current
             detail="User does not have permission"
         )
 
-    # ═══════════════════════════════════════════
-    # 🔒 VALIDACIÓN CONTRA PATH TRAVERSAL
-    # ═══════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════════════
+    # 🔒 VALIDACIÓN CONTRA PATH TRAVERSAL (defensa en capas)
+    # ═══════════════════════════════════════════════════════════════════════════
 
-    # 1. Rechazar caracteres peligrosos en el nombre
-    if '..' in file_name or '/' in file_name or '\\' in file_name:
+    # 1. Extraer SOLO el nombre (sin rutas). Path(...).name elimina
+    #    automáticamente cualquier "../" o directorio prefijado, incluso en
+    #    variantes como "%2e%2e%2fpasswd" después de decodificar.
+    raw = (file_name or "").strip().replace("\\", "/")
+    safe_name = Path(raw).name
+
+    # 2. Rechazar nombres peligrosos / vacíos / ocultos / con null-bytes
+    if (not safe_name
+            or safe_name in (".", "..")
+            or safe_name.startswith(".")
+            or "/" in safe_name
+            or "\\" in safe_name
+            or "\x00" in safe_name):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Nombre de archivo no válido"
         )
 
-    # 2. Resolver ruta real y verificar que esté dentro de UPLOAD_FOLDER
-    file_path = os.path.realpath(os.path.join(UPLOAD_FOLDER, file_name))
+    # 3. Construir ruta absoluta dentro del directorio permitido
+    base = Path(ALLOWED_UPLOAD_DIR).resolve()
+    candidate = (base / safe_name).resolve()
 
-    if not file_path.startswith(ALLOWED_UPLOAD_DIR + os.sep):
+    # 4. Verificar que la ruta final sigue dentro del directorio base
+    #    (protege contra symlinks maliciosos)
+    try:
+        candidate.relative_to(base)
+    except ValueError:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Acceso denegado"
         )
 
-    # ═══════════════════════════════════════════
-
-    if os.path.exists(file_path):
-        return FileResponse(path=file_path, filename=os.path.basename(file_path), media_type='application/octet-stream')
-    else:
+    # 5. Debe existir y ser un archivo regular (no symlink ni directorio)
+    if not candidate.exists():
         raise HTTPException(status_code=404, detail="File not found")
+    if candidate.is_symlink() or not candidate.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="El recurso solicitado no es un archivo válido"
+        )
+
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    return FileResponse(
+        path=str(candidate),
+        filename=safe_name,
+        media_type='application/octet-stream'
+    )
 
 @router.get("/db/columns/{table_name}")
 def get_table_columns(
@@ -514,7 +539,8 @@ def generate_serial(
 @router.post("/create_question_filter_condition/", summary="Crear condición de filtrado de preguntas")
 def create_question_filter_condition(
     condition_data: QuestionFilterConditionCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Crea una nueva condición de filtrado para una pregunta en un formulario.
@@ -551,6 +577,11 @@ def create_question_filter_condition(
     --------
     - 400: Si ya existe una condición con los mismos campos.
     """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     # Verificar si ya existe una condición igual
     existing = db.query(QuestionFilterCondition).filter_by(
         form_id=condition_data.form_id,
@@ -587,7 +618,8 @@ def create_question_filter_condition(
 @router.get("/filtered_answers/{filtered_question_id}", response_model=List[FilteredAnswersResponse], summary="Obtener respuestas filtradas por condición")
 def get_filtered_answers_endpoint(
     filtered_question_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Retorna una lista de respuestas válidas filtradas según la condición asociada a la pregunta.
@@ -596,6 +628,11 @@ def get_filtered_answers_endpoint(
     - **Returns**: Lista de objetos con respuestas únicas válidas (sin nulos).
     - **Raises**: HTTP 404 si no existe la condición.
     """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated"
+        )
     condition = db.query(QuestionFilterCondition).filter_by(filtered_question_id=filtered_question_id).first()
     
     if not condition:
@@ -640,7 +677,7 @@ def get_filtered_answers_endpoint(
     return [{"answer": val} for val in filtered]
 
 @router.get("/forms/by_question/{question_id}")
-def get_forms_questions_answers_by_question(question_id: int, db: Session = Depends(get_db)):
+def get_forms_questions_answers_by_question(question_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Retorna todos los formularios que contienen la pregunta especificada, incluyendo
     sus preguntas asociadas y respuestas únicas.
@@ -652,6 +689,11 @@ def get_forms_questions_answers_by_question(question_id: int, db: Session = Depe
     - Lista de formularios con sus preguntas y respuestas correspondientes.
     """
     try:
+        if current_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User not authenticated"
+            )
         # Buscar los IDs únicos de formularios que contienen la pregunta
         form_ids = (
             db.query(FormQuestion.form_id)
@@ -1412,8 +1454,14 @@ async def delete_response(
 @router.put("/approvals/{response_id}/reset-reconsideration")
 def reset_reconsideration_requested(
     response_id: int,  # Cambiar de approval_id a response_id
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to access completed forms",
+        )
     # Buscar la aprobación por response_id
     approval = db.query(ResponseApproval).filter(
         ResponseApproval.response_id == response_id
@@ -2469,4 +2517,3 @@ def editar_operacion_matematica(
         "operations": operacion.operations,
         "updated_at": operacion.updated_at.isoformat() if operacion.updated_at else None,
     }
- 
