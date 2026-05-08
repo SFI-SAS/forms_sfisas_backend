@@ -275,11 +275,48 @@ async def upload_file(file: UploadFile = File(...), current_user: User = Depends
 
 
 @router.get("/download-file/{file_name}")
-async def download_file(file_name: str, current_user: User = Depends(get_current_user)):
+async def download_file(
+    file_name: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission"
+        )
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # 🔒 VALIDACIÓN DE PROPIEDAD: el archivo debe estar referenciado por alguna
+    #    respuesta que el usuario actual tenga permiso de ver. Antes solo se
+    #    validaba que el usuario estuviera autenticado, lo que permitía a
+    #    cualquiera con un nombre de archivo descargar adjuntos ajenos.
+    # ═══════════════════════════════════════════════════════════════════════════
+    from app.core.permissions import can_user_view_response
+
+    answers_with_file = (
+        db.query(Answer)
+        .filter(
+            (Answer.file_path == file_name)
+            | (Answer.file_path.like(f"%/{file_name}"))
+            | (Answer.file_path.like(f"%\\{file_name}"))
+        )
+        .all()
+    )
+    if not answers_with_file:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Archivo no encontrado",
+        )
+
+    user_can_access = any(
+        can_user_view_response(current_user, ans.response_id, db)
+        for ans in answers_with_file
+    )
+    if not user_can_access:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tiene permiso para descargar este archivo",
         )
 
     # ═══════════════════════════════════════════════════════════════════════════

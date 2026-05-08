@@ -625,3 +625,86 @@ class CategoryApproval(Base):
     # Relationships
     category = relationship('FormCategory', back_populates='approvals')
     user = relationship('User')
+
+
+class ConsultantScope(str, enum.Enum):
+    form = "form"
+    user = "user"
+    form_user = "form_user"
+    category = "category"
+
+
+class ConsultantAssignment(Base):
+    __tablename__ = 'consultant_assignments'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    consultant_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    scope = Column(Enum(ConsultantScope), nullable=False)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=True)
+    target_user_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=True)
+    category_id = Column(BigInteger, ForeignKey('form_categories.id', ondelete='CASCADE'), nullable=True)
+    created_by = Column(BigInteger, ForeignKey('users.id'), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    consultant = relationship('User', foreign_keys=[consultant_id])
+    target_user = relationship('User', foreign_keys=[target_user_id])
+    creator = relationship('User', foreign_keys=[created_by])
+    form = relationship('Form', foreign_keys=[form_id])
+    category = relationship('FormCategory', foreign_keys=[category_id])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROFILES — agrupan usuarios y formatos para que los miembros puedan
+# diligenciar los formatos asignados al perfil.
+# Solo administradores gestionan estas tablas.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class Profile(Base):
+    __tablename__ = 'profiles'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    name = Column(String(150), nullable=False, unique=True)
+    description = Column(Text, nullable=True)
+    created_by = Column(BigInteger, ForeignKey('users.id'), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    creator = relationship('User', foreign_keys=[created_by])
+    user_links = relationship('ProfileUser', back_populates='profile', cascade='all, delete-orphan')
+    form_links = relationship('ProfileForm', back_populates='profile', cascade='all, delete-orphan')
+    category_links = relationship('ProfileCategory', back_populates='profile', cascade='all, delete-orphan')
+
+
+class ProfileUser(Base):
+    __tablename__ = 'profile_users'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    profile_id = Column(BigInteger, ForeignKey('profiles.id', ondelete='CASCADE'), nullable=False, index=True)
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    assigned_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('profile_id', 'user_id', name='uq_profile_user'),
+    )
+
+    profile = relationship('Profile', back_populates='user_links')
+    user = relationship('User')
+
+
+class ProfileForm(Base):
+    __tablename__ = 'profile_forms'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    profile_id = Column(BigInteger, ForeignKey('profiles.id', ondelete='CASCADE'), nullable=False, index=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False, index=True)
+    assigned_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('profile_id', 'form_id', name='uq_profile_form'),
+    )
+
+    profile = relationship('Profile', back_populates='form_links')
+    form = relationship('Form')

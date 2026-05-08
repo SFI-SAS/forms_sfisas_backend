@@ -12,10 +12,10 @@ from app.api.controllers.excel_form_exporter import generate_form_excel
 from app.api.controllers.mail import send_response_answers_email
 from app.redis_client import redis_client
 from app.database import get_db
-from app.models import Answer, AnswerHistory, CategoryApproval, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, PalabrasClave, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
+from app.models import Answer, AnswerHistory, CategoryApproval, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, PalabrasClave, Profile, ProfileForm, ProfileUser, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
 from app.crud import  _extract_style_config, _serialize_answers, add_category_approver, analyze_form_relations, apply_template_service, bulk_save_category_approvers, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, create_template_service, delete_form, delete_form_category, delete_template_service, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_categories_with_approvers, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_approvals, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_template_detail_service, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, list_templates_service, move_category, process_regisfacial_answer, remove_category_approver, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, sync_form_approvals_from_category, toggle_form_status, update_category_approver, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status, update_template_service
 from app.schemas import AlertMessageRequest, CategoryApprovalBulkSave, CategoryApprovalCreate, CategoryApprovalResponse, CategoryApprovalUpdate, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, FormTemplateCreate, FormTemplateDetail, FormTemplateResponse, FormTemplateUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_roles
 from io import BytesIO
 import pandas as pd
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -76,6 +76,21 @@ def user_has_access_to_form(db: Session, user: User, form: Form) -> bool:
         Response.user_id == user.id,
     ).first()
     if has_responded:
+        return True
+
+    # Miembro de un Profile activo que tiene este formato asignado
+    in_profile = (
+        db.query(ProfileForm.id)
+        .join(Profile, Profile.id == ProfileForm.profile_id)
+        .join(ProfileUser, ProfileUser.profile_id == Profile.id)
+        .filter(
+            ProfileForm.form_id == form.id,
+            ProfileUser.user_id == user.id,
+            Profile.is_active == True,
+        )
+        .first()
+    )
+    if in_profile:
         return True
 
     return False
@@ -1298,7 +1313,8 @@ def get_forms_paginated_endpoint(
 def get_user_forms(
     page: int = 1,  # Número de página (empieza en 1)
     page_size: int = 30,  # Cantidad de registros por página
-    db: Session = Depends(get_db), 
+    profile_id: Optional[int] = None,  # Si se pasa, filtra a los formatos de ese perfil
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -1306,6 +1322,9 @@ def get_user_forms(
 
     - **page**: Número de página (por defecto 1)
     - **page_size**: Cantidad de registros por página (por defecto 30, máximo 100)
+    - **profile_id**: opcional, restringe el resultado a los formatos del perfil
+      indicado. Solo aplica si el usuario es miembro activo de ese perfil; si no,
+      devuelve lista vacía.
     - **Requiere autenticación.**
     - **Código 200**: Lista de formularios paginados.
     - **Código 403**: Usuario sin permisos.
@@ -1318,20 +1337,20 @@ def get_user_forms(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User does not have permission"
             )
-        
+
         # Validar page_size máximo
         if page_size > 100:
             page_size = 100
-        
+
         # Obtener formularios paginados
-        forms_data = get_forms_by_user(db, current_user.id, page, page_size)
-        
+        forms_data = get_forms_by_user(db, current_user.id, page, page_size, profile_id=profile_id)
+
         if not forms_data["items"]:
             raise HTTPException(
-                status_code=404, 
+                status_code=404,
                 detail="No se encontraron formularios para este usuario"
             )
-        
+
         return forms_data
         
     except HTTPException:
@@ -2798,7 +2817,12 @@ def get_form_relations_endpoint(form_id: int, db: Session = Depends(get_db), cur
 
 
 @router.post("/create_form_close_config", response_model=FormCloseConfigOut)
-def create_form_close_config(config: FormCloseConfigCreate, db: Session = Depends(get_db)):
+def create_form_close_config(
+    config: FormCloseConfigCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """SECURITY (ID-005): requiere admin o creator (mutación de configuración)."""
     existing = db.query(FormCloseConfig).filter(FormCloseConfig.form_id == config.form_id).first()
     if existing:
         raise HTTPException(status_code=400, detail="Ya existe una configuración para este formulario.")
@@ -2844,7 +2868,13 @@ def get_form_close_config(form_id: int, db: Session = Depends(get_db), current_u
 
 
 @router.put("/form_close_config/{form_id}", response_model=FormCloseConfigOut)
-def update_form_close_config(form_id: int, config: FormCloseConfigCreate, db: Session = Depends(get_db)):
+def update_form_close_config(
+    form_id: int,
+    config: FormCloseConfigCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """SECURITY (ID-005): requiere admin o creator (mutación de configuración)."""
     existing_config = db.query(FormCloseConfig).filter(FormCloseConfig.form_id == form_id).first()
     if not existing_config:
         raise HTTPException(status_code=404, detail="No existe configuración de cierre para este formulario")
@@ -2873,9 +2903,15 @@ def update_form_close_config(form_id: int, config: FormCloseConfigCreate, db: Se
 
 
 @router.delete("/form_close_config/{form_id}")
-def delete_form_close_config(form_id: int, db: Session = Depends(get_db)):
+def delete_form_close_config(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
     """
-    Elimina la configuración de cierre de un formulario
+    Elimina la configuración de cierre de un formulario.
+
+    SECURITY (ID-005): requiere admin o creator (mutación destructiva).
     """
     config = db.query(FormCloseConfig).filter(FormCloseConfig.form_id == form_id).first()
     
@@ -2924,6 +2960,42 @@ ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
 # Asegurar que la carpeta exista
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# ============================================================
+# Helper compartido para los endpoints que sirven el logo.
+# SECURITY (ID-017): hardcodea la lista de candidatos permitidos en lugar
+# de servir os.listdir()[0]. Cierra el vector XSS via SVG (un .svg que
+# llegara a la carpeta por error sería servido como image/svg+xml y
+# podría llevar JavaScript embebido).
+# ============================================================
+
+# Solo extensiones que también permite /upload-logo/ (consistencia).
+_LOGO_ALLOWED_EXTENSIONS = ("png", "jpg", "jpeg")
+
+# MIME por extensión — explícito, sin gif/webp/svg.
+_LOGO_MIME_BY_EXT = {
+    "png":  "image/png",
+    "jpg":  "image/jpeg",
+    "jpeg": "image/jpeg",
+}
+
+
+def _resolve_logo_path():
+    """Busca el logo en el orden estricto png > jpg > jpeg.
+
+    Returns:
+        (filepath, filename, media_type) si encuentra el archivo,
+        None si no existe ningún candidato válido.
+    """
+    if not os.path.isdir(UPLOAD_FOLDER):
+        return None
+    for ext in _LOGO_ALLOWED_EXTENSIONS:
+        filename = f"logo.{ext}"
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        if os.path.isfile(filepath):
+            return filepath, filename, _LOGO_MIME_BY_EXT[ext]
+    return None
+
+
 @router.post("/upload-logo/")
 async def upload_logo(file: UploadFile = File(...),current_user: User = Depends(get_current_user)):
     # Validar extensión
@@ -2957,49 +3029,42 @@ def get_logo(current_user: User = Depends(get_current_user)):
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
             )
-    if not os.path.exists(UPLOAD_FOLDER):
-        raise HTTPException(status_code=404, detail="No se encontró la carpeta de logo.")
-
-    archivos = os.listdir(UPLOAD_FOLDER)
-    if not archivos:
-        raise HTTPException(status_code=404, detail="No hay imagen guardada.")
-
-    # Tomar el primer archivo (solo debe haber uno)
-    imagen_path = os.path.join(UPLOAD_FOLDER, archivos[0])
-    return FileResponse(imagen_path, media_type="image/*", filename=archivos[0])
+    # SECURITY (ID-017): usar helper que solo sirve logo.{png,jpg,jpeg}.
+    resolved = _resolve_logo_path()
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Logo no encontrado.")
+    filepath, filename, media_type = resolved
+    return FileResponse(filepath, media_type=media_type, filename=filename)
 
 
+
+# ============================================================
+# SECURITY EXCEPTION (ID-005) — Endpoints PÚBLICOS sin auth.
+# Cubre: GET /public-logo/, GET /public-logo/exists, HEAD /public-logo/
+# Justificación:
+#   El logo es un recurso visualmente público, similar a un favicon.
+#   Es consumido por:
+#     - Pantallas previas al login (no hay token disponible).
+#     - Plantillas de email de notificación (renderizado server-side
+#       sin sesión de usuario).
+#   No expone PII ni datos privados.
+# Decisión documentada en AUDITORIA_PROGRESO.md (sección "Excepciones documentadas").
+# Hardening aplicado:
+#   - ID-017 (cerrado): _resolve_logo_path() arriba, solo sirve logo.{png,jpg,jpeg}.
+# Endurecimientos pendientes (no parte de esta excepción):
+#   - ID-013: validar magic bytes / MIME real al subir el logo.
+# ============================================================
 
 # Endpoint principal para obtener el logo
 @router.get("/public-logo/")
 def get_public_logo():
-    if not os.path.exists(UPLOAD_FOLDER):
-        raise HTTPException(status_code=404, detail="No se encontró la carpeta de logo.")
-    
-    archivos = os.listdir(UPLOAD_FOLDER)
-    if not archivos:
-        raise HTTPException(status_code=404, detail="No hay imagen guardada.")
-    
-    imagen_path = os.path.join(UPLOAD_FOLDER, archivos[0])
-    
-    # Verificar que el archivo realmente existe
-    if not os.path.isfile(imagen_path):
-        raise HTTPException(status_code=404, detail="Archivo de logo no encontrado.")
-    
-    extension = archivos[0].split(".")[-1].lower()
-    
-    # Mapeo más completo de tipos MIME
-    media_type_map = {
-        "png": "image/png",
-        "jpg": "image/jpeg",
-        "jpeg": "image/jpeg",
-        "gif": "image/gif",
-        "webp": "image/webp",
-        "svg": "image/svg+xml"
-    }
-    
-    media_type = media_type_map.get(extension, "image/*")
-    
+    # SECURITY (ID-017): usar helper que solo sirve logo.{png,jpg,jpeg}.
+    # Cierra vector XSS via SVG y MIME inferred.
+    resolved = _resolve_logo_path()
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Logo no encontrado.")
+    filepath, _filename, media_type = resolved
+
     # Headers para mejor manejo de cache y CORS
     headers = {
         "Cache-Control": "public, max-age=300",  # Cache por 5 minutos
@@ -3007,9 +3072,9 @@ def get_public_logo():
         "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
         "Access-Control-Allow-Headers": "*"
     }
-    
+
     return FileResponse(
-        imagen_path, 
+        filepath,
         media_type=media_type,
         headers=headers
     )
@@ -3018,42 +3083,25 @@ def get_public_logo():
 @router.get("/public-logo/exists")
 def check_logo_exists():
     """Verifica si existe un logo sin descargar el archivo"""
-    try:
-        if not os.path.exists(UPLOAD_FOLDER):
-            return {"exists": False, "reason": "Carpeta no existe"}
-            
-        archivos = os.listdir(UPLOAD_FOLDER)
-        if not archivos:
-            return {"exists": False, "reason": "No hay archivos"}
-            
-        imagen_path = os.path.join(UPLOAD_FOLDER, archivos[0])
-        if not os.path.isfile(imagen_path):
-            return {"exists": False, "reason": "Archivo no válido"}
-            
-        return {
-            "exists": True, 
-            "filename": archivos[0],
-            "url": "/forms/public-logo/"
-        }
-    except Exception as e:
-        return {"exists": False, "reason": f"Error: {str(e)}"}
+    # SECURITY (ID-017): solo reportar existencia para logo.{png,jpg,jpeg}.
+    resolved = _resolve_logo_path()
+    if resolved is None:
+        return {"exists": False}
+    _filepath, filename, _media_type = resolved
+    return {
+        "exists": True,
+        "filename": filename,
+        "url": "/forms/public-logo/",
+    }
     
 # Soporte para HEAD requests
 @router.head("/public-logo/")
 def head_public_logo():
     """HEAD request para verificar existencia sin descargar"""
-    if not os.path.exists(UPLOAD_FOLDER):
-        raise HTTPException(status_code=404, detail="No se encontró la carpeta de logo.")
-        
-    archivos = os.listdir(UPLOAD_FOLDER)
-    if not archivos:
-        raise HTTPException(status_code=404, detail="No hay imagen guardada.")
-        
-    imagen_path = os.path.join(UPLOAD_FOLDER, archivos[0])
-    if not os.path.isfile(imagen_path):
-        raise HTTPException(status_code=404, detail="Archivo de logo no encontrado.")
-    
-    # SOLUCIÓN 1: Usar Response de FastAPI/Starlette (recomendado)
+    # SECURITY (ID-017): solo confirmar 200 si existe logo.{png,jpg,jpeg}.
+    if _resolve_logo_path() is None:
+        raise HTTPException(status_code=404, detail="Logo no encontrado.")
+
     from fastapi import Response
     return Response(status_code=200, headers={
         "Cache-Control": "public, max-age=300",
@@ -3471,13 +3519,25 @@ def get_user_completed_forms_by_category_endpoint(
 async def get_response_details_json(
     form_id: int,
     response_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Endpoint API que devuelve los detalles de una respuesta en formato JSON.
     Para ser consumido por el frontend Astro.
-    No requiere autenticación.
+
+    SECURITY: requiere autenticación y que el usuario tenga visibilidad sobre
+    la respuesta (dueño, admin/creator, aprobador asignado o consultor con
+    asignación que la cubra). Antes era público.
     """
+    from app.core.permissions import can_user_view_response
+
+    if not can_user_view_response(current_user, response_id, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tiene permiso para ver esta respuesta",
+        )
+
     try:
         # Obtener la respuesta específica
         stmt = (
@@ -3824,10 +3884,13 @@ async def upload_form_instructivos(
 @router.get("/{form_id}/instructivos")
 async def get_form_instructivos(
     form_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Obtiene la lista de instructivos de un formulario.
+
+    SECURITY (ID-005): requiere autenticación (lectura para diligenciamiento).
     """
     try:
         form = db.query(Form).filter(Form.id == form_id).first()

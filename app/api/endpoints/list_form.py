@@ -11,10 +11,10 @@ from datetime import datetime
 from starlette.concurrency import run_in_threadpool
 from app.api.controllers.excel_form_exporter import generate_form_excel
 from app.api.controllers.pdf_form_exporter import FormPdfExporter
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_roles
 from app.crud import _serialize_answers
 from app.database import get_db
-from app.models import Answer, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCloseConfig, FormModerators, FormQuestion, FormSchedule, Question, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, Response, ResponseApproval, User
+from app.models import Answer, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCloseConfig, FormModerators, FormQuestion, FormSchedule, Question, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, Response, ResponseApproval, User, UserType
 from app.schemas import DownloadRequest, FilterCondition
 from reportlab.lib.pagesizes import A4
 
@@ -554,10 +554,16 @@ async def get_form_fields(
 
 @router.post("/download/preview")
 async def preview_download_data(
-    request: DownloadRequest, 
-    db: Session = Depends(get_db)
+    request: DownloadRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
-    """Genera una vista previa de los datos que se descargarán"""
+    """Genera una vista previa de los datos que se descargarán.
+
+    SECURITY (ID-005): requiere admin o creator (herramienta de exportación).
+    Pendiente ID-014: validar también que current_user tenga acceso a cada
+    `form_id` solicitado en el request (ownership check).
+    """
     
     # Construir query base
     query = db.query(Response).filter(Response.form_id.in_(request.form_ids))
@@ -673,11 +679,15 @@ def get_conditions_summary(conditions: List[FilterCondition], form_ids: List[int
 
 @router.get("/forms/fields-analysis")
 async def analyze_form_fields(
-    form_ids: List[int] = Query(...), 
-    db: Session = Depends(get_db)
+    form_ids: List[int] = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     """
     Analiza qué campos están disponibles en qué formularios.
+
+    SECURITY (ID-005): requiere admin o creator (metadata de exportación).
+
     Útil para el frontend para mostrar qué condiciones se pueden aplicar.
     """
     if not form_ids:

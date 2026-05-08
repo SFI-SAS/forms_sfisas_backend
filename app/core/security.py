@@ -3,11 +3,11 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
-from app.models import User
+from app.models import User, UserType
 from app.database import get_db
 from dotenv import load_dotenv
 from pydantic import BaseModel
-from typing import Optional
+from typing import Iterable, Optional
 
 import os
 import bcrypt
@@ -63,6 +63,34 @@ def get_current_user(db: Session = Depends(get_db), token: str = Depends(oauth2_
     if user is None:
         raise credentials_exception
     return user
+
+
+def require_roles(allowed: Iterable[UserType]):
+    """Dependency factory: exige que current_user tenga uno de los roles `allowed`.
+
+    SECURITY (ID-005): helper reusable para los endpoints administrativos.
+    Lanza 403 si el rol no coincide. Devuelve el User en caso de éxito,
+    igual que get_current_user, para poder seguir usándolo dentro del endpoint.
+
+    Uso:
+        @router.get("/...")
+        def endpoint(
+            current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+        ):
+            ...
+    """
+    allowed_set = set(allowed)
+
+    def _checker(current_user: User = Depends(get_current_user)) -> User:
+        if current_user.user_type not in allowed_set:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Se requiere uno de los roles: {sorted(r.value for r in allowed_set)}",
+            )
+        return current_user
+
+    return _checker
+
 
 def hash_password(password: str) -> str:
     """

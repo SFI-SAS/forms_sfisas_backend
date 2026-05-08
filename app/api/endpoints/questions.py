@@ -15,7 +15,7 @@ from app.database import get_db
 from app.models import Answer, Response, Form, Alias, FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationQuestionRule, User, UserType
 from app.crud import  create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_answers_by_question_id, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers_optimized, get_related_or_filtered_answers_with_forms, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
 from app.schemas import AnswerByQuestionResponse, AnswerSchema, DetectSelectRelationsRequest, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionUpdatePayload, QuestionWithCategory, RelationQuestionRuleCreate, RelationQuestionRuleResponse, UpdateQuestionCategory
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_roles
 
 router = APIRouter()
 
@@ -372,11 +372,17 @@ def get_question_answers(question_id: int, db: Session = Depends(get_db), curren
         )
         
 @router.get("/unrelated_questions/{form_id}")
-def get_unrelated_questions_endpoint(form_id: int, db: Session = Depends(get_db)):
+def get_unrelated_questions_endpoint(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
     """
     Obtiene todas las preguntas que no están relacionadas con un formulario específico.
 
-    Este endpoint devuelve una lista de preguntas que aún no están asociadas al formulario con el `form_id` proporcionado.  
+    SECURITY (ID-005): requiere admin o creator (herramienta de diseño de forms).
+
+    Este endpoint devuelve una lista de preguntas que aún no están asociadas al formulario con el `form_id` proporcionado.
     Es útil para agregar nuevas preguntas a un formulario sin duplicar las ya relacionadas.
 
     Parámetros:
@@ -443,7 +449,8 @@ def fetch_filtered_questions(db: Session = Depends(get_db), current_user: User =
 @router.post("/question-table-relation/")
 def create_question_table_relation(
     relation_data: QuestionTableRelationCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Crea una relación entre una pregunta y una tabla externa.
@@ -451,6 +458,10 @@ def create_question_table_relation(
     Este endpoint permite establecer una relación entre una pregunta y una tabla externa
     (por ejemplo, para cargar datos dinámicamente) mediante un campo específico.
     Opcionalmente, también puede relacionarse con otra pregunta.
+
+    SECURITY (ID-005 / ID-006): solo admin/creator pueden crear relaciones; además
+    se bloquean campos sensibles (password, recognition_id, ...) en capa de creación
+    y de lectura (ver app/crud.py: _BLOCKED_RELATION_FIELDS).
 
     Parámetros:
     -----------
@@ -474,7 +485,13 @@ def create_question_table_relation(
     HTTPException:
         - 404: Si no se encuentra la pregunta o la pregunta relacionada.
         - 400: Si ya existe una relación para la pregunta dada.
+        - 403: Si el usuario no es admin o creator.
     """
+    if current_user.user_type not in (UserType.admin, UserType.creator):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo admin o creator pueden crear relaciones de tabla",
+        )
     relation = create_question_table_relation_logic(
         db=db,
         question_id=relation_data.question_id,
@@ -598,10 +615,13 @@ def get_related_answers(
 @router.post("/location-relation", status_code=201)
 def create_location_relation(
     relation: QuestionLocationRelationCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     """
     Crea una relación de ubicación entre dos preguntas dentro de un formulario.
+
+    SECURITY (ID-005): requiere admin o creator (mutación de diseño de forms).
 
     Este endpoint permite registrar una relación entre una pregunta origen y una pregunta destino
     dentro de un formulario específico. Sirve para vincular campos que representan ubicaciones
@@ -628,6 +648,7 @@ def create_location_relation(
     ------
     HTTPException:
         - 400: Si ya existe una relación con los mismos `form_id`, `origin_question_id` y `target_question_id`.
+        - 403: Si el usuario no es admin o creator.
     """
     # Validación opcional: evita duplicados exactos
     existing = db.query(QuestionLocationRelation).filter_by(
@@ -651,11 +672,17 @@ def create_location_relation(
     return {"message": "Relation created successfully", "id": new_relation.id}
 
 @router.get("/location-relation/{form_id}", response_model=List[QuestionLocationRelationOut])
-def get_location_relations_by_form_id(form_id: int, db: Session = Depends(get_db)):
+def get_location_relations_by_form_id(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
     Obtiene las relaciones de ubicación asociadas a un formulario específico.
 
-    Este endpoint retorna todas las relaciones entre preguntas de ubicación (por ejemplo, 
+    SECURITY (ID-005): requiere autenticación (lectura para diligenciamiento de forms).
+
+    Este endpoint retorna todas las relaciones entre preguntas de ubicación (por ejemplo,
     departamento → municipio) registradas para un formulario dado.
 
     Parámetros:

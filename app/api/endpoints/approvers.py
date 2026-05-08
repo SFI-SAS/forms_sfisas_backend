@@ -11,9 +11,9 @@ from sqlalchemy import and_
 from sqlalchemy.orm import Session, joinedload
 from app.crud import get_forms_by_approver, save_form_approvals, update_response_approval_status
 from app.database import get_db
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_roles
 import pandas as pd
-from app.models import Answer, AnswerHistory, ApprovalRequirement, ApprovalStatus, Form, FormApproval, Question, Response, ResponseApproval, ResponseApprovalRequirement, User
+from app.models import Answer, AnswerHistory, ApprovalRequirement, ApprovalStatus, Form, FormApproval, Question, Response, ResponseApproval, ResponseApprovalRequirement, User, UserType
 from app.schemas import ApprovalRequirementsCreateSchema, BulkUpdateFormApprovals, FormApprovalCreateSchema, FormWithApproversResponse, RequiredFormsResponse, ResponseDetailInfo, UpdateResponseApprovalRequest
 from fastapi import Form as FastAPIForm 
 
@@ -177,7 +177,8 @@ async def update_response_approval(
                             detail=f"Error uploading file {file.filename}: {str(e)}"
                         )
 
-        print("Datos recibidos:", update_data)
+        # SECURITY (ID-043): print de update_data eliminado por filtración de PII
+        # (mensajes de aprobación/rechazo, payload del cliente, etc.).
         print("Archivos procesados:", len(uploaded_files_info))
 
         # 3. Llamar a la función original (sin modificar)
@@ -1511,16 +1512,19 @@ class ApprovalRequirementResponse(BaseModel):
 
 
 # GET - Obtener requisitos de aprobación por formulario y aprobador
-@router.get("/approval-requirements/form/{form_id}/approver/{approver_id}", 
+@router.get("/approval-requirements/form/{form_id}/approver/{approver_id}",
             response_model=List[ApprovalRequirementResponse])
 async def get_approval_requirements_by_approver(
     form_id: int,
     approver_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     """
-    Obtiene todos los requisitos de aprobación (formatos prerequisito) 
-    para un aprobador específico en un formulario
+    Obtiene todos los requisitos de aprobación (formatos prerequisito)
+    para un aprobador específico en un formulario.
+
+    SECURITY (ID-005): requiere admin o creator.
     """
     try:
         requirements = db.query(ApprovalRequirement).filter(
@@ -1555,15 +1559,18 @@ async def get_approval_requirements_by_approver(
 
 
 # GET - Obtener todos los requisitos de un formulario
-@router.get("/approval-requirements/form/{form_id}", 
+@router.get("/approval-requirements/form/{form_id}",
             response_model=List[ApprovalRequirementResponse])
 async def get_all_approval_requirements_by_form(
     form_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     """
     Obtiene todos los requisitos de aprobación de un formulario,
-    agrupados por aprobador
+    agrupados por aprobador.
+
+    SECURITY (ID-005): requiere admin o creator.
     """
     try:
         requirements = db.query(ApprovalRequirement).filter(

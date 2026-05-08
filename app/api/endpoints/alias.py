@@ -48,9 +48,14 @@ def create_alias(
 # OBTENER TODOS LOS ALIAS
 # ========================================
 @router.get("/", response_model=list[AliasList])
-def get_all_aliases(db: Session = Depends(get_db)):
+def get_all_aliases(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
     Obtener lista de todos los alias.
+
+    SECURITY (ID-005): requiere autenticación.
     Accesible para todos los usuarios autenticados.
     """
     aliases = db.query(Alias).all()
@@ -61,9 +66,15 @@ def get_all_aliases(db: Session = Depends(get_db)):
 # OBTENER ALIAS POR ID
 # ========================================
 @router.get("/{alias_id}", response_model=AliasResponse)
-def get_alias(alias_id: int, db: Session = Depends(get_db)):
+def get_alias(
+    alias_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
     Obtener un alias específico por su ID.
+
+    SECURITY (ID-005): requiere autenticación.
     """
     db_alias = db.query(Alias).filter(Alias.id == alias_id).first()
     if not db_alias:

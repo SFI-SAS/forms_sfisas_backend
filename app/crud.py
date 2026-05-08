@@ -14,13 +14,13 @@ from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 # from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, CategoryApproval, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, FormTemplate, PalabrasClave, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, TemplateScope, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, CategoryApproval, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, FormTemplate, PalabrasClave, Profile, ProfileForm, ProfileUser, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, TemplateScope, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
 from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormMovimientoBase, NotificationResponse, PalabrasClaveCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, OptionCreate, ResponseCreate, AnswerCreate, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 from app.models import ApprovalStatus  # Asegúrate de importar esto
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from app.redis_client import redis_client
 import os
 import secrets
@@ -31,6 +31,40 @@ from uuid import uuid4
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+
+import logging
+logger = logging.getLogger(__name__)
+
+# SECURITY (ID-006): nunca permitir field_name apuntando a credenciales o
+# datos biométricos en QuestionTableRelation, ni en creación ni en lectura.
+_BLOCKED_RELATION_FIELDS = frozenset({"password", "hashed_password", "recognition_id"})
+
+# SECURITY (ID-035): cota dura de profundidad para form_design / template_design.
+# Evita DoS por JSON profundamente anidado (RecursionError → 500).
+# Realista: una jerarquía sección → subsección → fila → columna → campo está en ≤8.
+# 50 deja margen sin permitir abusos.
+_MAX_DESIGN_DEPTH = 50
+
+
+def _assert_design_depth(design, max_depth: int = _MAX_DESIGN_DEPTH) -> None:
+    """Recorre `design` con DFS iterativo y lanza HTTPException(400)
+    si algún `children` está anidado a más de `max_depth` niveles."""
+    if not isinstance(design, list):
+        return
+    stack = [(item, 1) for item in design]
+    while stack:
+        item, depth = stack.pop()
+        if depth > max_depth:
+            raise HTTPException(
+                status_code=400,
+                detail=f"form_design excede profundidad máxima permitida ({max_depth})",
+            )
+        if isinstance(item, dict):
+            children = item.get("children")
+            if isinstance(children, list):
+                for child in children:
+                    stack.append((child, depth + 1))
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 🔒 CONFIGURACIÓN DE CIFRADO (Fernet + MultiFernet para rotación de claves)
@@ -126,18 +160,15 @@ def decrypt_object(encrypted_string: str) -> Any:
         original_data = json.loads(json_string)
         
         return original_data
-        
-    except base64.binascii.Error as e:
-        # Error al decodificar base64
+
+    except (InvalidToken, ValueError, base64.binascii.Error) as e:
+        # SECURITY (ID-027): unificar errores de descifrado para mitigar
+        # decryption-oracle attacks (timing / error-pattern analysis).
+        # Retornar 400 con mensaje genérico, sin exponer str(e) al cliente.
+        logger.warning("ID-027: decrypt_object falló (%s)", type(e).__name__)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error: Datos base64 inválidos - {str(e)}"
-        )
-    except Exception as e:
-        # Error de desencriptación (clave incorrecta, datos corruptos, etc.)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error desencriptando datos: {str(e)}"
+            detail="Datos cifrados inválidos",
         )
 
 def generate_nickname(name: str) -> str:
@@ -195,22 +226,48 @@ def create_user(db: Session, user: UserCreate):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
         )
+    
+def update_user(db: Session, user_id: int, user):
+    """
+    Actualiza un usuario aplicando solo los campos presentes en `user`.
 
+    Acepta tanto un schema Pydantic (UserUpdate / UserAdminUpdate / UserSelfUpdate)
+    como un dict ya validado y filtrado. Esta flexibilidad mantiene compatibilidad
+    con cualquier llamador existente.
 
-def update_user(db: Session, user_id: int, user: UserUpdate):
+    SECURITY (ID-001): cuando el llamador es el endpoint update_user_endpoint,
+    el dict ya viene filtrado según el rol (sin user_type si el caller es self).
+
+    Si el payload incluye `password`, se hashea antes de guardar.
+    """
     db_user = db.query(User).filter(User.id == user_id).first()
     try:
         if not db_user:
             return None
-        for key, value in user.model_dump(exclude_unset=True).items():
+
+        # Aceptar tanto schema Pydantic como dict
+        if isinstance(user, dict):
+            update_data = user
+        else:
+            update_data = user.model_dump(exclude_unset=True)
+
+        # Hashear password si viene en el payload
+        if update_data.get("password"):
+            update_data["password"] = hash_password(update_data["password"])
+
+        for key, value in update_data.items():
             setattr(db_user, key, value)
+
         db.commit()
         db.refresh(db_user)
         return db_user
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Error updating information")
-
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Error updating information"
+        )
+    
 def get_user(db: Session, user_id: int):
     return db.query(User).filter(User.id == user_id).first()
 
@@ -1383,32 +1440,85 @@ def get_all_forms(db: Session):
         for form in forms
     ]
     
-def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int = 30):
+def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int = 30, profile_id: Optional[int] = None):
     """
     Obtiene los formularios paginados sin form_design.
-    
+
+    Un usuario tiene acceso a un formato si:
+      - Es moderador del formato (FormModerators), o
+      - Es miembro de un Profile activo que tiene asignado ese formato.
+
+    Si se pasa `profile_id`, la lista se restringe a los formatos de ese
+    perfil (y solo si el usuario es miembro de el).
+
     Args:
-        db: Sesión de base de datos
+        db: Sesion de base de datos
         user_id: ID del usuario
-        page: Número de página (empieza en 1)
-        page_size: Cantidad de registros por página
-    
+        page: Numero de pagina (empieza en 1)
+        page_size: Cantidad de registros por pagina
+        profile_id: opcional, filtra a un perfil especifico
+
     Returns:
         Dict con items, total, page, page_size, total_pages
     """
     # Calcular offset
     offset = (page - 1) * page_size
-    
-    # Query base
-    base_query = (
-        db.query(Form)
-        .join(FormModerators, Form.id == FormModerators.form_id)
-        .options(
-            defer(Form.form_design),
-            joinedload(Form.category)
+
+    if profile_id is not None:
+        # Validar que el usuario es miembro de ese perfil activo
+        is_member = (
+            db.query(ProfileUser.id)
+            .join(Profile, Profile.id == ProfileUser.profile_id)
+            .filter(
+                ProfileUser.profile_id == profile_id,
+                ProfileUser.user_id == user_id,
+                Profile.is_active.is_(True),
+            )
+            .first()
         )
-        .filter(FormModerators.user_id == user_id)
-    )
+        if not is_member:
+            return {
+                "items": [],
+                "total": 0,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": 0,
+            }
+
+        form_ids_in_profile = select(ProfileForm.form_id).where(
+            ProfileForm.profile_id == profile_id
+        )
+        base_query = (
+            db.query(Form)
+            .options(defer(Form.form_design), joinedload(Form.category))
+            .filter(Form.id.in_(form_ids_in_profile))
+            .distinct()
+        )
+    else:
+        moderator_form_ids = select(FormModerators.form_id).where(
+            FormModerators.user_id == user_id
+        )
+        profile_form_ids = (
+            select(ProfileForm.form_id)
+            .join(Profile, Profile.id == ProfileForm.profile_id)
+            .join(ProfileUser, ProfileUser.profile_id == Profile.id)
+            .where(ProfileUser.user_id == user_id, Profile.is_active.is_(True))
+        )
+
+        base_query = (
+            db.query(Form)
+            .options(
+                defer(Form.form_design),
+                joinedload(Form.category)
+            )
+            .filter(
+                or_(
+                    Form.id.in_(moderator_form_ids),
+                    Form.id.in_(profile_form_ids),
+                )
+            )
+            .distinct()
+        )
     
     # Contar total de registros
     total_count = base_query.count()
@@ -1463,8 +1573,21 @@ def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int =
 def get_forms_by_user_summary(db: Session, user_id: int):
     """
     Obtiene un resumen de los formularios (solo campos básicos para listados).
-    La forma MÁS RÁPIDA posible.
+
+    Un usuario tiene acceso a un formato si:
+      - Es moderador del formato (FormModerators), o
+      - Es miembro de un Profile activo que tiene asignado ese formato.
     """
+    moderator_form_ids = select(FormModerators.form_id).where(
+        FormModerators.user_id == user_id
+    )
+    profile_form_ids = (
+        select(ProfileForm.form_id)
+        .join(Profile, Profile.id == ProfileForm.profile_id)
+        .join(ProfileUser, ProfileUser.profile_id == Profile.id)
+        .where(ProfileUser.user_id == user_id, Profile.is_active.is_(True))
+    )
+
     results = (
         db.query(
             Form.id,
@@ -1473,8 +1596,13 @@ def get_forms_by_user_summary(db: Session, user_id: int):
             Form.created_at,
             Form.user_id
         )
-        .join(FormModerators, Form.id == FormModerators.form_id)
-        .filter(FormModerators.user_id == user_id)
+        .filter(
+            or_(
+                Form.id.in_(moderator_form_ids),
+                Form.id.in_(profile_form_ids),
+            )
+        )
+        .distinct()
         .all()
     )
     
@@ -2262,6 +2390,14 @@ def create_question_table_relation_logic(
     if existing_relation:
         raise HTTPException(status_code=400, detail="Relation already exists for this question")
 
+    # SECURITY (ID-006): bloquear creación de relaciones que apunten a credenciales
+    # o datos biométricos (capa 1).
+    if field_name and field_name.lower() in _BLOCKED_RELATION_FIELDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Campo '{field_name}' no se puede usar en QuestionTableRelation por motivos de seguridad",
+        )
+
     # Crear relación con field_name incluido
     new_relation = QuestionTableRelation(
         question_id=question_id,
@@ -2497,6 +2633,20 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
 
     if not hasattr(Model, field_name):
         raise HTTPException(status_code=400, detail=f"Campo '{field_name}' no existe en el modelo '{name_table}'")
+
+    # SECURITY (ID-006): bloquear lectura de campos sensibles aunque la
+    # QuestionTableRelation ya exista en BD apuntando a ellos (capa 2).
+    if field_name and field_name.lower() in _BLOCKED_RELATION_FIELDS:
+        logger.warning(
+            "ID-006 blocklist hit: question_id=%s name_table=%s field_name=%s relation_id=%s",
+            question_id, name_table, field_name, getattr(relation, "id", None),
+        )
+        return {
+            "source": table_translations.get(name_table, name_table),
+            "data": [],
+            "forms": [],
+            "correlations": {},
+        }
 
     results = db.query(Model).all()
 
@@ -2836,6 +2986,20 @@ def get_related_or_filtered_answers_optimized(
     if not hasattr(Model, field_name):
         raise HTTPException(status_code=400, detail=f"Campo '{field_name}' no existe en el modelo '{name_table}'")
 
+    # SECURITY (ID-006): bloquear lectura de campos sensibles aunque la
+    # QuestionTableRelation ya exista en BD apuntando a ellos (capa 2).
+    if field_name and field_name.lower() in _BLOCKED_RELATION_FIELDS:
+        logger.warning(
+            "ID-006 blocklist hit: question_id=%s name_table=%s field_name=%s relation_id=%s",
+            question_id, name_table, field_name, getattr(relation, "id", None),
+        )
+        return {
+            "source": table_translations.get(name_table, name_table),
+            "data": [],
+            "forms": [],
+            "correlations": {},
+        }
+
     results = db.query(Model).all()
 
     def serialize(instance):
@@ -2964,6 +3128,18 @@ def get_related_or_filtered_answers(db: Session, question_id: int):
 
     if not hasattr(Model, field_name):
         raise HTTPException(status_code=400, detail=f"Campo '{field_name}' no existe en el modelo '{name_table}'")
+
+    # SECURITY (ID-006): bloquear lectura de campos sensibles aunque la
+    # QuestionTableRelation ya exista en BD apuntando a ellos (capa 2).
+    if field_name and field_name.lower() in _BLOCKED_RELATION_FIELDS:
+        logger.warning(
+            "ID-006 blocklist hit: question_id=%s name_table=%s field_name=%s relation_id=%s",
+            question_id, name_table, field_name, getattr(relation, "id", None),
+        )
+        return {
+            "source": table_translations.get(name_table, name_table),
+            "data": [],
+        }
 
     results = db.query(Model).all()
 
@@ -5402,7 +5578,12 @@ def update_form_design_service(db: Session, form_id: int, design_data: List[Dict
     ------
     HTTPException 404:
         Si el formulario no existe.
+    HTTPException 400:
+        Si el form_design excede _MAX_DESIGN_DEPTH niveles de anidamiento.
     """
+    # SECURITY (ID-035): rechazar JSON profundamente anidado antes de guardarlo.
+    _assert_design_depth(design_data)
+
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Form not found")
@@ -5499,36 +5680,36 @@ def update_notification_status(notification_id: int, notify_on: str, db: Session
 
 def delete_form(db: Session, form_id: int):
     form = db.query(Form).filter(Form.id == form_id).first()
-    
+
     if not form:
         raise HTTPException(status_code=404, detail="No encontrado")
-    
+
     try:
         # 1. Respuestas y sus datos
         response_ids = [r.id for r in db.query(Response.id).filter(Response.form_id == form_id).all()]
-        
+
         if response_ids:
             answer_ids = [a.id for a in db.query(Answer.id).filter(Answer.response_id.in_(response_ids)).all()]
-            
+
             if answer_ids:
                 db.query(AnswerFileSerial).filter(AnswerFileSerial.answer_id.in_(answer_ids)).delete(synchronize_session=False)
                 db.query(AnswerHistory).filter(AnswerHistory.previous_answer_id.in_(answer_ids)).delete(synchronize_session=False)
                 db.query(AnswerHistory).filter(AnswerHistory.current_answer_id.in_(answer_ids)).delete(synchronize_session=False)
-            
+
             db.query(ResponseApproval).filter(ResponseApproval.response_id.in_(response_ids)).delete(synchronize_session=False)
             db.query(ResponseApprovalRequirement).filter(ResponseApprovalRequirement.response_id.in_(response_ids)).delete(synchronize_session=False)
             db.query(Answer).filter(Answer.response_id.in_(response_ids)).delete(synchronize_session=False)
             db.query(Response).filter(Response.id.in_(response_ids)).delete(synchronize_session=False)
-        
+
         # 2. ⚠️ CRÍTICO: Eliminar relation_operation_math ANTES de otras cosas
         db.query(RelationOperationMath).filter(
             RelationOperationMath.id_form == form_id
         ).delete(synchronize_session=False)
 
-        # 3. Luego el resto de dependencias
+        # 3. Luego el resto de dependencias con FK a forms.id
         db.query(ApprovalRequirement).filter(ApprovalRequirement.form_id == form_id).delete(synchronize_session=False)
         db.query(ApprovalRequirement).filter(ApprovalRequirement.required_form_id == form_id).delete(synchronize_session=False)
-        
+
         db.query(QuestionFilterCondition).filter(QuestionFilterCondition.form_id == form_id).delete(synchronize_session=False)
         db.query(FormAnswer).filter(FormAnswer.form_id == form_id).delete(synchronize_session=False)
         db.query(FormApproval).filter(FormApproval.form_id == form_id).delete(synchronize_session=False)
@@ -5537,16 +5718,44 @@ def delete_form(db: Session, form_id: int):
         db.query(FormModerators).filter(FormModerators.form_id == form_id).delete(synchronize_session=False)
         db.query(FormQuestion).filter(FormQuestion.form_id == form_id).delete(synchronize_session=False)
         db.query(FormCloseConfig).filter(FormCloseConfig.form_id == form_id).delete(synchronize_session=False)
-        
+
+        # ✅ FIX: estas dos tablas también tienen FK a forms.id pero estaban
+        # ausentes del cleanup. Cuando el formato tenía relaciones tipo
+        # "select de seriales" (QuestionTableRelation.related_form_id) o
+        # reglas de email programadas (RelationQuestionRule.id_form), el
+        # `db.delete(form)` reventaba con FK violation y el except hacía
+        # rollback silencioso → el form quedaba en BD aunque el endpoint
+        # devolvía 500. La app móvil seguía mostrándolo.
+        db.query(QuestionTableRelation).filter(
+            QuestionTableRelation.related_form_id == form_id
+        ).delete(synchronize_session=False)
+        db.query(RelationQuestionRule).filter(
+            RelationQuestionRule.id_form == form_id
+        ).delete(synchronize_session=False)
+
+        # ✅ Tablas con form_id pero SIN FK (huérfanos lógicos). No bloquean
+        # el delete pero dejan basura referenciando a un form inexistente.
+        db.query(PalabrasClave).filter(PalabrasClave.form_id == form_id).delete(synchronize_session=False)
+
         # 4. Finalmente: el formulario
         db.delete(form)
         db.commit()
-        
+
         return {"message": "Eliminado correctamente"}
-        
+
+    except HTTPException:
+        # No tragar HTTPExceptions levantadas adrede arriba (404 etc).
+        raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+        # ✅ FIX: loguear stack completo. El mensaje genérico que devolvíamos
+        # al cliente ocultaba qué FK reventó y dejaba al frontend pensando
+        # que era un error transitorio.
+        logger.exception("delete_form falló para form_id=%s", form_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error eliminando formulario: {type(e).__name__}: {str(e)[:200]}",
+        )
 
 def analyze_form_relations(db: Session, form_id: int):
     """
@@ -7585,6 +7794,9 @@ def create_template_service(db: Session, user_id: int, data) -> FormTemplate:
             status_code=400,
             detail="Must provide either source_form_id or template_design"
         )
+
+    # SECURITY (ID-035): rechazar JSON profundamente anidado antes de procesar.
+    _assert_design_depth(design)
 
     design = sanitize_template_design(design)
 

@@ -10,6 +10,8 @@ load_dotenv()
 
 # Configuración de la base de datos
 DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL no está configurada en variables de entorno. La app no puede iniciar.")
 # Crear el engine de SQLAlchemy
 engine = create_engine(
     DATABASE_URL,

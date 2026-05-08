@@ -11,6 +11,7 @@ FIX v3.1:
   ✅ Nuevo parámetro response_id (opcional, retrocompatible)
 """
 
+import logging
 import mimetypes
 import os
 import smtplib
@@ -26,6 +27,8 @@ from app.api.controllers.excel_form_exporter import generate_form_excel
 from app.api.controllers.pdf_form_exporter import FormPdfExporter
 from app.models import Response, Answer, FormAnswer, User
 from app.schemas import EmailAnswerItem
+
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1033,7 +1036,9 @@ def send_rule_notification_email(
         try:
             d = datetime.strptime(str(date_limit), "%Y-%m-%d") if isinstance(date_limit, str) else date_limit
             fdate = d.strftime("%d/%m/%Y")
-        except:
+        except Exception as e:
+            # SECURITY (ID-040): bare `except:` capturaba KeyboardInterrupt/SystemExit.
+            logger.warning("ID-040: fallo parseando date_limit=%r → fallback str(): %s", date_limit, e)
             fdate = str(date_limit)
 
         if days_remaining <= 2:
