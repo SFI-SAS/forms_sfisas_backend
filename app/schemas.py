@@ -1457,11 +1457,21 @@ class ProfileFormOut(BaseModel):
         from_attributes = True
 
 
+class ProfileCategoryOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class ProfileCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=150)
     description: Optional[str] = None
     user_ids: List[int] = []
     form_ids: List[int] = []
+    category_ids: List[int] = []
 
 
 class ProfileUpdate(BaseModel):
@@ -1478,6 +1488,10 @@ class ProfileFormsUpdate(BaseModel):
     form_ids: List[int]
 
 
+class ProfileCategoriesUpdate(BaseModel):
+    category_ids: List[int]
+
+
 class ProfileOut(BaseModel):
     id: int
     name: str
@@ -1488,6 +1502,7 @@ class ProfileOut(BaseModel):
     updated_at: datetime
     users: List[ProfileMemberOut] = []
     forms: List[ProfileFormOut] = []
+    categories: List[ProfileCategoryOut] = []
 
     class Config:
         from_attributes = True
@@ -1499,7 +1514,9 @@ class ProfileSummaryOut(BaseModel):
     description: Optional[str] = None
     is_active: bool
     user_count: int
-    form_count: int
+    form_count: int           # formatos efectivos (directos + via categoria), distinct
+    direct_form_count: int    # solo asignados directamente
+    category_count: int       # categorias enlazadas
     created_at: datetime
     updated_at: datetime
 

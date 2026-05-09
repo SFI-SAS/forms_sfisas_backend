@@ -14,7 +14,7 @@ from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 # from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, CategoryApproval, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, FormTemplate, PalabrasClave, Profile, ProfileForm, ProfileUser, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, TemplateScope, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, CategoryApproval, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, FormTemplate, PalabrasClave, Profile, ProfileCategory, ProfileForm, ProfileUser, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, TemplateScope, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
 from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormMovimientoBase, NotificationResponse, PalabrasClaveCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, OptionCreate, ResponseCreate, AnswerCreate, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
@@ -1485,13 +1485,22 @@ def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int =
                 "total_pages": 0,
             }
 
-        form_ids_in_profile = select(ProfileForm.form_id).where(
+        # Formatos efectivos del perfil = directos UNION (formatos con categoria asignada al perfil)
+        direct_form_ids = select(ProfileForm.form_id).where(
             ProfileForm.profile_id == profile_id
+        )
+        profile_category_ids = select(ProfileCategory.category_id).where(
+            ProfileCategory.profile_id == profile_id
         )
         base_query = (
             db.query(Form)
             .options(defer(Form.form_design), joinedload(Form.category))
-            .filter(Form.id.in_(form_ids_in_profile))
+            .filter(
+                or_(
+                    Form.id.in_(direct_form_ids),
+                    Form.id_category.in_(profile_category_ids),
+                )
+            )
             .distinct()
         )
     else:
@@ -1501,6 +1510,12 @@ def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int =
         profile_form_ids = (
             select(ProfileForm.form_id)
             .join(Profile, Profile.id == ProfileForm.profile_id)
+            .join(ProfileUser, ProfileUser.profile_id == Profile.id)
+            .where(ProfileUser.user_id == user_id, Profile.is_active.is_(True))
+        )
+        profile_category_ids = (
+            select(ProfileCategory.category_id)
+            .join(Profile, Profile.id == ProfileCategory.profile_id)
             .join(ProfileUser, ProfileUser.profile_id == Profile.id)
             .where(ProfileUser.user_id == user_id, Profile.is_active.is_(True))
         )
@@ -1515,6 +1530,7 @@ def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int =
                 or_(
                     Form.id.in_(moderator_form_ids),
                     Form.id.in_(profile_form_ids),
+                    Form.id_category.in_(profile_category_ids),
                 )
             )
             .distinct()
@@ -1576,7 +1592,8 @@ def get_forms_by_user_summary(db: Session, user_id: int):
 
     Un usuario tiene acceso a un formato si:
       - Es moderador del formato (FormModerators), o
-      - Es miembro de un Profile activo que tiene asignado ese formato.
+      - Es miembro de un Profile activo que tiene asignado ese formato directamente, o
+      - Es miembro de un Profile activo que tiene asignada la categoria del formato.
     """
     moderator_form_ids = select(FormModerators.form_id).where(
         FormModerators.user_id == user_id
@@ -1584,6 +1601,12 @@ def get_forms_by_user_summary(db: Session, user_id: int):
     profile_form_ids = (
         select(ProfileForm.form_id)
         .join(Profile, Profile.id == ProfileForm.profile_id)
+        .join(ProfileUser, ProfileUser.profile_id == Profile.id)
+        .where(ProfileUser.user_id == user_id, Profile.is_active.is_(True))
+    )
+    profile_category_ids = (
+        select(ProfileCategory.category_id)
+        .join(Profile, Profile.id == ProfileCategory.profile_id)
         .join(ProfileUser, ProfileUser.profile_id == Profile.id)
         .where(ProfileUser.user_id == user_id, Profile.is_active.is_(True))
     )
@@ -1600,6 +1623,7 @@ def get_forms_by_user_summary(db: Session, user_id: int):
             or_(
                 Form.id.in_(moderator_form_ids),
                 Form.id.in_(profile_form_ids),
+                Form.id_category.in_(profile_category_ids),
             )
         )
         .distinct()

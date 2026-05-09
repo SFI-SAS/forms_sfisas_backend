@@ -708,3 +708,19 @@ class ProfileForm(Base):
 
     profile = relationship('Profile', back_populates='form_links')
     form = relationship('Form')
+
+
+class ProfileCategory(Base):
+    __tablename__ = 'profile_categories'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    profile_id = Column(BigInteger, ForeignKey('profiles.id', ondelete='CASCADE'), nullable=False, index=True)
+    category_id = Column(BigInteger, ForeignKey('form_categories.id', ondelete='CASCADE'), nullable=False, index=True)
+    assigned_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('profile_id', 'category_id', name='uq_profile_category'),
+    )
+
+    profile = relationship('Profile', back_populates='category_links')
+    category = relationship('FormCategory')
