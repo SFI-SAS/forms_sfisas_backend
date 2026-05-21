@@ -1,7 +1,7 @@
 import json
 import logging
 from uuid import UUID
-from pydantic import BaseModel, EmailStr, Field, validator
+from pydantic import BaseModel, EmailStr, Field, validator, model_validator
 from typing import Any, Literal, Optional, List, Dict, Union
 from datetime import datetime
 from enum import Enum
@@ -49,6 +49,23 @@ class UserResponse(UserBase):
 
     class Config:
         from_attributes = True
+
+
+class UserTokenOut(BaseModel):
+    """H-BW-004: Schema restringido para /validate-token — sin password hash ni recognition_id.
+    Incluye num_document y telephone porque el endpoint es llamado por el perfil del
+    propio usuario (Profile.tsx), que necesita esos campos para mostrarlos y editarlos.
+    """
+    id: int
+    email: EmailStr
+    name: str
+    user_type: UserType
+    num_document: Optional[str] = None
+    telephone: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
 
 class UserSelfUpdate(BaseModel):
     """Campos que un usuario puede actualizar de sí mismo (no privilegiados)."""
@@ -366,6 +383,22 @@ class ApproverSchema(BaseModel):
     is_mandatory: bool = Field(default=True)
     deadline_days: Optional[int] = None
     is_active: Optional[bool] = Field(default=True)
+    # Método de firma del aprobador:
+    #   'button'           → solo botón (clásico)
+    #   'button_or_facial' → botón o firma facial (aprobador elige)
+    #   'facial'           → solo firma facial (obligatoria)
+    firm_mode: Literal["button", "button_or_facial", "facial"] = Field(default="button")
+    # Pregunta regisfacial fuente de los registros para validar al aprobador.
+    # Obligatoria cuando firm_mode != 'button' (validado en model_validator).
+    firm_source_question_id: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _validate_firm_source(self) -> "ApproverSchema":
+        if self.firm_mode != "button" and self.firm_source_question_id is None:
+            raise ValueError(
+                "firm_source_question_id es obligatorio cuando firm_mode != 'button'"
+            )
+        return self
 
 
 class FormApprovalCreateSchema(BaseModel):
@@ -424,6 +457,13 @@ class UpdateResponseApprovalRequest(BaseModel):
     reviewed_at: Optional[datetime] = None
     message: Optional[str] = None
     selectedSequence: int
+    # Solo presente cuando el aprobador firma facialmente. Es el Answer.id de
+    # una respuesta tipo regisfacial del propio aprobador (evidencia de no-repudio).
+    # Reglas de coherencia (validadas en update_response_approval_status):
+    #   - firm_mode='facial' + status='aprobado' → obligatorio
+    #   - firm_mode='button' + firm_answer_id presente → 400
+    #   - firm_mode='button_or_facial' → opcional, ambos válidos
+    firm_answer_id: Optional[int] = None
 
     
 class FormDesignUpdate(BaseModel):
@@ -444,6 +484,8 @@ class FormApprovalInfo(BaseModel):
     sequence_number: int
     is_mandatory: bool
     deadline_days: Optional[int]
+    firm_mode: str = "button"
+    firm_source_question_id: Optional[int] = None
     user: UserInfo
 
     class Config:
@@ -455,6 +497,7 @@ class FormWithApproversResponse(BaseModel):
     description: Optional[str]
     format_type: str
     form_design: Optional[Dict[str, Any]] = None
+    approval_mode: str = "sequential"
 
     approvers: List[FormApprovalInfo]
 
@@ -467,11 +510,16 @@ class FormApprovalUpdate(BaseModel):
     sequence_number: Optional[int] = None
     is_mandatory: Optional[bool] = None
     deadline_days: Optional[int] = None
+    firm_mode: Optional[Literal["button", "button_or_facial", "facial"]] = None
+    firm_source_question_id: Optional[int] = None
 
 class BulkUpdateFormApprovals(BaseModel):
     updates: List[FormApprovalUpdate]
-    
-    
+    # Modo de aprobación del formato. Si viene, se actualiza forms.approval_mode.
+    # Si es None, se conserva el valor actual del formato.
+    approval_mode: Optional[Literal["sequential", "parallel"]] = None
+
+
 class NotificationResponse(BaseModel):
     id: int  # <-- Incluimos el ID del ResponseApproval
     notify_on: str
@@ -897,7 +945,14 @@ class ApproverInfo(BaseModel):
     reconsideration_requested: bool
     reviewed_at: Optional[datetime]
     message: Optional[str]
-    attachment_files: Optional[Any] = None 
+    attachment_files: Optional[Any] = None
+    # Método de firma de la ResponseApproval (heredado del FormApproval al
+    # enviar la respuesta). Default 'button' para retrocompatibilidad.
+    firm_mode: str = "button"
+    # Si ya aprobó facialmente, aquí queda el id del Answer regisfacial usado.
+    firm_answer_id: Optional[int] = None
+    # Pregunta regisfacial fuente configurada por el admin.
+    firm_source_question_id: Optional[int] = None
     user: dict
 
 class ResponseDetailInfo(BaseModel):
@@ -1284,6 +1339,19 @@ class CategoryApprovalCreate(BaseModel):
     sequence_number: int = Field(1, ge=1)
     is_mandatory: bool = True
     deadline_days: Optional[int] = None
+    # Método de firma. Hereda al FormApproval cuando un formato adopta los
+    # aprobadores de su categoría.
+    firm_mode: Literal["button", "button_or_facial", "facial"] = Field(default="button")
+    # Pregunta regisfacial fuente. Obligatoria cuando firm_mode != 'button'.
+    firm_source_question_id: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _validate_firm_source(self) -> "CategoryApprovalCreate":
+        if self.firm_mode != "button" and self.firm_source_question_id is None:
+            raise ValueError(
+                "firm_source_question_id es obligatorio cuando firm_mode != 'button'"
+            )
+        return self
 
 
 class CategoryApprovalUpdate(BaseModel):
@@ -1291,11 +1359,17 @@ class CategoryApprovalUpdate(BaseModel):
     is_mandatory: Optional[bool] = None
     deadline_days: Optional[int] = None
     is_active: Optional[bool] = None
+    firm_mode: Optional[Literal["button", "button_or_facial", "facial"]] = None
+    firm_source_question_id: Optional[int] = None
 
 
 class CategoryApprovalBulkSave(BaseModel):
     """Para guardar toda la lista de aprobadores de una categoría de una vez."""
     approvers: List[CategoryApprovalCreate]
+    # Modo de aprobación de la categoría. Si viene, se actualiza
+    # form_categories.approval_mode (y se propaga a los formatos cuando se
+    # sincroniza). Si es None, se conserva el valor actual de la categoría.
+    approval_mode: Optional[Literal["sequential", "parallel"]] = None
 
 
 class ApproverUserInfo(BaseModel):
@@ -1317,6 +1391,8 @@ class CategoryApprovalResponse(BaseModel):
     is_mandatory: bool
     deadline_days: Optional[int]
     is_active: bool
+    firm_mode: str = "button"
+    firm_source_question_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
@@ -1329,6 +1405,7 @@ class CategoryWithApproversResponse(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    approval_mode: str = "sequential"
     approvers: List[CategoryApprovalResponse] = []
 
     class Config:

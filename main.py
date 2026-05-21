@@ -18,7 +18,7 @@ from app.crud import (
 from app.database import SessionLocal, engine
 from app.models import Base, EmailConfig
 from app.api.endpoints import (
-    alias, approvers, consultants, download_template, list_form, pdf_router, profiles, projects, responses,
+    alias, approvers, consultants, download_template, integrations, list_form, pdf_router, profiles, projects, responses,
     responsibilitytransfer, users, forms, auth, questions
 )
 
@@ -73,8 +73,7 @@ async def add_security_headers(request, call_next):
     # No enviar referrer a sitios externos
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
 
-    # Bloquear XSS en browsers antiguos
-    response.headers["X-XSS-Protection"] = "1; mode=block"
+    # H-BW-012: X-XSS-Protection deprecado — removido. CSP cubre este caso.
 
     # No permitir acceso a cámara, micrófono, geolocation, etc.
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
@@ -83,7 +82,7 @@ async def add_security_headers(request, call_next):
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "script-src 'self'; "
-        "style-src 'self' 'unsafe-inline'; "
+        "style-src 'self'; "
         "img-src 'self' data: https:; "
         "font-src 'self'; "
         "connect-src 'self' https://app.safemetrics.co https://forms.sfisas.com.co; "
@@ -123,25 +122,22 @@ app.include_router(download_template.router, prefix="/download_template", tags=[
 app.include_router(alias.router, prefix="/alias", tags=["alias"])
 app.include_router(consultants.router, prefix="/consultants", tags=["consultants"])
 app.include_router(profiles.router, prefix="/profiles", tags=["profiles"])
+app.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
 
 # ========================================
 # CREAR TABLAS
 # ========================================
-Base.metadata.create_all(bind=engine)
+# H-BW-008: create_all solo en desarrollo. En prod usar migraciones manuales (carpeta migrations/).
+if os.getenv("ENV") == "development":
+    Base.metadata.create_all(bind=engine)
+    print("✅ Tablas creadas/verificadas (modo desarrollo)")
+else:
+    print("ℹ️ Producción: create_all omitido — usá migraciones manuales (migrations/)")
 
 # ========================================
 # EVENTOS DE INICIO Y CIERRE
 # ========================================
-@app.on_event("startup")
-async def startup_event():
-    """Se ejecuta al iniciar la aplicación"""
-    print("🚀 Iniciando aplicación...")
-    
-    # Verificar conexión a Redis
-    if redis_client.check_connection():
-        print("✅ Redis conectado correctamente")
-    else:
-        print("⚠️ Advertencia: Redis no está disponible")
+# H-BW-009: startup_event consolidado (email seed + Redis check) está más abajo.
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -213,8 +209,8 @@ def daily_schedule_task():
 
 
 @app.on_event("startup")
-async def startup_event():
-    """Se ejecuta al iniciar la aplicación"""
+async def startup_seed_email_config():
+    """H-BW-009: Inicializa email_config (solo dev) y verifica Redis al iniciar."""
     print("🚀 Iniciando aplicación...")
     
     # ====== INICIALIZAR EMAIL_CONFIG ======
@@ -224,12 +220,16 @@ async def startup_event():
         email_count = db.query(EmailConfig).count()
         
         if email_count == 0:
-            db.add_all([
-                EmailConfig(email_address="example1@domain.com", is_active=False),
-                EmailConfig(email_address="example2@domain.com", is_active=False),
-            ])
-            db.commit()
-            print("✅ Registros de email_config inicializados")
+            # H-BW-010: Solo seed en desarrollo; en prod se debe ejecutar script manual.
+            if os.getenv("ENV") == "development":
+                db.add_all([
+                    EmailConfig(email_address="example1@domain.com", is_active=False),
+                    EmailConfig(email_address="example2@domain.com", is_active=False),
+                ])
+                db.commit()
+                print("✅ Registros de email_config inicializados (seed development)")
+            else:
+                print("ℹ️ email_config vacía — si es primer deploy, ejecutá el script de seed manualmente")
         else:
             print(f"ℹ️ email_config ya contiene {email_count} registros")
     except Exception as e:

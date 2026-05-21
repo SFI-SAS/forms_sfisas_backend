@@ -440,7 +440,7 @@ def send_email_daily_forms(user_email: str, user_name: str, forms: List[Dict]) -
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo diario a {user_email}: {e}")
+        logger.warning("Error enviando correo diario", extra={"event": "daily_mail_fail"})
         return False
 
 
@@ -469,7 +469,7 @@ def send_email_with_attachment(
 
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo adjunto a {to_email}: {e}")
+        logger.warning("Error enviando correo adjunto", extra={"event": "attachment_mail_fail"})
         return False
 
 
@@ -493,7 +493,7 @@ def send_welcome_email(email: str, name: str, password: str) -> bool:
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo bienvenida a {email}: {e}")
+        logger.warning("Error enviando correo de bienvenida", extra={"event": "welcome_mail_fail"})
         return False
 
 
@@ -514,7 +514,7 @@ def send_email_plain_approval_status(
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo aprobación a {to_email}: {e}")
+        logger.warning("Error enviando correo de aprobación", extra={"event": "approval_mail_fail"})
         return False
 
 
@@ -535,7 +535,7 @@ def send_email_plain_approval_status_vencidos(
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo vencidos a {to_email}: {e}")
+        logger.warning("Error enviando correo de vencidos", extra={"event": "expired_mail_fail"})
         return False
 
 
@@ -557,7 +557,7 @@ def send_email_aprovall_next(
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo aprobador a {to_email}: {e}")
+        logger.warning("Error enviando correo a aprobador", extra={"event": "approver_mail_fail"})
         return False
 
 
@@ -625,7 +625,7 @@ def send_rejection_email(
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo rechazo a {to_email}: {e}")
+        logger.warning("Error enviando correo de rechazo", extra={"event": "rejection_mail_fail"})
         return False
 
 
@@ -662,7 +662,7 @@ def send_reconsideration_email(
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo reconsideración a {to_email}: {e}")
+        logger.warning("Error enviando correo de reconsideración", extra={"event": "reconsideration_mail_fail"})
         return False
 
 
@@ -958,14 +958,14 @@ async def send_action_notification_email(
                 subtype=attachment_subtype,
                 filename=attachment_filename,
             )
-            print(f"📎 Adjunto añadido al correo: {attachment_filename}")
+            logger.info("Adjunto añadido al correo", extra={"event": "attachment_added"})
         else:
             print(f"⚠️ Correo '{action}' se envía SIN adjunto a {recipient}")
 
         return _send_msg(msg)
 
     except Exception as e:
-        print(f"❌ Error correo acción '{action}' a {recipient}: {e}")
+        logger.warning("Error enviando correo de acción", extra={"event": "action_mail_fail", "action": action})
         import traceback; traceback.print_exc()
         return False
 
@@ -1018,7 +1018,7 @@ def send_response_answers_email(
             _send_msg(msg)
         return True
     except Exception as e:
-        print(f"❌ Error correo respuestas: {e}")
+        logger.warning("Error enviando correo de respuestas", extra={"event": "responses_mail_fail"})
         return False
 
 
@@ -1081,5 +1081,5 @@ def send_rule_notification_email(
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo alerta a {user_email}: {e}")
+        logger.warning("Error enviando correo de alerta", extra={"event": "alert_mail_fail"})
         return False

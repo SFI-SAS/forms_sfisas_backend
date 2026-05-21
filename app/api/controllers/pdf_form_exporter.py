@@ -1049,49 +1049,48 @@ body {
 /* ── Fields area ── */
 .fields-area { padding: 16px 18px 10px 18px; }
 
-/* ── Field row (label + value) ── */
+/* ── Field row (label arriba, value abajo) — match con FormResponseRenderer ── */
 .field-row {
-    display: flex;
-    align-items: stretch;
-    margin-bottom: 8px;
-    border-radius: 6px;
-    overflow: hidden;
-    border: 1px solid #e5e7eb;
+    display: block;
+    width: 100%;
+    margin-bottom: 16px;       /* mb-4 */
 }
 .field-label {
-    flex: 0 0 32%;
-    max-width: 32%;
-    padding: 7px 10px;
-    background: #f8fafc;
-    border-right: 1px solid #e5e7eb;
-    font-weight: 600;
-    font-size: 9.5px;
-    color: #374151;
+    display: block;
+    font-weight: 500;          /* font-medium */
+    font-size: 11px;           /* label-text */
+    color: #1f2937;            /* gray-800 — default Tailwind label color */
+    margin-bottom: 4px;
     word-break: break-word;
-    display: flex;
-    align-items: center;
+    line-height: 1.4;
 }
-.field-label .req { color: #ef4444; margin-left: 3px; }
+.field-label .req {
+    color: #ef4444;            /* text-red-500, igual que en FormResponseRenderer */
+    margin-left: 3px;
+    font-weight: 500;
+}
 .field-value {
-    flex: 1;
-    padding: 7px 10px;
-    font-size: 10px;
-    color: #1f2937;
-    background: #ffffff;
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 4px;
+    display: block;
+    padding: 12px;             /* p-3 */
+    font-size: 11px;
+    color: #1f2937;            /* text-gray-800 */
+    background: #f9fafb;       /* bg-gray-50 — igual al UI */
+    border: 1px solid #e5e7eb; /* border-gray-200 — igual al UI */
+    border-radius: 6px;        /* rounded-md */
+    min-height: 30px;
+    line-height: 1.5;
+    word-break: break-word;
 }
+.field-value > * { vertical-align: middle; }
 .field-empty {
-    color: #9ca3af;
+    color: #9ca3af;            /* text-gray-400 */
     font-style: italic;
-    font-size: 9px;
+    font-size: 11px;
 }
 
 /* ── Repeater wrapper ── */
 .repeater-wrap {
-    margin-bottom: 14px;
+    margin-bottom: 16px;
     border: 1px solid #cbd5e1;
     border-radius: 8px;
     overflow: hidden;
@@ -1101,13 +1100,13 @@ body {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 7px 12px;
-    background: #0f8594;
+    padding: 8px 12px;
+    background: #0CA4A5;        /* teal exacto del UI (FormResponseRenderer) */
     color: #fff;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+    font-size: 11px;
+    font-weight: 600;           /* font-weight 600 igual al UI */
+    letter-spacing: 0.03em;
+    text-transform: none;       /* el UI no lo pone uppercase */
 }
 .repeater-header svg { flex-shrink: 0; }
 
@@ -1121,7 +1120,7 @@ body {
 /* ── Sub-repeater ── */
 .sub-wrap {
     margin: 6px 0 6px 0;
-    border-left: 3px solid #0f8594;
+    border-left: 3px solid #0CA4A5;
     border-radius: 0 6px 6px 0;
     overflow: hidden;
     background: #f8fafc;
@@ -1132,11 +1131,11 @@ body {
     gap: 5px;
     padding: 5px 10px;
     background: #e6f7f8;
-    color: #0f8594;
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    color: #0CA4A5;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: none;
     border-bottom: 1px solid #b2e8ec;
 }
 .sub-table {
@@ -1174,20 +1173,32 @@ img { max-width: 100%; }
 """
         resp_id    = self.response_id
         sub_at     = str(self.submitted_at or "")[:19].replace("T", " ")
+
+        # Título grande del formato, prominente en la parte superior
+        title_html = ""
+        if self.form_title:
+            title_html = (
+                '<div style="padding: 18px 18px 6px 18px;">'
+                '<h1 style="font-size: 22px; font-weight: 700; color: #0f172a;'
+                ' margin: 0; line-height: 1.25; letter-spacing: -0.01em;">'
+                + _e(self.form_title) +
+                '</h1>'
+                '</div>'
+            )
+
+        # Meta-strip: ahora solo lleva ID y fecha (el título ya está arriba)
         meta_parts = []
         if resp_id:
             meta_parts.append('<span class="resp-badge">Respuesta #' + str(resp_id) + '</span>')
         if sub_at:
             meta_parts.append('<span class="dot">●</span><span>' + _e(sub_at) + '</span>')
-        if self.form_title:
-            meta_parts.append('<span class="dot">●</span><span style="font-weight:600;color:#334155;">'
-                              + _e(self.form_title) + '</span>')
         meta_html = ('<div class="meta-strip">' + "".join(meta_parts) + '</div>') if meta_parts else ""
 
         return (
             "<!DOCTYPE html>\n<html lang=\"es\">\n<head>\n"
             "<meta charset=\"UTF-8\"/>\n<style>\n" + css + "\n</style>\n</head>\n<body>\n"
             '<div class="page-wrapper">\n'
+            + title_html + "\n"
             + meta_html + "\n"
             + '<div class="fields-area">'
             + self._header_html()

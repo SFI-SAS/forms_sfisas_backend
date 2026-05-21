@@ -162,6 +162,55 @@ def get_all_questions(
         questions = get_questions(db)
         return questions
 
+@router.get("/regisfacial/available")
+def list_regisfacial_questions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Lista todas las preguntas tipo `regisfacial` del sistema con el formato
+    al que están asociadas.
+
+    Lo usa la UI de configuración de aprobadores: el admin selecciona aquí
+    de qué pregunta de registro facial se validará al aprobador, igual que
+    un campo `firm` selecciona su `sourceQuestionId`.
+
+    Retorna:
+        [{ id, question_text, form_id, form_name }, ...]
+    """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No autenticado",
+        )
+
+    rows = (
+        db.query(
+            Question.id.label("id"),
+            Question.question_text.label("question_text"),
+            Form.id.label("form_id"),
+            Form.title.label("form_name"),
+        )
+        .outerjoin(FormQuestion, FormQuestion.question_id == Question.id)
+        .outerjoin(Form, Form.id == FormQuestion.form_id)
+        .filter(Question.question_type == QuestionType.regisfacial)
+        .order_by(Form.title.nulls_last(), Question.question_text)
+        .all()
+    )
+
+    # Una misma pregunta puede aparecer en varios formatos vía FormQuestion;
+    # devolvemos cada combinación. La UI puede mostrarlo como "Pregunta — Formato".
+    return [
+        {
+            "id": r.id,
+            "question_text": r.question_text,
+            "form_id": r.form_id,
+            "form_name": r.form_name,
+        }
+        for r in rows
+    ]
+
+
 @router.get("/get_question_by_id_with_category/{question_id}", response_model=QuestionWithCategory)
 def get_question_by_id_endpoint(
     question_id: int,
@@ -242,7 +291,7 @@ def create_multiple_options(options: List[OptionCreate], db: Session = Depends(g
         - 403: Si el usuario no está autenticado.
         - 400: Si ocurre un error de integridad al crear las opciones.
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create options"
@@ -279,7 +328,7 @@ def read_options_by_question(question_id: int, db: Session = Depends(get_db), cu
     HTTPException:
         - 403: Si el usuario no está autenticado.
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
@@ -316,7 +365,7 @@ def delete_question(question_id: int, db: Session = Depends(get_db), current_use
     HTTPException:
         - 403: Si el usuario no está autenticado.
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
@@ -356,7 +405,7 @@ def get_question_answers(question_id: int, db: Session = Depends(get_db), curren
         - 403: Si ocurre un error o no se encuentran respuestas (se podría cambiar a 404 si prefieres más precisión).
     """
     try:
-        if current_user == None:
+        if current_user is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User does not have permission to get options"
@@ -436,7 +485,7 @@ def fetch_filtered_questions(db: Session = Depends(get_db), current_user: User =
     HTTPException:
         - 403: Si el usuario no está autenticado.
     """
-    if current_user == None:
+    if current_user is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User does not have permission to get options"
@@ -748,7 +797,7 @@ def get_all_categories(
 
 @router.delete("/categories/{category_id}", status_code=204)
 def delete_category(category_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
@@ -790,7 +839,7 @@ def update_question_category(
     category_data: UpdateQuestionCategory,
     db: Session = Depends(get_db),current_user: User = Depends(get_current_user)
 ):
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"

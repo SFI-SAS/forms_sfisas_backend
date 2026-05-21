@@ -1007,6 +1007,11 @@ async def post_create_response(
                 sequence_number=approver.sequence_number,
                 is_mandatory=approver.is_mandatory,
                 status=ApprovalStatus.pendiente,
+                # Hereda firm_mode y la pregunta regisfacial fuente de la
+                # plantilla al momento de enviar. Fija las reglas para esta
+                # respuesta, aunque luego el admin cambie el template del formato.
+                firm_mode=getattr(approver, "firm_mode", "button") or "button",
+                firm_source_question_id=getattr(approver, "firm_source_question_id", None),
             )
             db.add(response_approval)
             approvers_created += 1
@@ -3765,7 +3770,11 @@ def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
                     sequence_number=approver.sequence_number,
                     is_mandatory=approver.is_mandatory,
                     deadline_days=approver.deadline_days,
-                    is_active=approver.is_active if approver.is_active is not None else True
+                    is_active=approver.is_active if approver.is_active is not None else True,
+                    # firm_mode: 'button' | 'button_or_facial' | 'facial'.
+                    # Default 'button' = flujo clásico (botón + comentario opcional).
+                    firm_mode=getattr(approver, "firm_mode", "button") or "button",
+                    firm_source_question_id=getattr(approver, "firm_source_question_id", None),
                 )
                 db.add(new_approval)
                 newly_created_user_ids.append(approver.user_id)
@@ -3777,7 +3786,9 @@ def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
                 sequence_number=approver.sequence_number,
                 is_mandatory=approver.is_mandatory,
                 deadline_days=approver.deadline_days,
-                is_active=approver.is_active if approver.is_active is not None else True
+                is_active=approver.is_active if approver.is_active is not None else True,
+                firm_mode=getattr(approver, "firm_mode", "button") or "button",
+                firm_source_question_id=getattr(approver, "firm_source_question_id", None),
             )
             db.add(new_approval)
             newly_created_user_ids.append(approver.user_id)
@@ -4000,6 +4011,14 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 "reconsideration_requested": ra.reconsideration_requested,
                 "reviewed_at": ra.reviewed_at.isoformat() if ra.reviewed_at else None,
                 "message": ra.message,
+                # Método de firma heredado al enviar la respuesta.
+                # Default 'button' para retrocompat con ResponseApproval antiguas.
+                "firm_mode": getattr(ra, "firm_mode", "button") or "button",
+                # Evidencia: id de la Answer regisfacial usada al firmar
+                # (NULL si aún no firmó o si firmó solo con botón).
+                "firm_answer_id": getattr(ra, "firm_answer_id", None),
+                # Pregunta regisfacial fuente configurada por el admin.
+                "firm_source_question_id": getattr(ra, "firm_source_question_id", None),
                 "user": {
                     "name": ra.user.name,
                     "email": ra.user.email,
@@ -5064,10 +5083,78 @@ async def update_response_approval_status(
     if not response_approval:
         raise HTTPException(status_code=404, detail="ResponseApproval not found")
 
+    # ── Validación de coherencia firm_mode + firm_answer_id ────────────────
+    # Reglas:
+    #   - 'button'           + firm_answer_id presente → 400 (no aplica facial)
+    #   - 'facial'           + status='aprobado' sin firm_answer_id → 400 (obligatorio)
+    #   - 'button_or_facial' → ambos válidos
+    # El rechazo NUNCA requiere firma facial (solo mensaje obligatorio).
+    firm_mode = getattr(response_approval, "firm_mode", "button") or "button"
+    firm_answer_id = getattr(update_data, "firm_answer_id", None)
+
+    if firm_mode == "button" and firm_answer_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Este aprobador fue configurado para firmar solo con el botón. "
+                "No se acepta firma facial en este caso."
+            ),
+        )
+
+    if firm_mode == "facial" and update_data.status == "aprobado" and firm_answer_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Este aprobador debe firmar facialmente para aprobar. "
+                "Falta firm_answer_id en el payload."
+            ),
+        )
+
+    if firm_answer_id is not None and update_data.status == "aprobado":
+        # Verifica que el Answer existe, es regisfacial, pertenece al usuario
+        # que aprueba (no a otra persona) y proviene de la pregunta fuente
+        # configurada por el admin (firm_source_question_id) — análogo a cómo
+        # un campo `firm` solo acepta firmas registradas en su sourceQuestionId.
+        from app.models import Question as _Q, Response as _R, Answer as _A, QuestionType as _QT
+        firm_source_qid = getattr(response_approval, "firm_source_question_id", None)
+        if firm_source_qid is None:
+            # Estado inconsistente: firm_mode != 'button' debería implicar
+            # fuente configurada. Bloqueamos para no aceptar evidencia inválida.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Esta aprobación no tiene configurada la pregunta de registro "
+                    "facial fuente. Pide al administrador que reconfigure el aprobador."
+                ),
+            )
+
+        answer_check = (
+            db.query(_A.id)
+            .join(_Q, _A.question_id == _Q.id)
+            .join(_R, _A.response_id == _R.id)
+            .filter(_A.id == firm_answer_id)
+            .filter(_Q.id == firm_source_qid)
+            .filter(_Q.question_type == _QT.regisfacial)
+            .filter(_R.user_id == user_id)
+            .first()
+        )
+        if not answer_check:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "El registro facial no corresponde al aprobador o no proviene "
+                    "de la pregunta de registro configurada para este aprobador."
+                ),
+            )
+
+        # Persistir como evidencia de no-repudio
+        response_approval.firm_answer_id = firm_answer_id
+    # ───────────────────────────────────────────────────────────────────────
+
     response_approval.status = update_data.status
     response_approval.reviewed_at = localize_to_bogota(update_data.reviewed_at or datetime.utcnow())
     response_approval.message = update_data.message
-    
+
     db.commit()
     db.refresh(response_approval)
 
@@ -8003,6 +8090,8 @@ def add_category_approver(
             existing.sequence_number = data.sequence_number
             existing.is_mandatory = data.is_mandatory
             existing.deadline_days = data.deadline_days
+            existing.firm_mode = getattr(data, "firm_mode", "button") or "button"
+            existing.firm_source_question_id = getattr(data, "firm_source_question_id", None)
             db.commit()
             db.refresh(existing)
             return existing
@@ -8014,6 +8103,8 @@ def add_category_approver(
         sequence_number=data.sequence_number,
         is_mandatory=data.is_mandatory,
         deadline_days=data.deadline_days,
+        firm_mode=getattr(data, "firm_mode", "button") or "button",
+        firm_source_question_id=getattr(data, "firm_source_question_id", None),
     )
 
     db.add(approver)
@@ -8046,6 +8137,19 @@ def update_category_approver(
         approver.deadline_days = data.deadline_days
     if data.is_active is not None:
         approver.is_active = data.is_active
+    if data.firm_mode is not None:
+        approver.firm_mode = data.firm_mode
+    # firm_source_question_id: detectar si vino en el payload (puede ser None
+    # legítimo cuando se baja a 'button').
+    if "firm_source_question_id" in data.model_fields_set:
+        approver.firm_source_question_id = data.firm_source_question_id
+
+    # Coherencia: si quedó firm_mode != 'button', exigir pregunta fuente.
+    if approver.firm_mode != "button" and approver.firm_source_question_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"firm_source_question_id es obligatorio cuando firm_mode='{approver.firm_mode}'."
+        )
 
     db.commit()
     db.refresh(approver)
@@ -8069,16 +8173,23 @@ def remove_category_approver(db: Session, approval_id: int) -> bool:
 def bulk_save_category_approvers(
     db: Session,
     category_id: int,
-    approvers_data: list  # List[CategoryApprovalCreate]
+    approvers_data: list,  # List[CategoryApprovalCreate]
+    approval_mode: Optional[str] = None,
 ) -> List[CategoryApproval]:
     """
     Guarda toda la lista de aprobadores de una categoría.
     Reemplaza los existentes: elimina los que no están en la lista nueva
     y agrega/actualiza los que sí están.
+
+    Si approval_mode viene, también se actualiza form_categories.approval_mode.
     """
     category = db.query(FormCategory).filter(FormCategory.id == category_id).first()
     if not category:
         raise HTTPException(status_code=404, detail="Categoría no encontrada")
+
+    # Actualizar el modo si vino — se persiste junto con los aprobadores.
+    if approval_mode is not None and approval_mode != category.approval_mode:
+        category.approval_mode = approval_mode
 
     # Validar que todos los usuarios existen
     user_ids = [a.user_id for a in approvers_data]
@@ -8105,6 +8216,8 @@ def bulk_save_category_approvers(
             sequence_number=data.sequence_number,
             is_mandatory=data.is_mandatory,
             deadline_days=data.deadline_days,
+            firm_mode=getattr(data, "firm_mode", "button") or "button",
+            firm_source_question_id=getattr(data, "firm_source_question_id", None),
         )
         db.add(approver)
         new_approvers.append(approver)
@@ -8140,6 +8253,7 @@ def get_all_categories_with_approvers(db: Session) -> list:
             "description": cat.description,
             "icon": cat.icon,
             "color": cat.color,
+            "approval_mode": getattr(cat, "approval_mode", "sequential") or "sequential",
             "approvers": approvers,
         })
 
@@ -8176,6 +8290,15 @@ def sync_form_approvals_from_category(
         # Si se quita la categoría, no hacer nada (mantener los que tiene)
         return
 
+    # Modo de aprobación de la categoría — se sobreescribe en el formato.
+    # Política decidida: si la categoría dicta los aprobadores, también dicta
+    # el modo. Evita estados inconsistentes (aprobadores nuevos + modo viejo).
+    category = db.query(FormCategory).filter(FormCategory.id == category_id).first()
+    if category:
+        cat_mode = getattr(category, "approval_mode", "sequential") or "sequential"
+        if form.approval_mode != cat_mode:
+            form.approval_mode = cat_mode
+
     # Obtener aprobadores activos de la categoría
     category_approvers = db.query(CategoryApproval).filter(
         CategoryApproval.category_id == category_id,
@@ -8200,6 +8323,8 @@ def sync_form_approvals_from_category(
                 is_mandatory=cat_approver.is_mandatory,
                 deadline_days=cat_approver.deadline_days,
                 is_active=True,
+                firm_mode=getattr(cat_approver, "firm_mode", "button") or "button",
+                firm_source_question_id=getattr(cat_approver, "firm_source_question_id", None),
             )
             db.add(form_approval)
     else:
@@ -8221,6 +8346,8 @@ def sync_form_approvals_from_category(
                     is_mandatory=cat_approver.is_mandatory,
                     deadline_days=cat_approver.deadline_days,
                     is_active=True,
+                    firm_mode=getattr(cat_approver, "firm_mode", "button") or "button",
+                    firm_source_question_id=getattr(cat_approver, "firm_source_question_id", None),
                 )
                 db.add(form_approval)
 

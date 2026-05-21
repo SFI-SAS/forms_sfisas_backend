@@ -256,7 +256,9 @@ def bulk_save_approvers(
     """Guarda toda la lista de aprobadores de una categoría (reemplaza existentes)."""
     if current_user is None:
         raise HTTPException(status_code=403, detail="Authentication required")
-    return bulk_save_category_approvers(db, category_id, payload.approvers)
+    return bulk_save_category_approvers(
+        db, category_id, payload.approvers, approval_mode=payload.approval_mode
+    )
 
 
 @router.post("/form-templates", response_model=FormTemplateResponse, status_code=201)
@@ -804,7 +806,7 @@ def check_form_responses(form_id: int, db: Session = Depends(get_db), current_us
             - 403 si el usuario no está autenticado.
             - 404 si el formulario no existe.
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get form"
@@ -1126,6 +1128,11 @@ def get_responses_with_answers(
                     "status": ap.status.value,
                     "reviewed_at": ap.reviewed_at,
                     "message": ap.message,
+                    # Método de firma + evidencia facial (para que el dueño de
+                    # la respuesta vea cómo van sus aprobaciones).
+                    "firm_mode": getattr(ap, "firm_mode", "button") or "button",
+                    "firm_answer_id": getattr(ap, "firm_answer_id", None),
+                    "firm_source_question_id": getattr(ap, "firm_source_question_id", None),
                     "user": {
                         "id": ap.user.id,
                         "name": ap.user.name,
@@ -2504,7 +2511,7 @@ def get_form_details(form_id: int, db: Session = Depends(get_db), current_user: 
     - 404 NOT FOUND: Si el formulario no existe.
     """
     
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
@@ -2617,7 +2624,7 @@ def get_notifications_by_form(form_id: int, db: Session = Depends(get_db), curre
     HTTPException 404:
         Si el formulario no existe (lanzado desde la función auxiliar `get_notifications_for_form`).
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
@@ -2672,7 +2679,7 @@ def update_notify_status_endpoint(notification_id: int, request: UpdateNotifyOnS
     HTTPException 404:
         Si la notificación no existe.
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
@@ -2714,7 +2721,7 @@ def delete_notification(notification_id: int, db: Session = Depends(get_db),  cu
     HTTPException 404:
         Si la notificación no existe.
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
@@ -2972,6 +2979,13 @@ def set_custom_template_id(
 
 UPLOAD_FOLDER = "logo"
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
+MAX_LOGO_SIZE = 2 * 1024 * 1024  # H-BW-001: 2 MB máximo
+
+# Magic bytes para formatos permitidos (H-BW-001: validación real, no solo extensión)
+_LOGO_MAGIC_BYTES = {
+    b"\x89PNG\r\n\x1a\n": "png",
+    b"\xff\xd8\xff": "jpg",
+}
 
 # Asegurar que la carpeta exista
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -3014,36 +3028,65 @@ def _resolve_logo_path():
 
 @router.post("/upload-logo/")
 async def upload_logo(file: UploadFile = File(...),current_user: User = Depends(get_current_user)):
-    # Validar extensión
-    if current_user == None:
+    # H-BW-015: usar `is None` en lugar de `== None`
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
+            detail="User does not have permission to upload logo"
             )
-    filename = file.filename
-    extension = filename.split(".")[-1].lower()
 
-    if extension not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="Tipo de archivo no permitido. Solo se permiten: png, jpg, jpeg.")
+    # H-BW-001: Validar tamaño antes de procesar
+    head = await file.read(MAX_LOGO_SIZE + 1)
+    if len(head) > MAX_LOGO_SIZE:
+        raise HTTPException(status_code=413, detail="El logo no debe exceder 2 MB")
 
-    # Elimina cualquier imagen anterior en la carpeta
-    for f in os.listdir(UPLOAD_FOLDER):
-        os.remove(os.path.join(UPLOAD_FOLDER, f))
+    # H-BW-001: Validar magic bytes (no confiar solo en extensión)
+    detected_ext = None
+    for magic, ext in _LOGO_MAGIC_BYTES.items():
+        if head.startswith(magic):
+            detected_ext = ext
+            break
 
-    # Guardar la nueva imagen
-    file_path = os.path.join(UPLOAD_FOLDER, f"logo.{extension}")
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    if detected_ext is None:
+        raise HTTPException(status_code=400, detail="Tipo de archivo no permitido. Solo se permiten imágenes PNG o JPEG.")
 
-    return JSONResponse(content={"message": "Imagen subida correctamente", "path": file_path})
+    # Normalizar a .jpg si es jpeg
+    extension = "jpg" if detected_ext == "jpg" else detected_ext
+    tmp_path = os.path.join(UPLOAD_FOLDER, f".tmp_logo.{extension}")
+    final_path = os.path.join(UPLOAD_FOLDER, f"logo.{extension}")
+
+    # H-BW-001: Escribir a archivo temporal y renombrar atómicamente (evita race condition)
+    try:
+        with open(tmp_path, "wb") as out:
+            out.write(head)
+        os.replace(tmp_path, final_path)  # atómico en mismo filesystem
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise HTTPException(status_code=500, detail="Error al guardar el logo")
+
+    # H-BW-001: Limpiar extensiones antiguas diferentes (solo después de subir el nuevo)
+    for ext in _LOGO_ALLOWED_EXTENSIONS:
+        if ext != extension:
+            old = os.path.join(UPLOAD_FOLDER, f"logo.{ext}")
+            if os.path.isfile(old):
+                try:
+                    os.unlink(old)
+                except OSError:
+                    pass
+
+    return JSONResponse(content={"message": "Imagen subida correctamente", "path": final_path})
 
 
 @router.get("/get-logo/")
 def get_logo(current_user: User = Depends(get_current_user)):
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
+            detail="User does not have permission to get logo"
             )
     # SECURITY (ID-017): usar helper que solo sirve logo.{png,jpg,jpeg}.
     resolved = _resolve_logo_path()
