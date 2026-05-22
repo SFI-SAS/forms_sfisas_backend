@@ -11,11 +11,11 @@ FIX v3.1:
   ✅ Nuevo parámetro response_id (opcional, retrocompatible)
 """
 
+import logging
 import mimetypes
 import os
 import smtplib
 import json
-import io
 from email.message import EmailMessage
 from email.utils import formataddr
 from datetime import datetime
@@ -25,8 +25,10 @@ from fastapi import UploadFile
 
 from app.api.controllers.excel_form_exporter import generate_form_excel
 from app.api.controllers.pdf_form_exporter import FormPdfExporter
-from app.models import Response, Form, Answer, FormAnswer, User
+from app.models import Response, Answer, FormAnswer, User
 from app.schemas import EmailAnswerItem
+
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -725,6 +727,8 @@ async def send_action_notification_email(
     pdf_bytes=None, pdf_filename=None, db=None, current_user=None,
     response_id: int = None,
     action_meta: dict = None,
+    custom_email_subject: str = None,
+    custom_email_body: str = None,
 ):
     """
     ★ CORREGIDO v3.1 ★
@@ -746,6 +750,12 @@ async def send_action_notification_email(
                     'send_custom_template':  ("PDF personalizado de cierre",  "Se adjunta el PDF con los campos configurados en la plantilla de cierre."),
                 }
         title, desc = titles.get(action, ("Notificación", f"Acción ejecutada: {action}"))
+
+        if custom_email_subject:
+            title = custom_email_subject
+        if custom_email_body:
+            desc = custom_email_body
+        subject_line = custom_email_subject if custom_email_subject else f"{title} — {form.title}"
 
         # ── Info del formulario ──
         body = _p(desc)
@@ -909,7 +919,7 @@ async def send_action_notification_email(
                             if normal_pdf:
                                 normal_filename = f"Completo_{response_obj.id}_{safe_title}.pdf"
                                 html_2 = _base_email_html(title, body)
-                                msg_2  = _new_msg(f"{title} — {form.title}", recipient)
+                                msg_2  = _new_msg(subject_line, recipient)
                                 msg_2.set_content(f"{title}: {form.title}")
                                 msg_2.add_alternative(html_2, subtype="html")
                                 if attachment_bytes:
@@ -936,7 +946,7 @@ async def send_action_notification_email(
         # ★ PASO 3: CONSTRUIR Y ENVIAR CORREO
         # ══════════════════════════════════════════════════════════
         html = _base_email_html(title, body)
-        msg = _new_msg(f"{title} — {form.title}", recipient)
+        msg = _new_msg(subject_line, recipient)
         msg.set_content(f"{title}: {form.title}")
         msg.add_alternative(html, subtype="html")
 
@@ -1026,7 +1036,9 @@ def send_rule_notification_email(
         try:
             d = datetime.strptime(str(date_limit), "%Y-%m-%d") if isinstance(date_limit, str) else date_limit
             fdate = d.strftime("%d/%m/%Y")
-        except:
+        except Exception as e:
+            # SECURITY (ID-040): bare `except:` capturaba KeyboardInterrupt/SystemExit.
+            logger.warning("ID-040: fallo parseando date_limit=%r → fallback str(): %s", date_limit, e)
             fdate = str(date_limit)
 
         if days_remaining <= 2:
@@ -1039,7 +1051,7 @@ def send_rule_notification_email(
         day_word = "día" if days_remaining == 1 else "días"
 
         body = _callout(f'<strong>{urg}</strong> — Quedan <strong>{days_remaining} {day_word}</strong> para el vencimiento.', sty)
-        body += _p(f'Estimado/a <strong>{user_name}</strong>, se acerca la fecha límite para una respuesta del formulario.')
+        body += _p(f'Estimado/a, se acerca la fecha límite para una respuesta del formulario.')
 
         body += _info_block("Formulario",
             _info_row("Título", form_title) +
@@ -1053,10 +1065,10 @@ def send_rule_notification_email(
             _info_row("Alerta configurada", f'{days_before_alert} días antes')
         )
         body += _info_block("Destinatario",
-            _info_row("Nombre", user_name) +
-            _info_row("Correo", user_email) +
-            _info_row("Documento", user_document) +
-            _info_row("Teléfono", user_telephone)
+        #     _info_row("Nombre", user_name) +
+            _info_row("Correo", user_email) 
+        #     _info_row("Documento", user_document) +
+        #     _info_row("Teléfono", user_telephone)
         )
         body += _btn(_APP_URL)
 

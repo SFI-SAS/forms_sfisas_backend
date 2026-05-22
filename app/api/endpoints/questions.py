@@ -1,20 +1,21 @@
-
 # Changes to be committed:
 #	modified:   app/api/endpoints/questions.py
 #
 
+from collections import defaultdict
 import hashlib
-import uuid
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.params import Query
+from pydantic import BaseModel, Field
 from pymysql import IntegrityError
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.database import get_db
-from app.models import Response, Form, Alias, FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationQuestionRule, User, UserType
+from app.models import Answer, Response, Form, Alias, FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationQuestionRule, User, UserType
 from app.crud import  create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_answers_by_question_id, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers_optimized, get_related_or_filtered_answers_with_forms, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
-from app.schemas import AnswerByQuestionResponse, AnswerSchema, DetectSelectRelationsRequest, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionWithCategory, RelationQuestionRuleCreate, RelationQuestionRuleResponse, UpdateQuestionCategory
-from app.core.security import get_current_user
+from app.schemas import AnswerByQuestionResponse, AnswerSchema, DetectSelectRelationsRequest, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionUpdatePayload, QuestionWithCategory, RelationQuestionRuleCreate, RelationQuestionRuleResponse, UpdateQuestionCategory
+from app.core.security import get_current_user, require_roles
 
 router = APIRouter()
 
@@ -371,11 +372,17 @@ def get_question_answers(question_id: int, db: Session = Depends(get_db), curren
         )
         
 @router.get("/unrelated_questions/{form_id}")
-def get_unrelated_questions_endpoint(form_id: int, db: Session = Depends(get_db)):
+def get_unrelated_questions_endpoint(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
     """
     Obtiene todas las preguntas que no están relacionadas con un formulario específico.
 
-    Este endpoint devuelve una lista de preguntas que aún no están asociadas al formulario con el `form_id` proporcionado.  
+    SECURITY (ID-005): requiere admin o creator (herramienta de diseño de forms).
+
+    Este endpoint devuelve una lista de preguntas que aún no están asociadas al formulario con el `form_id` proporcionado.
     Es útil para agregar nuevas preguntas a un formulario sin duplicar las ya relacionadas.
 
     Parámetros:
@@ -442,7 +449,8 @@ def fetch_filtered_questions(db: Session = Depends(get_db), current_user: User =
 @router.post("/question-table-relation/")
 def create_question_table_relation(
     relation_data: QuestionTableRelationCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Crea una relación entre una pregunta y una tabla externa.
@@ -450,6 +458,10 @@ def create_question_table_relation(
     Este endpoint permite establecer una relación entre una pregunta y una tabla externa
     (por ejemplo, para cargar datos dinámicamente) mediante un campo específico.
     Opcionalmente, también puede relacionarse con otra pregunta.
+
+    SECURITY (ID-005 / ID-006): solo admin/creator pueden crear relaciones; además
+    se bloquean campos sensibles (password, recognition_id, ...) en capa de creación
+    y de lectura (ver app/crud.py: _BLOCKED_RELATION_FIELDS).
 
     Parámetros:
     -----------
@@ -473,7 +485,13 @@ def create_question_table_relation(
     HTTPException:
         - 404: Si no se encuentra la pregunta o la pregunta relacionada.
         - 400: Si ya existe una relación para la pregunta dada.
+        - 403: Si el usuario no es admin o creator.
     """
+    if current_user.user_type not in (UserType.admin, UserType.creator):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo admin o creator pueden crear relaciones de tabla",
+        )
     relation = create_question_table_relation_logic(
         db=db,
         question_id=relation_data.question_id,
@@ -597,10 +615,13 @@ def get_related_answers(
 @router.post("/location-relation", status_code=201)
 def create_location_relation(
     relation: QuestionLocationRelationCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     """
     Crea una relación de ubicación entre dos preguntas dentro de un formulario.
+
+    SECURITY (ID-005): requiere admin o creator (mutación de diseño de forms).
 
     Este endpoint permite registrar una relación entre una pregunta origen y una pregunta destino
     dentro de un formulario específico. Sirve para vincular campos que representan ubicaciones
@@ -627,6 +648,7 @@ def create_location_relation(
     ------
     HTTPException:
         - 400: Si ya existe una relación con los mismos `form_id`, `origin_question_id` y `target_question_id`.
+        - 403: Si el usuario no es admin o creator.
     """
     # Validación opcional: evita duplicados exactos
     existing = db.query(QuestionLocationRelation).filter_by(
@@ -650,11 +672,17 @@ def create_location_relation(
     return {"message": "Relation created successfully", "id": new_relation.id}
 
 @router.get("/location-relation/{form_id}", response_model=List[QuestionLocationRelationOut])
-def get_location_relations_by_form_id(form_id: int, db: Session = Depends(get_db)):
+def get_location_relations_by_form_id(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
     Obtiene las relaciones de ubicación asociadas a un formulario específico.
 
-    Este endpoint retorna todas las relaciones entre preguntas de ubicación (por ejemplo, 
+    SECURITY (ID-005): requiere autenticación (lectura para diligenciamiento de forms).
+
+    Este endpoint retorna todas las relaciones entre preguntas de ubicación (por ejemplo,
     departamento → municipio) registradas para un formulario dado.
 
     Parámetros:
@@ -1029,3 +1057,392 @@ def create_relation_question_rule(
     db.refresh(new_rule)
 
     return new_rule
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ✅ NUEVO: ENDPOINT BULK PARA REGLAS DE RECORDATORIO POR EMAIL
+# ───────────────────────────────────────────────────────────────────────────
+# Este endpoint recibe N reglas de una sola vez, provenientes de los campos
+# con `email_notification = true` del formato. Cada regla contiene:
+#   - id_question       → la pregunta tipo email
+#   - notification_email→ el correo digitado (destinatario del recordatorio)
+#   - date_notification → fecha programada del recordatorio
+#   - time_alert        → días de anticipación (frontend envía "0")
+#   - notification_message → mensaje personalizado (opcional)
+#
+# NO reemplaza ni modifica el endpoint /relation-question-rule existente
+# (que sigue funcionando igual para los campos tipo date_notification).
+#
+# NO bloquea el envío inmediato por correo — ese flujo ocurre antes,
+# vía /forms/send-answers-by-email, y sigue funcionando como siempre.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class BulkEmailNotificationRuleItem(BaseModel):
+    id_question: int
+    notification_email: str
+    date_notification: datetime
+    time_alert: str = "0"
+    notification_message: Optional[str] = None
+    enabled: bool = True
+
+
+class BulkEmailNotificationRulesCreate(BaseModel):
+    id_form: int
+    id_response: Optional[int] = None
+    rules: List[BulkEmailNotificationRuleItem] = Field(default_factory=list)
+
+
+@router.post("/relation-question-rule/bulk-email-notifications")
+def create_bulk_email_notification_rules(
+    payload: BulkEmailNotificationRulesCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Crea en una sola transacción múltiples reglas de recordatorio por email,
+    provenientes de campos con props.email_notification = true.
+
+    Cada regla se guarda en la tabla `relation_question_rule` con
+    `notification_email` poblado, lo que indica al scheduler diario
+    (`notification_rules_task`) que el destinatario del recordatorio
+    es ese correo específico (no el user.email del response).
+    """
+
+    # 🔥 Validación del formato
+    form_exists = db.query(Form.id).filter(Form.id == payload.id_form).first()
+    if not form_exists:
+        raise HTTPException(404, "El formulario no existe")
+
+    # 🔥 Validación de la response (si viene)
+    if payload.id_response:
+        response_exists = db.query(Response.id).filter(
+            Response.id == payload.id_response
+        ).first()
+        if not response_exists:
+            raise HTTPException(404, "La response no existe")
+
+    if not payload.rules:
+        return {
+            "created": 0,
+            "skipped": 0,
+            "message": "No se recibieron reglas para crear",
+            "rule_ids": []
+        }
+
+    # 🔥 Validar todas las question_ids en un solo query
+    question_ids = [r.id_question for r in payload.rules]
+    existing_questions = {
+        q.id for q in db.query(Question.id).filter(
+            Question.id.in_(question_ids)
+        ).all()
+    }
+
+    created_rules = []
+    skipped = []
+
+    for rule_in in payload.rules:
+        if rule_in.id_question not in existing_questions:
+            skipped.append({
+                "id_question": rule_in.id_question,
+                "reason": "Question no existe"
+            })
+            continue
+
+        # Validación básica del email (el front ya valida, esto es defensa)
+        email_clean = (rule_in.notification_email or "").strip()
+        if not email_clean or "@" not in email_clean:
+            skipped.append({
+                "id_question": rule_in.id_question,
+                "reason": "Email inválido"
+            })
+            continue
+
+        new_rule = RelationQuestionRule(
+            id_form=payload.id_form,
+            id_question=rule_in.id_question,
+            id_response=payload.id_response,
+            date_notification=rule_in.date_notification,
+            time_alert=rule_in.time_alert or "0",
+            enabled=rule_in.enabled,
+            notification_email=email_clean,
+            notification_message=rule_in.notification_message,
+        )
+        db.add(new_rule)
+        created_rules.append(new_rule)
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error guardando reglas: {str(e)}"
+        )
+
+    # Refrescar para obtener IDs
+    rule_ids = []
+    for r in created_rules:
+        db.refresh(r)
+        rule_ids.append(r.id)
+
+    return {
+        "created": len(created_rules),
+        "skipped": len(skipped),
+        "skipped_detail": skipped,
+        "rule_ids": rule_ids,
+        "message": (
+            f"Se crearon {len(created_rules)} regla(s) de recordatorio por email"
+            + (f" — se omitieron {len(skipped)}" if skipped else "")
+        )
+    }
+
+
+from app.models import ResponseStatus  # agregar a los imports existentes si no está
+
+@router.get("/question-table-relation/serials/{question_id}")
+def get_serials_for_field(
+    question_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(status_code=403, detail="No autorizado")
+
+    relation = (
+        db.query(QuestionTableRelation)
+        .filter(QuestionTableRelation.question_id == question_id)
+        .first()
+    )
+
+    if not relation or not relation.related_form_id:
+        return {"serials": [], "question_id": question_id}
+
+    responses = (
+        db.query(Response)
+        .filter(
+            Response.form_id == relation.related_form_id,
+            Response.status.in_([
+                ResponseStatus.submitted,
+                ResponseStatus.approved
+            ])
+        )
+        .order_by(Response.submitted_at.desc())
+        .all()
+    )
+
+    serials = []
+    for resp in responses:
+        label = str(resp.id)
+        if relation.field_name:
+            try:
+                label_q_id = int(relation.field_name)
+                label_answer = next(
+                    (a.answer_text for a in resp.answers
+                     if a.question_id == label_q_id and a.answer_text),
+                    None
+                )
+                if label_answer:
+                    label = f"#{resp.id} — {label_answer}"
+            except (ValueError, TypeError):
+                pass
+
+        serials.append({
+            "response_id": resp.id,
+            "label": label,
+            "submitted_at": str(resp.submitted_at)[:19]
+        })
+
+    return {
+        "serials": serials,
+        "question_id": question_id,
+        "related_form_id": relation.related_form_id
+    }
+    
+    
+@router.get("/serial-autofill/{response_id}")
+def get_answers_map_for_serial(
+    response_id: int,
+    target_form_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(status_code=403, detail="No autorizado")
+
+    answers = (
+        db.query(Answer)
+        .filter(Answer.response_id == response_id)
+        .all()
+    )
+
+    if not answers:
+        raise HTTPException(status_code=404, detail=f"No hay respuestas para el serial {response_id}")
+
+    def is_useful(a) -> bool:
+        fp = getattr(a, 'file_path', None)
+        if fp and str(fp).strip():
+            return False
+        txt = getattr(a, 'answer_text', None)
+        if not txt or not str(txt).strip():
+            return False
+        if str(txt).strip().startswith(("{", "[")):
+            return False
+        return True
+
+    def get_pk(a) -> int:
+        """Obtiene la PK del answer para ordenar por inserción."""
+        for attr in ('id', 'id_answer', 'pk'):
+            val = getattr(a, attr, None)
+            if val is not None:
+                return int(val)
+        return 0
+
+    useful = [a for a in answers if is_useful(a)]
+
+    # ── Detectar campos de repetidor ─────────────────────────────────────────
+    # Un question_id que aparece MÁS DE UNA VEZ en el mismo response
+    # necesariamente proviene de filas de un repetidor.
+    from collections import Counter
+    q_count = Counter(a.question_id for a in useful)
+    repeater_qids = {qid for qid, cnt in q_count.items() if cnt > 1}
+
+    flat_answers     = [a for a in useful if a.question_id not in repeater_qids]
+    repeater_answers = [a for a in useful if a.question_id in repeater_qids]
+
+    # Mapa plano: question_id → answer_text  (solo campos no-repetidor)
+    source_map = {str(a.question_id): a.answer_text for a in flat_answers}
+
+    # ── Reconstruir filas del repetidor sin depender de repeater_row_index ───
+    # Para cada question_id repetido, ordenar sus answers por PK (orden de inserción).
+    # La i-ésima answer de cada campo corresponde a la fila i del repetidor.
+    per_q: dict = defaultdict(list)
+    for a in repeater_answers:
+        per_q[a.question_id].append(a)
+
+    for qid in per_q:
+        per_q[qid].sort(key=get_pk)
+
+    num_rows = max((len(v) for v in per_q.values()), default=0)
+
+    repeater_rows_raw: list = []
+    for row_idx in range(num_rows):
+        row: dict = {}
+        for qid, ans_list in per_q.items():
+            if row_idx < len(ans_list):
+                row[str(qid)] = ans_list[row_idx].answer_text
+        if row:
+            repeater_rows_raw.append(row)
+
+    repeater_rows_source = (
+        {"__repeater__": repeater_rows_raw} if repeater_rows_raw else {}
+    )
+
+    # ── Resolver hacia IDs del formulario destino ─────────────────────────────
+    local_map: dict = {}
+    repeater_rows_local: list = []
+
+    if target_form_id:
+        form_q_ids = [
+            fq.question_id for fq in
+            db.query(FormQuestion).filter(FormQuestion.form_id == target_form_id).all()
+        ]
+        form_q_ids_set = set(str(q) for q in form_q_ids)
+
+        relations = db.query(QuestionTableRelation).filter(
+            QuestionTableRelation.question_id.in_(form_q_ids)
+        ).all()
+
+        # related_question_id (origen) → question_id (destino local)
+        rel_map = {
+            str(r.related_question_id): str(r.question_id)
+            for r in relations if r.related_question_id
+        }
+
+        # Mapa plano resuelto (campos flat)
+        for rel in relations:
+            if rel.related_question_id:
+                val = source_map.get(str(rel.related_question_id))
+                if val:
+                    local_map[str(rel.question_id)] = val
+
+        for src_qid, val in source_map.items():
+            if src_qid in form_q_ids_set and src_qid not in local_map:
+                local_map[src_qid] = val
+
+        # Filas del repetidor resueltas
+        for source_row in repeater_rows_raw:
+            local_row: dict = {}
+            for src_qid, val in source_row.items():
+                local_qid = rel_map.get(src_qid)
+                if local_qid:
+                    local_row[local_qid] = val
+                elif src_qid in form_q_ids_set:
+                    local_row[src_qid] = val
+            if local_row:
+                repeater_rows_local.append(local_row)
+
+    return {
+        "response_id": response_id,
+        "answers_by_question_id": source_map,
+        "answers_by_local_question_id": local_map,
+        "repeater_rows_local": repeater_rows_local,
+        "repeater_rows_source": {str(k): v for k, v in repeater_rows_source.items()},
+    }
+    
+    
+@router.put("/update_question_endpoint/{question_id}")
+def update_question_endpoint(
+    question_id: int,
+    payload: QuestionUpdatePayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission"
+        )
+
+    # 1. Verificar que la pregunta existe
+    question = db.query(Question).filter(Question.id == question_id).first()
+    if not question:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Pregunta no encontrada"
+        )
+
+    # 2. Solo bloquear el cambio de TIPO si está vinculada a formatos
+    #    Nombre y descripción siempre se pueden editar.
+    if payload.question_type is not None and payload.question_type != question.question_type:
+        linked_count = (
+            db.query(FormQuestion)
+            .filter(FormQuestion.question_id == question_id)
+            .count()
+        )
+        if linked_count > 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"No se puede cambiar el tipo: vinculada a {linked_count} formato(s)"
+            )
+
+    # 3. Aplicar los campos del payload
+    if payload.question_text is not None:
+        question.question_text = payload.question_text.strip()
+    if payload.description is not None:
+        question.description = payload.description.strip()
+    if payload.question_type is not None:
+        question.question_type = payload.question_type
+    if payload.id_category is not None:
+        question.id_category = payload.id_category
+    if payload.id_alias is not None:
+        question.id_alias = payload.id_alias
+    elif payload.id_alias is None and "id_alias" in (payload.model_fields_set or set()):
+        question.id_alias = None
+
+    db.commit()
+    db.refresh(question)
+
+    return {
+        "message": "Pregunta actualizada correctamente",
+        "id": question.id,
+        "question_text": question.question_text
+    }

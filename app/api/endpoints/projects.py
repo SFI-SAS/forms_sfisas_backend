@@ -2,10 +2,10 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.crud import create_project, delete_project_by_id, get_all_projects, get_forms_by_project, get_responses_by_project
+from app.crud import create_project, get_all_projects, get_forms_by_project, get_responses_by_project
 from app.schemas import FormResponse, ProjectCreate, ProjectResponse
 from app.models import User, UserType
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_roles
 
 router = APIRouter()
 
@@ -52,13 +52,14 @@ def create_new_project(project: ProjectCreate, db: Session = Depends(get_db),cur
     return create_project(db, project)
 
 @router.get("/all_projects/", response_model=List[ProjectResponse])
-def get_projects(db: Session = Depends(get_db)):
+def get_projects(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
     """
     Obtiene la lista de todos los proyectos registrados.
 
-    Este endpoint devuelve todos los proyectos almacenados en la base de datos.
-    No requiere autenticación ni permisos especiales, aunque puede personalizarse
-    para agregar filtros o paginación si es necesario.
+    SECURITY (ID-005): requiere admin o creator (era público sin auth).
 
     Parámetros:
     -----------
@@ -75,9 +76,15 @@ def get_projects(db: Session = Depends(get_db)):
 
 
 @router.get("/by-project/{project_id}", response_model=List[FormResponse])
-def get_forms_by_project_endpoint(project_id: int, db: Session = Depends(get_db)):
+def get_forms_by_project_endpoint(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
     Obtiene todos los formularios asociados a un proyecto específico.
+
+    SECURITY (ID-005): requiere autenticación.
 
     Este endpoint permite recuperar la lista de formularios que pertenecen a un proyecto determinado,
     identificado por su `project_id`.

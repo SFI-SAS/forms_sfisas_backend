@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from requests import Session
 
 from app.api.controllers.responsibility_service import ResponsibilityTransferService
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_roles
 from app.database import get_db
 from app.models import User, UserType
 
@@ -52,11 +52,14 @@ async def transfer_responsibilities(
 @router.post("/transfer-specific-responsibilities")
 async def transfer_specific_responsibilities(
     request: SpecificTransferRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
 ):
     """
-    Transfiere responsabilidades específicas por formulario
-    
+    Transfiere responsabilidades específicas por formulario.
+
+    SECURITY (ID-005 / ID-020): solo admin puede ejecutar transferencias masivas.
+
     Ejemplo de uso:
     {
         "from_user_id": 1,

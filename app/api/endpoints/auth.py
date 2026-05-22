@@ -4,14 +4,11 @@ from app.database import get_db
 from app.schemas import Token
 from app.core.security import create_access_token, verify_password, get_current_user
 from app.crud import get_user_by_email
-from typing import Annotated
 from fastapi.security import OAuth2PasswordRequestForm
 from app.models import User
 
 router = APIRouter()
 
-
-db_dependency = Annotated[Session, Depends(get_db)]
 
 @router.post("/token", response_model=Token)
 def login_for_access_token(

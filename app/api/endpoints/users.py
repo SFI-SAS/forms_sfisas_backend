@@ -1,23 +1,20 @@
-from ast import Dict
-from collections import defaultdict
-from difflib import SequenceMatcher, diff_bytes
 import io
 import json
-from fastapi import APIRouter, Depends, File, Form as FastAPIForm, HTTPException, Request, UploadFile, status, Query
+from fastapi import APIRouter, Depends, File, Form as FastAPIForm, HTTPException, UploadFile, status, Query
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, ValidationError
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from typing import Any, List, Optional
+from typing import List, Optional
 from app import models
 from app.api.controllers.mail import send_welcome_email
 # from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.api.controllers.pdf_form_exporter import FormPdfExporter, generate_form_pdf
 from app.database import get_db
 
-from app.models import Answer, EmailConfig, Form, Question, Response, User, UserCategory, UserType
-from app.crud import _extract_style_config, _serialize_answers, create_email_config, create_user, create_user_category, create_user_with_random_password, decrypt_object, delete_user_category_by_id, encrypt_object, fetch_all_users, get_all_email_configs, get_all_user_categories, get_response_details_logic, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
-from app.schemas import EmailConfigCreate, EmailConfigResponse, EmailConfigUpdate, EmailStatusUpdate, UpdateRecognitionId, UpdateUserCategory, UserBaseCreate, UserCategoryCreate, UserCategoryResponse, UserCreate, UserResponse, UserUpdate, UserUpdateInfo
+from app.models import Answer, EmailConfig, Form, Response, User, UserCategory, UserType
+from app.crud import _extract_style_config, _serialize_answers, create_email_config, create_user, create_user_category, create_user_with_random_password, delete_user_category_by_id, fetch_all_users, get_all_email_configs, get_all_user_categories, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
+from app.schemas import EmailConfigCreate, EmailConfigResponse, EmailConfigUpdate, EmailStatusUpdate, UpdateRecognitionId, UpdateUserCategory, UserAdminUpdate, UserBaseCreate, UserCategoryCreate, UserCategoryResponse, UserCreate, UserResponse, UserSelfUpdate, UserUpdate, UserUpdateInfo
 from app.core.security import get_current_user, hash_password
 
 router = APIRouter()
@@ -26,12 +23,15 @@ router = APIRouter()
 def create_user_endpoint(
     user: UserCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Endpoint para registrar un nuevo usuario en el sistema.
 
     Esta función recibe los datos necesarios para crear un usuario,
     encripta la contraseña y guarda el usuario en la base de datos.
+
+    SECURITY (ID-005a): solo admin/creator pueden crear usuarios.
 
     Parámetros:
     -----------
@@ -46,9 +46,14 @@ def create_user_endpoint(
     UserResponse
         Objeto del usuario creado (excluyendo la contraseña).
     """
+    if current_user.user_type not in (UserType.admin, UserType.creator):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo admin o creator pueden crear usuarios",
+        )
     hashed_password = hash_password(user.password)
     user_data = user.model_copy(update={"password": hashed_password})
-    
+
     return create_user(db=db, user=user_data)
 
 @router.get("/{user_id}", response_model=UserResponse)
@@ -547,55 +552,86 @@ img {{ max-width: 100%; }}
 @router.put("/{user_id}", response_model=UserResponse)
 def update_user_endpoint(
     user_id: int,
-    user: UserUpdate,
+    payload: dict,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
     Actualiza los datos de un usuario específico.
 
-    Este endpoint permite:
-    - Que un usuario actualice su propio perfil.
-    - Que un usuario con tipo `creator` o `admin` actualice cualquier perfil.
+    SECURITY (ID-001): Los campos privilegiados (user_type) solo pueden ser
+    modificados por admin/creator, NO por el propio usuario sobre sí mismo.
 
-    Parámetros:
-    -----------
+    Este endpoint permite:
+    - Que un usuario actualice su propio perfil (sin tocar `user_type`).
+    - Que un usuario con tipo `creator` o `admin` actualice cualquier perfil
+      incluyendo el campo `user_type`.
+
+    Parámetros
+    ----------
     user_id : int
         ID del usuario que se desea actualizar.
-
-    user : UserUpdate
-        Objeto con los campos a modificar (nombre, correo, teléfono, etc.).
-
+    payload : dict
+        Objeto con los campos a modificar. Será validado contra
+        UserSelfUpdate o UserAdminUpdate según el rol del llamante.
     db : Session
         Sesión activa de la base de datos.
-
     current_user : User
         Usuario autenticado que realiza la solicitud.
 
-    Retorna:
-    --------
+    Retorna
+    -------
     UserResponse
         Información del usuario actualizado.
 
-    Lanza:
-    ------
-    HTTPException 403:
+    Lanza
+    -----
+    HTTPException 403
         Si el usuario autenticado no tiene permisos para actualizar este perfil.
-
-    HTTPException 404:
+    HTTPException 404
         Si el usuario no existe.
+    HTTPException 422
+        Si el payload contiene campos no permitidos para el rol del llamante.
     """
-    # Solo los creators pueden actualizar usuarios, o el propio usuario puede actualizar su perfil
+    is_admin = current_user.user_type in (UserType.creator, UserType.admin)
+    is_self = current_user.id == user_id
 
-    if current_user.id != user_id and current_user.user_type not in [UserType.creator, UserType.admin]:
+    # Check 1: ¿quién puede tocar este recurso?
+    if not (is_self or is_admin):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to update this user"
         )
 
-    updated_user = update_user(db=db, user_id=user_id, user=user)
+    # Check 2 (SECURITY ID-001): validar el body según el rol del llamante.
+    # - Si el caller NO es admin/creator → validar contra UserSelfUpdate (sin user_type).
+    # - Si el caller ES admin/creator → puede mandar user_type también.
+    try:
+        if is_admin:
+            validated = UserAdminUpdate(**payload)
+        else:
+            validated = UserSelfUpdate(**payload)
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=e.errors()
+        )
+
+    update_data = validated.model_dump(exclude_unset=True)
+
+    # Check 3 (SECURITY ID-001): incluso un admin no puede cambiar su PROPIO
+    # user_type. Previene auto-degradación accidental y auto-promoción de
+    # creator a admin sin pasar por otro admin.
+    if is_self:
+        update_data.pop("user_type", None)
+
+    # Aplicar cambios (update_user hashea password si viene)
+    updated_user = update_user(db=db, user_id=user_id, user=update_data)
     if not updated_user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
     return updated_user
 
     
@@ -1274,24 +1310,16 @@ def update_user_recognition_id(
     return user
 
 
-@router.post("/encrypt-test")
-async def encrypt_test():
-    """Endpoint simple para probar encriptación"""
-    data = {"mensaje": "MANUEL GOMEZ MACEA", "numero": 50, "activo": True}
-    encrypted = encrypt_object(data)
-    return {
-        "original": data,
-        "encrypted": encrypted
-    }
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🔒 ELIMINADO: /encrypt-test y /decrypt-test/{encrypted_data}
+# ───────────────────────────────────────────────────────────────────────────────
+# Eran oráculos criptográficos públicos (sin autenticación) que permitían a
+# cualquier atacante cifrar/descifrar datos arbitrarios con la clave del sistema.
+# Remediación: eliminados completamente. Si se necesitan tests de cifrado,
+# hacerlos en tests unitarios locales (pytest), nunca expuestos en el API.
+# ═══════════════════════════════════════════════════════════════════════════════
 
-@router.post("/decrypt-test/{encrypted_data}")
-async def decrypt_test(encrypted_data: str):
-    """Endpoint simple para probar desencriptación"""
-    decrypted = decrypt_object(encrypted_data)
-    return {
-        "decrypted": decrypted,
-        "encrypted_was": encrypted_data
-    }
+
 @router.patch("/asign-bitacora/{user_id}")
 def asignar_bitacora(
     user_id: int,

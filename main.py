@@ -1,11 +1,15 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware 
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 from jinja2 import Environment, FileSystemLoader
+from sqlalchemy import text
 from app.api.controllers.mail import send_rule_notification_email
 from app.redis_client import redis_client
 from app.crud import (
-    get_response_details_logic, 
+    get_response_details_logic,
     get_schedules_by_frequency,
     get_pending_notification_rules,
     disable_notification_rule
@@ -14,12 +18,13 @@ from app.crud import (
 from app.database import SessionLocal, engine
 from app.models import Base, EmailConfig
 from app.api.endpoints import (
-    alias, approvers, download_template, list_form, pdf_router, projects, responses, 
+    alias, approvers, consultants, download_template, list_form, pdf_router, profiles, projects, responses,
     responsibilitytransfer, users, forms, auth, questions
 )
 
-from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Safemetrics Forms API",
@@ -30,15 +35,19 @@ app = FastAPI(
 
 
 # 1. CORS debe ir primero
-origins = ["https://forms.sfisas.com.co", "https://app.safemetrics.co", "*"]  # Ajustar en producción: ["https://forms.sfisas.com.co", "https://app.safemetrics.co"]
+import os
+_default_origins = "https://forms.sfisas.com.co,http://localhost:4321"
+_origins_env = os.getenv("CORS_ORIGINS", _default_origins)
+origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
 
 # 1. CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=origins,                     # NUNCA "*" con credentials
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "User-Agent"],
+    max_age=600,
 )
 
 # 2. GZIP
@@ -112,6 +121,8 @@ app.include_router(
 )
 app.include_router(download_template.router, prefix="/download_template", tags=["Download Templates"])
 app.include_router(alias.router, prefix="/alias", tags=["alias"])
+app.include_router(consultants.router, prefix="/consultants", tags=["consultants"])
+app.include_router(profiles.router, prefix="/profiles", tags=["profiles"])
 
 # ========================================
 # CREAR TABLAS
@@ -147,12 +158,28 @@ def read_root():
 
 @app.get("/health")
 def health_check():
-    """Endpoint para verificar estado de la API y Redis"""
+    """Endpoint para verificar estado de la API, Redis y BD.
+
+    SECURITY (ID-026): retorna HTTP 503 si Redis o BD están caídos para que
+    orquestadores (k8s, ELB, nginx upstream) hagan failover automático.
+    El body mantiene el mismo shape en éxito y degradación para facilitar debug.
+    """
     redis_status = redis_client.check_connection()
-    return {
-        "status": "ok",
-        "redis_connected": redis_status
+    db_status = False
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        db_status = True
+    except Exception as e:
+        # No exponer detalles internos al cliente; solo loguear tipo de excepción.
+        logger.warning("ID-026: health DB ping fallido (%s)", type(e).__name__)
+    healthy = redis_status and db_status
+    body = {
+        "status": "ok" if healthy else "degraded",
+        "redis_connected": redis_status,
+        "db_connected": db_status,
     }
+    return JSONResponse(content=body, status_code=200 if healthy else 503)
 
 # ========================================
 # SCHEDULER PARA TAREAS PROGRAMADAS

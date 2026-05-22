@@ -1,11 +1,14 @@
 import json
+import logging
 from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Any, Literal, Optional, List, Dict, Union
-from datetime import date, datetime
+from datetime import datetime
 from enum import Enum
 
 from app.models import ApprovalStatus
+
+logger = logging.getLogger(__name__)
 
 class QuestionIdsRequest(BaseModel):
     """Modelo para actualizar las preguntas de un formulario"""
@@ -47,11 +50,17 @@ class UserResponse(UserBase):
     class Config:
         from_attributes = True
 
-class UserUpdate(BaseModel):
+class UserSelfUpdate(BaseModel):
+    """Campos que un usuario puede actualizar de sí mismo (no privilegiados)."""
     name: Optional[str] = None
     email: Optional[str] = None
     password: Optional[str] = None
+
+class UserAdminUpdate(UserSelfUpdate):
+    """Campos adicionales que solo admin/creator pueden modificar."""
     user_type: Optional[UserType] = None
+
+UserUpdate = UserAdminUpdate
     
 # Schemas for Option
 class OptionCreate(BaseModel):
@@ -362,6 +371,7 @@ class ApproverSchema(BaseModel):
 class FormApprovalCreateSchema(BaseModel):
     form_id: int
     approvers: List[ApproverSchema]
+    approval_mode: Optional[Literal["sequential", "parallel"]] = "sequential"
 
     class Config:
         from_attributes = True
@@ -576,6 +586,8 @@ class FormCloseConfigCreate(BaseModel):
     report_recipients: Optional[List[str]] = None
     custom_template_recipients: Optional[List[str]] = None
     custom_template_id: Optional[int] = None
+    custom_email_subject: Optional[str] = None
+    custom_email_body: Optional[str] = None
 
     @validator('download_link_recipients', 'email_recipients', 'report_recipients', 'custom_template_recipients', pre=True)
     def validate_emails(cls, v):
@@ -584,7 +596,9 @@ class FormCloseConfigCreate(BaseModel):
         if isinstance(v, str):
             try:
                 return json.loads(v)
-            except:
+            except Exception as e:
+                # SECURITY (ID-040): bare `except:` reemplazado; no logueamos `v` por contener PII (emails).
+                logger.warning("ID-040: validate_emails JSON parse fallido (%s) → fallback [v]", type(e).__name__)
                 return [v]
         return v
 class FormCloseConfigOut(BaseModel):
@@ -601,6 +615,8 @@ class FormCloseConfigOut(BaseModel):
     report_recipients: Optional[List[str]] = None
     custom_template_recipients: Optional[List[str]] = None
     custom_template_id: Optional[int] = None
+    custom_email_subject: Optional[str] = None
+    custom_email_body: Optional[str] = None
 
     class Config:
         orm_mode = True
@@ -612,7 +628,9 @@ class FormCloseConfigOut(BaseModel):
         if isinstance(v, str):
             try:
                 return json.loads(v)
-            except:
+            except Exception as e:
+                # SECURITY (ID-040): bare `except:` reemplazado; no logueamos `v` por contener PII (emails).
+                logger.warning("ID-040: parse_json_field JSON parse fallido (%s) → fallback []", type(e).__name__)
                 return []
         return v
 
@@ -670,6 +688,15 @@ class AliasSchema(BaseModel):
     
     class Config:
         from_attributes = True
+        
+
+class FormBasicInfo(BaseModel):
+    id: int
+    title: str
+
+    class Config:
+        from_attributes = True
+        
 class QuestionWithCategory(BaseModel):
     id: int
     question_text: str
@@ -680,7 +707,7 @@ class QuestionWithCategory(BaseModel):
     category: CategorySchema | None
     related_question_id: Optional[int] = None
     related_question: Optional[dict] = None  # ← CAMBIAR A dict, no a objeto
-    
+    forms: List[FormBasicInfo] = []
     id_alias: Optional[int] = None
     alias: Optional[AliasSchema] = None
     class Config:
@@ -1315,6 +1342,183 @@ class UpdateMathOperationRequest(BaseModel):
     operations: str
 
 
+class QuestionUpdatePayload(BaseModel):
+    question_text: Optional[str] = None
+    description: Optional[str] = None
+    question_type: Optional[str] = None
+    id_category: Optional[int] = None
+    id_alias: Optional[int] = None
 
 
+# ===================== CONSULTANTS =====================
 
+class ConsultantScopeStr(str, Enum):
+    form = "form"
+    user = "user"
+    form_user = "form_user"
+    category = "category"
+
+
+class ConsultantAssignmentCreate(BaseModel):
+    consultant_id: int
+    scope: ConsultantScopeStr
+    form_id: Optional[int] = None
+    target_user_id: Optional[int] = None
+    category_id: Optional[int] = None
+
+
+class ConsultantAssignmentUpdate(BaseModel):
+    scope: Optional[ConsultantScopeStr] = None
+    form_id: Optional[int] = None
+    target_user_id: Optional[int] = None
+    category_id: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class ConsultantAssignmentOut(BaseModel):
+    id: int
+    consultant_id: int
+    consultant_name: Optional[str] = None
+    consultant_email: Optional[str] = None
+    scope: ConsultantScopeStr
+    form_id: Optional[int] = None
+    form_title: Optional[str] = None
+    target_user_id: Optional[int] = None
+    target_user_name: Optional[str] = None
+    category_id: Optional[int] = None
+    category_name: Optional[str] = None
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ConsultantUserOut(BaseModel):
+    """Un usuario con sus asignaciones agrupadas, para la pantalla admin."""
+    consultant_id: int
+    consultant_name: str
+    consultant_email: str
+    assignments: List[ConsultantAssignmentOut] = []
+
+
+class ConsultantResponseRow(BaseModel):
+    """Cada respuesta visible para el consultor."""
+    response_id: int
+    form_id: int
+    form_title: str
+    submitted_by_id: int
+    submitted_by_name: str
+    submitted_at: Optional[datetime] = None
+    status: Optional[str] = None
+    category_name: Optional[str] = None
+
+
+class ConsultantResponsesPage(BaseModel):
+    items: List[ConsultantResponseRow]
+    total: int
+    page: int
+    page_size: int
+
+
+class ConsultantAssignmentBulkRule(BaseModel):
+    scope: ConsultantScopeStr
+    form_id: Optional[int] = None
+    target_user_id: Optional[int] = None
+    category_id: Optional[int] = None
+
+
+class ConsultantAssignmentBulkCreate(BaseModel):
+    consultant_id: int
+    rules: List[ConsultantAssignmentBulkRule]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PROFILES
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ProfileMemberOut(BaseModel):
+    id: int
+    name: str
+    email: str
+    num_document: Optional[str] = None
+    user_type: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ProfileFormOut(BaseModel):
+    id: int
+    title: str
+    description: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ProfileCategoryOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ProfileCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=150)
+    description: Optional[str] = None
+    user_ids: List[int] = []
+    form_ids: List[int] = []
+    category_ids: List[int] = []
+
+
+class ProfileUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=150)
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class ProfileMembersUpdate(BaseModel):
+    user_ids: List[int]
+
+
+class ProfileFormsUpdate(BaseModel):
+    form_ids: List[int]
+
+
+class ProfileCategoriesUpdate(BaseModel):
+    category_ids: List[int]
+
+
+class ProfileOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    is_active: bool
+    created_by: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+    users: List[ProfileMemberOut] = []
+    forms: List[ProfileFormOut] = []
+    categories: List[ProfileCategoryOut] = []
+
+    class Config:
+        from_attributes = True
+
+
+class ProfileSummaryOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    is_active: bool
+    user_count: int
+    form_count: int           # formatos efectivos (directos + via categoria), distinct
+    direct_form_count: int    # solo asignados directamente
+    category_count: int       # categorias enlazadas
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True

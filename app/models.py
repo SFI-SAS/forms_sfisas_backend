@@ -1,7 +1,6 @@
-
 from datetime import datetime
 from sqlalchemy import (
-    Boolean, Column, BigInteger, DateTime, Integer, LargeBinary, String, Text, 
+    Boolean, Column, BigInteger, DateTime, Integer, String, Text, 
     ForeignKey, TIMESTAMP, Enum, UniqueConstraint, func, text
 )
 from sqlalchemy.orm import relationship
@@ -160,6 +159,19 @@ class Form(Base):
     # ✅ NUEVOS CAMPOS
     instructivo_url = Column(Text, nullable=True)
     alert_message = Column(Text, nullable=True)  # Texto de alerta antes de llenar el formato
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # ✅ NUEVO: Modo de aprobación
+    # ───────────────────────────────────────────────────────────────────────
+    #   'sequential' → jerárquico (como siempre). El aprobador #N solo puede
+    #                  aprobar si los anteriores (sequence_number menor) ya
+    #                  aprobaron. Un rechazo bloquea a los siguientes.
+    #   'parallel'   → todos pueden aprobar/rechazar en cualquier orden.
+    #                  El estado final sigue el mismo criterio: si alguien
+    #                  rechaza el formato queda 'rechazado'; si TODOS los
+    #                  obligatorios aprueban, queda 'aprobado'.
+    # ═══════════════════════════════════════════════════════════════════════
+    approval_mode = Column(String(20), nullable=False, default='sequential')
     
     user = relationship('User', back_populates='forms')
     form_moderators = relationship("FormModerators", back_populates="form", cascade="all, delete-orphan")
@@ -239,7 +251,7 @@ class Response(Base):
     repeated_id = Column(String(80), nullable=True)
     submitted_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     status = Column(Enum(ResponseStatus), default=ResponseStatus.draft, nullable=False)
-    
+    sync_pendiente = Column(Boolean, default=False, nullable=False)
     form = relationship('Form', back_populates='responses')
     user = relationship('User', back_populates='responses')
     answers = relationship('Answer', back_populates='response')
@@ -402,6 +414,8 @@ class FormCloseConfig(Base):
     report_recipients = Column(AutoJSON, nullable=True, default=None)
     custom_template_recipients = Column(AutoJSON, nullable=True, default=None)
     custom_template_id = Column(BigInteger, ForeignKey('download_templates.id'), nullable=True)
+    custom_email_subject = Column(String(255), nullable=True)
+    custom_email_body = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     
@@ -573,6 +587,16 @@ class RelationQuestionRule(Base):
     time_alert = Column(String(100), nullable=True)  # Hora para alerta o notificación
     enabled = Column(Boolean, default=True, nullable=False)
 
+    # ═══════════════════════════════════════════════════════════════════
+    # ✅ NUEVOS CAMPOS — soporte para email_notification combinado con date_notification
+    # Cuando `notification_email` tiene valor, el scheduler enviará el recordatorio
+    # a ese email en vez de al usuario que diligenció el response.
+    # Cuando está en NULL (reglas viejas de campos date_notification),
+    # el comportamiento sigue siendo idéntico al de antes: se usa user.email del response.
+    # ═══════════════════════════════════════════════════════════════════
+    notification_email = Column(String(255), nullable=True)   # Email destinatario custom (campos email_notification)
+    notification_message = Column(Text, nullable=True)        # Mensaje personalizado opcional
+
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -632,3 +656,102 @@ class CategoryApproval(Base):
     # Relationships
     category = relationship('FormCategory', back_populates='approvals')
     user = relationship('User')
+
+
+class ConsultantScope(str, enum.Enum):
+    form = "form"
+    user = "user"
+    form_user = "form_user"
+    category = "category"
+
+
+class ConsultantAssignment(Base):
+    __tablename__ = 'consultant_assignments'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    consultant_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    scope = Column(Enum(ConsultantScope), nullable=False)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=True)
+    target_user_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=True)
+    category_id = Column(BigInteger, ForeignKey('form_categories.id', ondelete='CASCADE'), nullable=True)
+    created_by = Column(BigInteger, ForeignKey('users.id'), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    consultant = relationship('User', foreign_keys=[consultant_id])
+    target_user = relationship('User', foreign_keys=[target_user_id])
+    creator = relationship('User', foreign_keys=[created_by])
+    form = relationship('Form', foreign_keys=[form_id])
+    category = relationship('FormCategory', foreign_keys=[category_id])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROFILES — agrupan usuarios y formatos para que los miembros puedan
+# diligenciar los formatos asignados al perfil.
+# Solo administradores gestionan estas tablas.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class Profile(Base):
+    __tablename__ = 'profiles'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    name = Column(String(150), nullable=False, unique=True)
+    description = Column(Text, nullable=True)
+    created_by = Column(BigInteger, ForeignKey('users.id'), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    creator = relationship('User', foreign_keys=[created_by])
+    user_links = relationship('ProfileUser', back_populates='profile', cascade='all, delete-orphan')
+    form_links = relationship('ProfileForm', back_populates='profile', cascade='all, delete-orphan')
+    category_links = relationship('ProfileCategory', back_populates='profile', cascade='all, delete-orphan')
+
+
+class ProfileUser(Base):
+    __tablename__ = 'profile_users'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    profile_id = Column(BigInteger, ForeignKey('profiles.id', ondelete='CASCADE'), nullable=False, index=True)
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    assigned_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('profile_id', 'user_id', name='uq_profile_user'),
+    )
+
+    profile = relationship('Profile', back_populates='user_links')
+    user = relationship('User')
+
+
+class ProfileForm(Base):
+    __tablename__ = 'profile_forms'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    profile_id = Column(BigInteger, ForeignKey('profiles.id', ondelete='CASCADE'), nullable=False, index=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False, index=True)
+    assigned_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('profile_id', 'form_id', name='uq_profile_form'),
+    )
+
+    profile = relationship('Profile', back_populates='form_links')
+    form = relationship('Form')
+
+
+class ProfileCategory(Base):
+    __tablename__ = 'profile_categories'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    profile_id = Column(BigInteger, ForeignKey('profiles.id', ondelete='CASCADE'), nullable=False, index=True)
+    category_id = Column(BigInteger, ForeignKey('form_categories.id', ondelete='CASCADE'), nullable=False, index=True)
+    assigned_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('profile_id', 'category_id', name='uq_profile_category'),
+    )
+
+    profile = relationship('Profile', back_populates='category_links')
+    category = relationship('FormCategory')

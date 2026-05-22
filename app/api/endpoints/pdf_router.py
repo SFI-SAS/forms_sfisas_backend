@@ -1,19 +1,12 @@
 # pdf_router.py - Versión modificada para mostrar todas las respuestas
-import os
 import json
 import re
-from fastapi import APIRouter, HTTPException, Depends, Request
-from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import select
-from typing import List, Dict, Any, Optional
-import io
+from fastapi import APIRouter, Request
+from typing import List, Dict, Any
 import logging
 from datetime import datetime
 from app.api.controllers.pdf_service import PdfGeneratorService
-from app.api.schemas.form_data import FormResponseList
-from app.database import get_db
-from app.models import Answer, AnswerHistory, Response, ResponseApproval
+from app.models import ResponseApproval
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
