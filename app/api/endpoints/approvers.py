@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -16,6 +16,8 @@ import pandas as pd
 from app.models import Answer, AnswerHistory, ApprovalRequirement, ApprovalStatus, Form, FormApproval, Question, Response, ResponseApproval, ResponseApprovalRequirement, User, UserType
 from app.schemas import ApprovalRequirementsCreateSchema, BulkUpdateFormApprovals, FormApprovalCreateSchema, FormWithApproversResponse, RequiredFormsResponse, ResponseDetailInfo, UpdateResponseApprovalRequest
 from fastapi import Form as FastAPIForm 
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -62,10 +64,10 @@ def create_form_approvals(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission"
         )
-    
+
     try:
         new_ids = save_form_approvals(data, db)
-        
+
         # Información adicional sobre la configuración creada
         total_approvers = len(data.approvers)
         
@@ -94,6 +96,42 @@ def create_form_approvals(
 APPROVAL_ATTACHMENTS_FOLDER = "./approval_attachments"
 os.makedirs(APPROVAL_ATTACHMENTS_FOLDER, exist_ok=True)
 ALLOWED_APPROVALS_DIR = os.path.realpath(APPROVAL_ATTACHMENTS_FOLDER)
+
+# H-BW-002: Seguridad en adjuntos — whitelist MIME + límite de tamaño
+MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024  # 10 MB
+ALLOWED_ATTACHMENT_MIME = {
+    "application/pdf",
+    "image/png", "image/jpeg",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",        # .xlsx
+    "application/vnd.ms-excel",                                                 # .xls
+    "text/csv", "text/plain",
+    "application/zip",
+}
+
+
+def _secure_filename(filename: str) -> str:
+    """H-BW-002: sanitiza el filename del cliente — elimina CRLF, paths, caracteres peligrosos."""
+    if not filename:
+        return "archivo"
+    # Strip CR/LF para prevenir header injection
+    name = filename.replace("\r", "").replace("\n", "").strip()
+    # Tomar solo el nombre base (sin path)
+    name = os.path.basename(name)
+    # Truncar a 200 chars máximo
+    if len(name) > 200:
+        base, ext = os.path.splitext(name)
+        name = base[:200 - len(ext)] + ext
+    return name or "archivo"
+
+
+def _validate_attachment_mime(content_type: str | None) -> bool:
+    """H-BW-002: valida que el MIME declarado esté en la whitelist."""
+    if not content_type:
+        return False
+    # Tomar solo el tipo base (ignorar charset, boundary, etc.)
+    mime = content_type.split(";")[0].strip().lower()
+    return mime in ALLOWED_ATTACHMENT_MIME
 
 @router.put("/update-response-approval/{response_id}")
 async def update_response_approval(
@@ -127,7 +165,7 @@ async def update_response_approval(
                         update_data_dict['reviewed_at'].replace('Z', '+00:00')
                     )
                 except ValueError:
-                    update_data_dict['reviewed_at'] = datetime.utcnow()
+                    update_data_dict['reviewed_at'] = datetime.now(timezone.utc)
             
             # Crear el objeto UpdateResponseApprovalRequest
             update_data = UpdateResponseApprovalRequest(**update_data_dict)
@@ -147,39 +185,67 @@ async def update_response_approval(
         uploaded_files_info = []
         if files:
             for file in files:
-                # Verificar que el archivo no esté vacío
-                if file.filename and file.size and file.size > 0:
-                    try:
-                        # Generar nombre único para el archivo
-                        unique_filename = f"{uuid.uuid4()}_{file.filename}"
-                        file_path = os.path.join(APPROVAL_ATTACHMENTS_FOLDER, unique_filename)
-                        
-                        # Guardar el archivo
-                        with open(file_path, "wb") as f:
-                            content = await file.read()
-                            f.write(content)
-                        
-                        # Guardar información del archivo
-                        file_info = {
-                            "original_name": file.filename,
-                            "stored_name": unique_filename,
-                            "file_path": file_path,
-                            "content_type": file.content_type,
-                            "size": len(content),
-                            "uploaded_at": datetime.utcnow().isoformat()
-                        }
-                        uploaded_files_info.append(file_info)
-                        
-                    except Exception as e:
-                        # Si falla la subida de un archivo, lanzar error
-                        raise HTTPException(
-                            status_code=500, 
-                            detail=f"Error uploading file {file.filename}: {str(e)}"
-                        )
+                if not file.filename or not file.size or file.size == 0:
+                    continue
+
+                # H-BW-002: Validar MIME del archivo
+                if not _validate_attachment_mime(file.content_type):
+                    raise HTTPException(
+                        status_code=415,
+                        detail=f"Tipo de archivo no permitido: {file.content_type or 'desconocido'}"
+                    )
+
+                # H-BW-002: Sanitizar filename del cliente
+                safe_name = _secure_filename(file.filename)
+
+                try:
+                    # Generar nombre único (UUID + nombre sanitizado, sin CRLF)
+                    unique_filename = f"{uuid.uuid4()}_{safe_name}"
+                    file_path = os.path.join(APPROVAL_ATTACHMENTS_FOLDER, unique_filename)
+
+                    # H-BW-002: Path traversal check
+                    if not os.path.realpath(file_path).startswith(ALLOWED_APPROVALS_DIR + os.sep):
+                        raise HTTPException(status_code=400, detail="Nombre de archivo inválido")
+
+                    # H-BW-002: Stream a disco con cap de tamaño (no cargar todo en memoria)
+                    size = 0
+                    with open(file_path, "wb") as f:
+                        while True:
+                            chunk = await file.read(8192)  # 8 KB chunks
+                            if not chunk:
+                                break
+                            size += len(chunk)
+                            if size > MAX_ATTACHMENT_SIZE:
+                                f.close()
+                                try:
+                                    os.unlink(file_path)
+                                except OSError:
+                                    pass
+                                raise HTTPException(status_code=413, detail="Archivo excede 10 MB")
+                            f.write(chunk)
+
+                    # Guardar información del archivo
+                    file_info = {
+                        "original_name": safe_name,
+                        "stored_name": unique_filename,
+                        "file_path": file_path,
+                        "content_type": file.content_type,
+                        "size": size,
+                        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    uploaded_files_info.append(file_info)
+
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Error uploading file {safe_name}: {str(e)}"
+                    )
 
         # SECURITY (ID-043): print de update_data eliminado por filtración de PII
         # (mensajes de aprobación/rechazo, payload del cliente, etc.).
-        print("Archivos procesados:", len(uploaded_files_info))
+        logger.info("Archivos procesados:", len(uploaded_files_info))
 
         # 3. Llamar a la función original (sin modificar)
         updated_response_approval = await update_response_approval_status(
@@ -205,7 +271,7 @@ async def update_response_approval(
                 db.commit()
                 db.refresh(response_approval)
                 
-                print(f"✅ Se guardaron {len(uploaded_files_info)} archivos adjuntos")
+                logger.info(f"✅ Se guardaron {len(uploaded_files_info)} archivos adjuntos")
 
         return {
             "message": "ResponseApproval updated successfully",
@@ -248,7 +314,7 @@ def set_is_active_false(id: int, db: Session = Depends(get_db), current_user: Us
     - 403 FORBIDDEN: Si el usuario no está autenticado.
     - 404 NOT FOUND: Si el `FormApproval` no existe.
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
@@ -394,8 +460,29 @@ def bulk_update_form_approvals(
         user_changed = existing.user_id != update.user_id
         seq_changed = existing.sequence_number != update.sequence_number
         mandatory_changed = existing.is_mandatory != update.is_mandatory
+        # Resolución de firm_mode: usa lo entrante si vino, si no conserva el actual.
+        incoming_firm_mode = getattr(update, "firm_mode", None)
+        firm_mode = incoming_firm_mode or (existing.firm_mode or "button")
+        firm_changed = (existing.firm_mode or "button") != firm_mode
 
-        if user_changed or seq_changed or mandatory_changed:
+        # Resolución de firm_source_question_id (igual lógica).
+        # Nota: Optional explícito porque None es valor legítimo cuando firm_mode='button'.
+        if "firm_source_question_id" in update.model_fields_set:
+            firm_source_qid = update.firm_source_question_id
+        else:
+            firm_source_qid = existing.firm_source_question_id
+        firm_source_changed = existing.firm_source_question_id != firm_source_qid
+
+        # Coherencia: si el modo final no es 'button', exigir pregunta fuente.
+        if firm_mode != "button" and firm_source_qid is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"firm_source_question_id es obligatorio cuando firm_mode='{firm_mode}'."
+                )
+            )
+
+        if user_changed or seq_changed or mandatory_changed or firm_changed or firm_source_changed:
             # Desactivar el actual
             existing.is_active = False
 
@@ -406,7 +493,9 @@ def bulk_update_form_approvals(
                 sequence_number=update.sequence_number or existing.sequence_number,
                 is_mandatory=update.is_mandatory if update.is_mandatory is not None else existing.is_mandatory,
                 deadline_days=update.deadline_days if update.deadline_days is not None else existing.deadline_days,
-                is_active=True
+                is_active=True,
+                firm_mode=firm_mode,
+                firm_source_question_id=firm_source_qid,
             )
             db.add(new_approval)
 
@@ -427,6 +516,11 @@ def bulk_update_form_approvals(
                 ra.user_id = update.user_id
                 ra.sequence_number = update.sequence_number
                 ra.is_mandatory = update.is_mandatory
+                # Propagar firm_mode y la pregunta fuente a aprobaciones
+                # pendientes para que el cambio aplique a aprobadores que aún
+                # no actuaron.
+                ra.firm_mode = firm_mode
+                ra.firm_source_question_id = firm_source_qid
 
         else:
             # Si no hubo cambio crítico, solo actualiza campos simples
@@ -436,6 +530,17 @@ def bulk_update_form_approvals(
                 existing.is_mandatory = update.is_mandatory
             if update.deadline_days is not None:
                 existing.deadline_days = update.deadline_days
+
+    # Modo de aprobación del formato. Solo se actualiza si vino en el payload.
+    # El form_id se infiere del primer FormApproval del bulk (todos los updates
+    # del mismo bulk pertenecen al mismo formato).
+    if data.approval_mode is not None and data.updates:
+        first_id = data.updates[0].id
+        anchor = db.query(FormApproval).filter(FormApproval.id == first_id).first()
+        if anchor:
+            form = db.query(Form).filter(Form.id == anchor.form_id).first()
+            if form and form.approval_mode != data.approval_mode:
+                form.approval_mode = data.approval_mode
 
     db.commit()
     return {"message": "FormApprovals updated successfully"}
@@ -475,7 +580,7 @@ def get_form_with_approvers(
     - 403 FORBIDDEN: Si el usuario no está autenticado.
     - 404 NOT FOUND: Si no se encuentra el formulario.
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
@@ -498,7 +603,9 @@ def get_form_with_approvers(
             "title": form.title,
             "description": form.description,
             "format_type": form.format_type.value,
-            
+            # Modo de aprobación del formato — el frontend lo carga para
+            # mostrar el selector en estado actual al editar aprobadores.
+            "approval_mode": getattr(form, "approval_mode", "sequential") or "sequential",
             "approvers": approvals
         }
 
@@ -753,7 +860,7 @@ def auto_approve_response_approvals(
         
     except Exception as e:
         # Log del error pero no fallar toda la operación
-        print(f"Error en auto-aprobación: {str(e)}")
+        logger.error(f"Error en auto-aprobación: {str(e)}")
         return 0
 
 # Endpoint
@@ -1011,6 +1118,25 @@ async def get_response_approval_details(
             "reviewed_at": response_approval.reviewed_at if response_approval else None,
             "message": response_approval.message if response_approval else None,
             "attachment_files": response_approval.attachment_files if response_approval else None,
+            # Método de firma. Prioriza el de la ResponseApproval (clonado al
+            # enviar la respuesta); si no existe aún, usa el de FormApproval.
+            "firm_mode": (
+                response_approval.firm_mode
+                if response_approval and getattr(response_approval, "firm_mode", None)
+                else getattr(form_approval, "firm_mode", "button") or "button"
+            ),
+            # Evidencia: Answer regisfacial usada al firmar (NULL si no aplica).
+            "firm_answer_id": (
+                response_approval.firm_answer_id
+                if response_approval else None
+            ),
+            # Pregunta regisfacial fuente: prioriza la de ResponseApproval; si
+            # no está, cae al template FormApproval.
+            "firm_source_question_id": (
+                response_approval.firm_source_question_id
+                if response_approval and response_approval.firm_source_question_id is not None
+                else getattr(form_approval, "firm_source_question_id", None)
+            ),
             "user": {
                 "name": form_approval.user.name,
                 "email": form_approval.user.email,

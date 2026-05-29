@@ -187,7 +187,7 @@ async def get_form_complete_info(form_id: int, db: Session = Depends(get_db),cur
     """
     Obtiene toda la información relacionada con un formulario específico
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get form"

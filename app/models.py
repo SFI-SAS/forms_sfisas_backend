@@ -190,9 +190,15 @@ class FormCategory(Base):
     is_expanded = Column(Boolean, default=True)
     icon = Column(String(50), nullable=True)
     color = Column(String(20), nullable=True)
+    # Modo de aprobación heredado a los formatos de esta categoría:
+    #   'sequential' | 'parallel'. Se sobreescribe Form.approval_mode al
+    #   sincronizar aprobadores categoría → formato.
+    approval_mode = Column(
+        String(20), nullable=False, default='sequential', server_default='sequential'
+    )
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), onupdate=func.now())
-    
+
     forms = relationship("Form", back_populates="category")
     parent = relationship("FormCategory", remote_side=[id], back_populates="children")
     children = relationship("FormCategory", back_populates="parent", cascade="all, delete-orphan", order_by="FormCategory.order")
@@ -341,8 +347,21 @@ class FormApproval(Base):
     is_mandatory = Column(Boolean, default=True)
     deadline_days = Column(Integer, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
+    # Método de firma del aprobador. Valores permitidos (CHECK en BD):
+    #   'button'           → solo botón (clásico)
+    #   'button_or_facial' → botón o firma facial (aprobador elige)
+    #   'facial'           → solo firma facial (obligatoria)
+    firm_mode = Column(
+        String(20), nullable=False, default='button', server_default='button'
+    )
+    # Pregunta regisfacial fuente: contra qué pregunta de registro facial se
+    # valida al aprobador. Obligatoria cuando firm_mode != 'button' (CHECK en BD).
+    firm_source_question_id = Column(
+        BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True
+    )
     form = relationship("Form", backref="approval_template")
     user = relationship("User", backref="forms_to_approve")
+    firm_source_question = relationship("Question", foreign_keys=[firm_source_question_id])
 
 class ResponseApproval(Base):
     __tablename__ = 'response_approvals'
@@ -357,8 +376,26 @@ class ResponseApproval(Base):
     reconsideration_requested = Column(Boolean, nullable=True, default=False)
     # ✅ USA AutoJSON
     attachment_files = Column(AutoJSON, nullable=True, default=None)
+    # Heredado de FormApproval.firm_mode al clonar al enviar respuesta.
+    # Fija el método con el que el aprobador debe actuar para esta respuesta:
+    #   'button' | 'button_or_facial' | 'facial'
+    firm_mode = Column(
+        String(20), nullable=False, default='button', server_default='button'
+    )
+    # Evidencia: cuando el aprobador firma facialmente, aquí queda el id del
+    # Answer regisfacial usado para validar (auditoría). NULL si aún no
+    # aprobó facialmente o si firm_mode='button'.
+    firm_answer_id = Column(
+        BigInteger, ForeignKey('answers.id', ondelete='SET NULL'), nullable=True
+    )
+    # Pregunta regisfacial fuente heredada de FormApproval al clonar.
+    firm_source_question_id = Column(
+        BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True
+    )
     response = relationship("Response", back_populates="approvals")
     user = relationship("User")
+    firm_answer = relationship("Answer", foreign_keys=[firm_answer_id])
+    firm_source_question = relationship("Question", foreign_keys=[firm_source_question_id])
 
 class FormApprovalNotification(Base):
     __tablename__ = 'form_approval_notifications'
@@ -646,6 +683,16 @@ class CategoryApproval(Base):
     is_mandatory = Column(Boolean, nullable=False, default=True)
     deadline_days = Column(Integer, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
+    # Método de firma del aprobador (heredado al FormApproval cuando el formato
+    # toma sus aprobadores de la categoría):
+    #   'button' | 'button_or_facial' | 'facial'
+    firm_mode = Column(
+        String(20), nullable=False, default='button', server_default='button'
+    )
+    # Pregunta regisfacial fuente. Obligatoria cuando firm_mode != 'button'.
+    firm_source_question_id = Column(
+        BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True
+    )
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -656,6 +703,7 @@ class CategoryApproval(Base):
     # Relationships
     category = relationship('FormCategory', back_populates='approvals')
     user = relationship('User')
+    firm_source_question = relationship('Question', foreign_keys=[firm_source_question_id])
 
 
 class ConsultantScope(str, enum.Enum):
@@ -755,3 +803,74 @@ class ProfileCategory(Base):
 
     profile = relationship('Profile', back_populates='category_links')
     category = relationship('FormCategory')
+
+
+# ============================================================================
+# Integraciones: tabla que define qué formatos puede integrar cada usuario
+# vía el endpoint POST /integrations/answers.
+# ============================================================================
+class IntegratorFormatAccess(Base):
+    __tablename__ = 'integrator_format_access'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    format_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False, index=True)
+    assigned_by = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    assigned_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'format_id', name='uq_integrator_format'),
+    )
+
+    user = relationship('User', foreign_keys=[user_id], backref='integrator_format_accesses')
+    assigner = relationship('User', foreign_keys=[assigned_by])
+    form = relationship('Form')
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ACTIVIDADES GENÉRICAS — agrupan formatos y, por cada formato, definen quién lo
+# diligencia. El diligenciador se elige a través de un PERFIL (Profile): se elige
+# un perfil, se listan sus usuarios y se escoge uno. Un mismo formato puede tener
+# varios diligenciadores dentro de la actividad (varias filas form↔usuario).
+# Esta capa solo guarda configuración; reutiliza /profiles para leer perfiles.
+# Solo administradores gestionan estas tablas.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class GenericActivity(Base):
+    __tablename__ = 'generic_activities'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    name = Column(String(150), nullable=False, unique=True)
+    description = Column(Text, nullable=True)
+    created_by = Column(BigInteger, ForeignKey('users.id'), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    creator = relationship('User', foreign_keys=[created_by])
+    form_links = relationship('GenericActivityForm', back_populates='activity', cascade='all, delete-orphan')
+
+
+class GenericActivityForm(Base):
+    """Una fila = en la actividad, el formato F lo diligencia el usuario U,
+    elegido a través del perfil P. Varios diligenciadores por formato => varias
+    filas con el mismo (activity_id, form_id) y distinto user_id.
+    profile_id es SET NULL: si el perfil se elimina, la asignación conserva al
+    usuario pero pierde la referencia al perfil de origen."""
+    __tablename__ = 'generic_activity_forms'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    activity_id = Column(BigInteger, ForeignKey('generic_activities.id', ondelete='CASCADE'), nullable=False, index=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False, index=True)
+    profile_id = Column(BigInteger, ForeignKey('profiles.id', ondelete='SET NULL'), nullable=True, index=True)
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    assigned_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('activity_id', 'form_id', 'user_id', name='uq_generic_activity_form_user'),
+    )
+
+    activity = relationship('GenericActivity', back_populates='form_links')
+    form = relationship('Form')
+    profile = relationship('Profile')
+    user = relationship('User', foreign_keys=[user_id])

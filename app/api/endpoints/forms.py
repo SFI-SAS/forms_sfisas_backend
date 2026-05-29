@@ -3,6 +3,9 @@ import logging
 import os
 from pathlib import Path
 import shutil
+
+logger = logging.getLogger(__name__)
+
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, Query, File, status, Form as FastAPIForm
 from sqlalchemy import func, select
@@ -12,7 +15,7 @@ from app.api.controllers.excel_form_exporter import generate_form_excel
 from app.api.controllers.mail import send_response_answers_email
 from app.redis_client import redis_client
 from app.database import get_db
-from app.models import Answer, AnswerHistory, CategoryApproval, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, PalabrasClave, Profile, ProfileCategory, ProfileForm, ProfileUser, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
+from app.models import Answer, AnswerHistory, ApprovalStatus, CategoryApproval, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, GenericActivity, GenericActivityForm, PalabrasClave, Profile, ProfileCategory, ProfileForm, ProfileUser, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
 from app.crud import  _extract_style_config, _serialize_answers, add_category_approver, analyze_form_relations, apply_template_service, bulk_save_category_approvers, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, create_template_service, delete_form, delete_form_category, delete_template_service, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_categories_with_approvers, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_approvals, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_template_detail_service, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, list_templates_service, move_category, process_regisfacial_answer, remove_category_approver, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, sync_form_approvals_from_category, toggle_form_status, update_category_approver, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status, update_template_service
 from app.schemas import AlertMessageRequest, CategoryApprovalBulkSave, CategoryApprovalCreate, CategoryApprovalResponse, CategoryApprovalUpdate, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, FormTemplateCreate, FormTemplateDetail, FormTemplateResponse, FormTemplateUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user, require_roles
@@ -256,7 +259,9 @@ def bulk_save_approvers(
     """Guarda toda la lista de aprobadores de una categoría (reemplaza existentes)."""
     if current_user is None:
         raise HTTPException(status_code=403, detail="Authentication required")
-    return bulk_save_category_approvers(db, category_id, payload.approvers)
+    return bulk_save_category_approvers(
+        db, category_id, payload.approvers, approval_mode=payload.approval_mode
+    )
 
 
 @router.post("/form-templates", response_model=FormTemplateResponse, status_code=201)
@@ -529,11 +534,11 @@ def get_form_design(
     cached = redis_client.get(cache_key)  # Ahora usa tu método .get()
     
     if cached:
-        print(f"✅ Cache HIT: {cache_key}")
+        logger.info(f"✅ Cache HIT: {cache_key}")
         return cached  # Ya viene deserializado por tu método
     
     # PASO 2: Cache MISS - Consultar BD
-    print(f"❌ Cache MISS: {cache_key}")
+    logger.error(f"❌ Cache MISS: {cache_key}")
     form = db.query(Form).filter(Form.id == form_id).first()
     
     if not form:
@@ -584,11 +589,11 @@ def get_form_questions(
     cached = redis_client.get(cache_key)
     
     if cached:
-        print(f"[cache] HIT: {cache_key}")
+        logger.info(f"✅ Cache HIT: {cache_key}")
         return cached
 
     # PASO 2: Consultar BD (solo questions)
-    print(f"[cache] MISS: {cache_key}")
+    logger.info(f"⚠️ Cache MISS: {cache_key}")
     
     # Obtener el formulario primero
     form = db.query(Form).filter(Form.id == form_id).first()
@@ -717,11 +722,11 @@ def get_user_responses(
     cached = redis_client.get(cache_key)
     
     if cached:
-        print(f"✅ Cache HIT: {cache_key}")
+        logger.info(f"✅ Cache HIT: {cache_key}")
         return cached
     
     # PASO 2: Consultar BD (con joinedload optimizado + filtro por response_id)
-    print(f"❌ Cache MISS: {cache_key}")
+    logger.error(f"❌ Cache MISS: {cache_key}")
     
     responses = (
         db.query(Response)
@@ -804,7 +809,7 @@ def check_form_responses(form_id: int, db: Session = Depends(get_db), current_us
             - 403 si el usuario no está autenticado.
             - 404 si el formulario no existe.
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get form"
@@ -815,7 +820,57 @@ def check_form_responses(form_id: int, db: Session = Depends(get_db), current_us
     ensure_access_to_form(db, current_user, _form_for_auth)
 
     return check_form_data(db, form_id)
-    
+
+
+@router.get("/{form_id}/eligible-users")
+def list_eligible_users_for_form(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """Usuarios que pueden diligenciar este formato, agregados desde los perfiles
+    activos que lo tienen asignado directamente. Cada usuario incluye los profile_ids
+    de origen para trazabilidad. Usado por el editor de Actividades Genéricas."""
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    rows = (
+        db.query(
+            User.id.label("user_id"),
+            User.name.label("user_name"),
+            User.email.label("user_email"),
+            Profile.id.label("profile_id"),
+            Profile.name.label("profile_name"),
+        )
+        .join(ProfileUser, ProfileUser.user_id == User.id)
+        .join(Profile, Profile.id == ProfileUser.profile_id)
+        .join(ProfileForm, ProfileForm.profile_id == Profile.id)
+        .filter(
+            ProfileForm.form_id == form_id,
+            Profile.is_active == True,
+        )
+        .order_by(User.name.asc(), Profile.name.asc())
+        .all()
+    )
+
+    by_user: dict = {}
+    for r in rows:
+        u = by_user.get(r.user_id)
+        if not u:
+            u = {
+                "user_id": r.user_id,
+                "user_name": r.user_name,
+                "user_email": r.user_email,
+                "profile_ids": [],
+                "profile_names": [],
+            }
+            by_user[r.user_id] = u
+        u["profile_ids"].append(r.profile_id)
+        u["profile_names"].append(r.profile_name)
+
+    return list(by_user.values())
+
 
 @router.put("/{form_id}/questions")
 async def update_form_questions(
@@ -1126,6 +1181,11 @@ def get_responses_with_answers(
                     "status": ap.status.value,
                     "reviewed_at": ap.reviewed_at,
                     "message": ap.message,
+                    # Método de firma + evidencia facial (para que el dueño de
+                    # la respuesta vea cómo van sus aprobaciones).
+                    "firm_mode": getattr(ap, "firm_mode", "button") or "button",
+                    "firm_answer_id": getattr(ap, "firm_answer_id", None),
+                    "firm_source_question_id": getattr(ap, "firm_source_question_id", None),
                     "user": {
                         "id": ap.user.id,
                         "name": ap.user.name,
@@ -1330,6 +1390,7 @@ def get_user_forms(
     page: int = 1,  # Número de página (empieza en 1)
     page_size: int = 30,  # Cantidad de registros por página
     profile_id: Optional[int] = None,  # Si se pasa, filtra a los formatos de ese perfil
+    activity_id: Optional[int] = None,  # Si se pasa, filtra a los formatos del usuario en esa actividad
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -1359,7 +1420,7 @@ def get_user_forms(
             page_size = 100
 
         # Obtener formularios paginados
-        forms_data = get_forms_by_user(db, current_user.id, page, page_size, profile_id=profile_id)
+        forms_data = get_forms_by_user(db, current_user.id, page, page_size, profile_id=profile_id, activity_id=activity_id)
 
         if not forms_data["items"]:
             raise HTTPException(
@@ -2504,7 +2565,7 @@ def get_form_details(form_id: int, db: Session = Depends(get_db), current_user: 
     - 404 NOT FOUND: Si el formulario no existe.
     """
     
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
@@ -2617,7 +2678,7 @@ def get_notifications_by_form(form_id: int, db: Session = Depends(get_db), curre
     HTTPException 404:
         Si el formulario no existe (lanzado desde la función auxiliar `get_notifications_for_form`).
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
@@ -2672,7 +2733,7 @@ def update_notify_status_endpoint(notification_id: int, request: UpdateNotifyOnS
     HTTPException 404:
         Si la notificación no existe.
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
@@ -2714,7 +2775,7 @@ def delete_notification(notification_id: int, db: Session = Depends(get_db),  cu
     HTTPException 404:
         Si la notificación no existe.
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
@@ -2972,6 +3033,13 @@ def set_custom_template_id(
 
 UPLOAD_FOLDER = "logo"
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
+MAX_LOGO_SIZE = 2 * 1024 * 1024  # H-BW-001: 2 MB máximo
+
+# Magic bytes para formatos permitidos (H-BW-001: validación real, no solo extensión)
+_LOGO_MAGIC_BYTES = {
+    b"\x89PNG\r\n\x1a\n": "png",
+    b"\xff\xd8\xff": "jpg",
+}
 
 # Asegurar que la carpeta exista
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -3014,36 +3082,65 @@ def _resolve_logo_path():
 
 @router.post("/upload-logo/")
 async def upload_logo(file: UploadFile = File(...),current_user: User = Depends(get_current_user)):
-    # Validar extensión
-    if current_user == None:
+    # H-BW-015: usar `is None` en lugar de `== None`
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
+            detail="User does not have permission to upload logo"
             )
-    filename = file.filename
-    extension = filename.split(".")[-1].lower()
 
-    if extension not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="Tipo de archivo no permitido. Solo se permiten: png, jpg, jpeg.")
+    # H-BW-001: Validar tamaño antes de procesar
+    head = await file.read(MAX_LOGO_SIZE + 1)
+    if len(head) > MAX_LOGO_SIZE:
+        raise HTTPException(status_code=413, detail="El logo no debe exceder 2 MB")
 
-    # Elimina cualquier imagen anterior en la carpeta
-    for f in os.listdir(UPLOAD_FOLDER):
-        os.remove(os.path.join(UPLOAD_FOLDER, f))
+    # H-BW-001: Validar magic bytes (no confiar solo en extensión)
+    detected_ext = None
+    for magic, ext in _LOGO_MAGIC_BYTES.items():
+        if head.startswith(magic):
+            detected_ext = ext
+            break
 
-    # Guardar la nueva imagen
-    file_path = os.path.join(UPLOAD_FOLDER, f"logo.{extension}")
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    if detected_ext is None:
+        raise HTTPException(status_code=400, detail="Tipo de archivo no permitido. Solo se permiten imágenes PNG o JPEG.")
 
-    return JSONResponse(content={"message": "Imagen subida correctamente", "path": file_path})
+    # Normalizar a .jpg si es jpeg
+    extension = "jpg" if detected_ext == "jpg" else detected_ext
+    tmp_path = os.path.join(UPLOAD_FOLDER, f".tmp_logo.{extension}")
+    final_path = os.path.join(UPLOAD_FOLDER, f"logo.{extension}")
+
+    # H-BW-001: Escribir a archivo temporal y renombrar atómicamente (evita race condition)
+    try:
+        with open(tmp_path, "wb") as out:
+            out.write(head)
+        os.replace(tmp_path, final_path)  # atómico en mismo filesystem
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise HTTPException(status_code=500, detail="Error al guardar el logo")
+
+    # H-BW-001: Limpiar extensiones antiguas diferentes (solo después de subir el nuevo)
+    for ext in _LOGO_ALLOWED_EXTENSIONS:
+        if ext != extension:
+            old = os.path.join(UPLOAD_FOLDER, f"logo.{ext}")
+            if os.path.isfile(old):
+                try:
+                    os.unlink(old)
+                except OSError:
+                    pass
+
+    return JSONResponse(content={"message": "Imagen subida correctamente", "path": final_path})
 
 
 @router.get("/get-logo/")
 def get_logo(current_user: User = Depends(get_current_user)):
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
+            detail="User does not have permission to get logo"
             )
     # SECURITY (ID-017): usar helper que solo sirve logo.{png,jpg,jpeg}.
     resolved = _resolve_logo_path()
@@ -3187,23 +3284,82 @@ def get_tree_endpoint(
     return get_category_tree(db)
 
 # Obtener categorías de un nivel
+def _categories_with_user_responses(db: Session, user_id: int) -> set[int]:
+    """
+    Devuelve el set de IDs de categorías que contienen al menos un formato
+    con respuesta del usuario, incluyendo todos sus ancestros (para que el
+    árbol navegable desde la raíz siga estando completo).
+    """
+    rows = (
+        db.query(Form.id_category)
+        .join(Response, Response.form_id == Form.id)
+        .filter(Response.user_id == user_id, Form.id_category.isnot(None))
+        .distinct()
+        .all()
+    )
+    direct_cats = {r[0] for r in rows if r[0] is not None}
+    if not direct_cats:
+        return set()
+
+    parent_map = {
+        cid: pid
+        for cid, pid in db.query(FormCategory.id, FormCategory.parent_id).all()
+    }
+    result: set[int] = set()
+    for cid in direct_cats:
+        current = cid
+        while current is not None and current not in result:
+            result.add(current)
+            current = parent_map.get(current)
+    return result
+
+
 @router.get("/categories/by-parent", response_model=List[FormCategoryResponse])
 def get_by_parent_endpoint(
     parent_id: Optional[int] = Query(None),
+    only_with_user_responses: bool = Query(
+        False,
+        description="Si True, solo retorna categorías donde el usuario actual tiene al menos una respuesta (recursivo).",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     categories = get_categories_by_parent(db, parent_id)
-    
-    # Enriquecer con contadores
+
+    allowed: Optional[set[int]] = None
+    if only_with_user_responses:
+        allowed = _categories_with_user_responses(db, current_user.id)
+
     result = []
     for cat in categories:
-        forms_count = db.query(func.count(Form.id)).filter(Form.id_category == cat.id).scalar()
+        if allowed is not None and cat.id not in allowed:
+            continue
+
+        if only_with_user_responses:
+            # Contar solo formatos con respuesta del usuario actual.
+            forms_count = (
+                db.query(func.count(func.distinct(Form.id)))
+                .join(Response, Response.form_id == Form.id)
+                .filter(
+                    Form.id_category == cat.id,
+                    Response.user_id == current_user.id,
+                )
+                .scalar()
+            )
+            children_count = sum(1 for child in cat.children if child.id in (allowed or set()))
+        else:
+            forms_count = (
+                db.query(func.count(Form.id))
+                .filter(Form.id_category == cat.id)
+                .scalar()
+            )
+            children_count = len(cat.children)
+
         cat_dict = FormCategoryResponse.from_orm(cat).dict()
         cat_dict['forms_count'] = forms_count
-        cat_dict['children_count'] = len(cat.children)
+        cat_dict['children_count'] = children_count
         result.append(cat_dict)
-    
+
     return result
 
 # Obtener una categoría específica
@@ -3649,7 +3805,6 @@ async def get_response_details_json(
             detail="Error interno del servidor"
         )
 
-
 @router.put("/forms/{form_id}/basic-info")
 def update_form_basic_info(
     form_id: int,
@@ -3863,11 +4018,11 @@ async def upload_form_instructivos(
                     "type": file.content_type
                 })
                 
-                print(f"✅ Archivo {idx + 1} guardado: {file_path}")
+                logger.info(f"✅ Archivo {idx + 1} guardado: {file_path}")
                 
             except Exception as e:
                 # Si falla la subida de un archivo, continuar con los demás
-                print(f"⚠️ Error al subir archivo {file.filename}: {str(e)}")
+                logger.error(f"⚠️ Error al subir archivo {file.filename}: {str(e)}")
                 continue
 
         # 7. Combinar instructivos existentes con los nuevos
@@ -3993,7 +4148,7 @@ async def update_form_alert_message(
         db.commit()
         db.refresh(form)
 
-        print(f"✅ Mensaje de alerta actualizado para el form {form_id}")
+        logger.info(f"✅ Mensaje de alerta actualizado para el form {form_id}")
 
         return {
             "message": "Alert message updated successfully",
@@ -4271,9 +4426,9 @@ async def delete_instructivo(
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
-                print(f"✅ Archivo eliminado del servidor: {file_path}")
+                logger.info(f"✅ Archivo eliminado del servidor: {file_path}")
             except Exception as e:
-                print(f"⚠️ Error al eliminar archivo: {str(e)}")
+                logger.error(f"⚠️ Error al eliminar archivo: {str(e)}")
                 # No interrumpimos si falla la eliminación del archivo
 
         # 7. Eliminar de la lista
@@ -4284,7 +4439,7 @@ async def delete_instructivo(
         db.commit()
         db.refresh(form)
 
-        print(f"✅ Instructivo {instructivo_index} eliminado del form {form_id}")
+        logger.info(f"✅ Instructivo {instructivo_index} eliminado del form {form_id}")
 
         return {
             "message": "Instructivo eliminado correctamente",
@@ -4351,7 +4506,7 @@ async def delete_alert_message(
         db.commit()
         db.refresh(form)
 
-        print(f"✅ Mensaje de alerta eliminado del form {form_id}")
+        logger.info(f"✅ Mensaje de alerta eliminado del form {form_id}")
 
         return {
             "message": "Alert message deleted successfully",
@@ -4694,4 +4849,177 @@ def send_answers_by_email(
     return {
         "status": "ok",
         "sent_to": payload.email_to
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Diligenciar context — para la pantalla "Diligenciar formato" (mockup nuevo).
+# Lectura pura sobre FormApproval/ResponseApproval/Response/Form. NO toca el
+# motor de aprobaciones (intocable #1, crud.py:4138-4509).
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/{form_id}/diligenciar-context")
+def get_form_diligenciar_context(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Contexto del formato al diligenciarlo:
+    - Aprobadores (orden, nombre, avg días histórico por persona, mandatorio).
+    - Email recipients (FormApprovalNotification).
+    - avg total días histórico de cierre del formato.
+    - Respuestas previas del usuario + stats personales.
+    """
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    # ── 1. Aprobadores activos ───────────────────────────────────────────────
+    template = (
+        db.query(FormApproval)
+        .options(joinedload(FormApproval.user))
+        .filter(
+            FormApproval.form_id == form_id,
+            FormApproval.is_active.is_(True),
+        )
+        .order_by(FormApproval.sequence_number)
+        .all()
+    )
+
+    def avg_days_for_approver(user_id: int):
+        rows = (
+            db.query(ResponseApproval.reviewed_at, Response.submitted_at)
+            .join(Response, Response.id == ResponseApproval.response_id)
+            .filter(
+                Response.form_id == form_id,
+                ResponseApproval.user_id == user_id,
+                ResponseApproval.reviewed_at.isnot(None),
+                ResponseApproval.status.in_(
+                    [ApprovalStatus.aprobado, ApprovalStatus.rechazado]
+                ),
+            )
+            .all()
+        )
+        deltas = []
+        for reviewed, submitted in rows:
+            if reviewed and submitted:
+                d = (reviewed - submitted).total_seconds() / 86400.0
+                if d >= 0:
+                    deltas.append(d)
+        return round(sum(deltas) / len(deltas), 1) if deltas else None
+
+    approvers = [
+        {
+            "sequence_number": t.sequence_number,
+            "is_mandatory": t.is_mandatory,
+            "user_id": t.user_id,
+            "user_name": t.user.name if t.user else f"Usuario #{t.user_id}",
+            "user_email": t.user.email if t.user else None,
+            "deadline_days": t.deadline_days,
+            "avg_days": avg_days_for_approver(t.user_id),
+        }
+        for t in template
+    ]
+
+    # ── 2. Email recipients ──────────────────────────────────────────────────
+    notifs = (
+        db.query(FormApprovalNotification)
+        .options(joinedload(FormApprovalNotification.user))
+        .filter(FormApprovalNotification.form_id == form_id)
+        .all()
+    )
+    email_recipients = [
+        {
+            "email": n.user.email if n.user else None,
+            "name": n.user.name if n.user else f"Usuario #{n.user_id}",
+            "notify_on": n.notify_on.value
+            if hasattr(n.notify_on, "value")
+            else str(n.notify_on),
+        }
+        for n in notifs
+        if n.user
+    ]
+
+    # ── 3. avg total días histórico del formato (sobre cerradas) ────────────
+    all_responses = (
+        db.query(Response)
+        .options(joinedload(Response.approvals))
+        .filter(Response.form_id == form_id)
+        .all()
+    )
+    total_deltas = []
+    for r in all_responses:
+        approvals = r.approvals or []
+        mandatory = [a for a in approvals if a.is_mandatory]
+        if not mandatory:
+            continue
+        if not all(a.status == ApprovalStatus.aprobado for a in mandatory):
+            continue
+        reviewed = [a.reviewed_at for a in mandatory if a.reviewed_at]
+        if not reviewed:
+            continue
+        d = (max(reviewed) - r.submitted_at).total_seconds() / 86400.0
+        if d >= 0:
+            total_deltas.append(d)
+    avg_total_days = (
+        round(sum(total_deltas) / len(total_deltas), 1) if total_deltas else None
+    )
+
+    # ── 4. Mis respuestas previas del usuario ───────────────────────────────
+    my_responses = (
+        db.query(Response)
+        .options(joinedload(Response.approvals))
+        .filter(Response.form_id == form_id, Response.user_id == current_user.id)
+        .order_by(Response.submitted_at.desc())
+        .limit(10)
+        .all()
+    )
+
+    my_previous = []
+    my_days = []
+    approved_count = 0
+    for r in my_responses:
+        approvals = r.approvals or []
+        mandatory = [a for a in approvals if a.is_mandatory]
+        approved = [a for a in mandatory if a.status == ApprovalStatus.aprobado]
+        rejected_any = any(a.status == ApprovalStatus.rechazado for a in approvals)
+
+        if rejected_any:
+            status_str = "rechazado"
+        elif mandatory and len(approved) == len(mandatory):
+            status_str = "aprobado"
+            approved_count += 1
+            reviewed = [a.reviewed_at for a in mandatory if a.reviewed_at]
+            if reviewed:
+                d = (max(reviewed) - r.submitted_at).total_seconds() / 86400.0
+                if d >= 0:
+                    my_days.append(d)
+        else:
+            status_str = "pendiente"
+
+        my_previous.append(
+            {
+                "response_id": r.id,
+                "submitted_at": r.submitted_at,
+                "status": status_str,
+                "approvers_total": len(mandatory),
+                "approvers_approved": len(approved),
+            }
+        )
+
+    my_avg_days = round(sum(my_days) / len(my_days), 1) if my_days else None
+
+    return {
+        "form_id": form.id,
+        "form_title": form.title,
+        "approval_mode": form.approval_mode,
+        "approvers": approvers,
+        "email_recipients": email_recipients,
+        "avg_total_days": avg_total_days,
+        "my_previous_responses": my_previous,
+        "my_stats": {
+            "total": len(my_previous),
+            "approved": approved_count,
+            "avg_days": my_avg_days,
+        },
     }

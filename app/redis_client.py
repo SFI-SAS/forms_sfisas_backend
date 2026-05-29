@@ -3,6 +3,8 @@ import json
 import os
 from typing import Optional
 from dotenv import load_dotenv
+import logging
+logger = logging.getLogger(__name__)
 
 # Carga variables del archivo .env
 load_dotenv()
@@ -29,9 +31,9 @@ class RedisClient:
                 socket_connect_timeout=5
             )
             self.client.ping()
-            print(f"[OK] Redis conectado en {self.host}:{self.port}")
+            logger.info(f"✓ Redis conectado en {self.host}:{self.port}")
         except Exception as e:
-            print(f"[WARNING] Error conectando a Redis: {e}")
+            logger.error(f"✗ Error conectando a Redis: {e}")
             self.client = None
     
     def check_connection(self) -> bool:
@@ -41,7 +43,7 @@ class RedisClient:
         try:
             return self.client.ping()
         except Exception as e:
-            print(f"Redis connection error: {e}")
+            logger.error(f"Redis connection error: {e}")
             return False
     
     def get(self, key: str) -> Optional[dict]:
@@ -52,7 +54,7 @@ class RedisClient:
             value = self.client.get(key)
             return json.loads(value) if value else None
         except Exception as e:
-            print(f"Error getting key '{key}': {e}")
+            logger.error(f"Error getting key '{key}': {e}")
             return None
     
     def set(self, key: str, value: dict, ttl: Optional[int] = None) -> bool:
@@ -67,7 +69,7 @@ class RedisClient:
                 self.client.set(key, serialized)
             return True
         except Exception as e:
-            print(f"Error setting key '{key}': {e}")
+            logger.error(f"Error setting key '{key}': {e}")
             return False
     
     def delete(self, *keys: str) -> int:
@@ -77,7 +79,7 @@ class RedisClient:
         try:
             return self.client.delete(*keys)
         except Exception as e:
-            print(f"Error deleting keys: {e}")
+            logger.error(f"Error deleting keys: {e}")
             return 0
     
     def exists(self, key: str) -> bool:
@@ -87,7 +89,7 @@ class RedisClient:
         try:
             return self.client.exists(key) > 0
         except Exception as e:
-            print(f"Error checking key: {e}")
+            logger.error(f"Error checking key: {e}")
             return False
 
 # Instancia global

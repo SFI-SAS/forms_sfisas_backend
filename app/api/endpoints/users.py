@@ -15,7 +15,7 @@ from app.database import get_db
 from app.models import Answer, EmailConfig, Form, Response, User, UserCategory, UserType
 from app.crud import _extract_style_config, _serialize_answers, create_email_config, create_user, create_user_category, create_user_with_random_password, delete_user_category_by_id, fetch_all_users, get_all_email_configs, get_all_user_categories, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
 from app.schemas import EmailConfigCreate, EmailConfigResponse, EmailConfigUpdate, EmailStatusUpdate, UpdateRecognitionId, UpdateUserCategory, UserAdminUpdate, UserBaseCreate, UserCategoryCreate, UserCategoryResponse, UserCreate, UserResponse, UserSelfUpdate, UserUpdate, UserUpdateInfo
-from app.core.security import get_current_user, hash_password
+from app.core.security import get_current_user, hash_password, require_roles
 
 router = APIRouter()
 
@@ -1407,13 +1407,8 @@ def get_element_uuid_by_question(form_design, question_id):
 @router.post("/migrate/form-design-elements", response_model=MigrationResponse)
 async def migrate_form_design_elements(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator]))
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     """
     🔄 Migración mejorada con id_question
     Actualiza form_design_element_id en answers usando el nuevo campo id_question
@@ -1531,16 +1526,12 @@ async def migrate_form_design_elements(
 
 
 # 🆕 ENDPOINT ADICIONAL: Ver estadísticas de migración
+# H-BW-003: Solo admin/creator pueden acceder
 @router.get("/migrate/stats")
 async def get_migration_stats(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator]))
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     """📊 Estadísticas de migración"""
     
     result = db.execute(
@@ -1564,17 +1555,13 @@ async def get_migration_stats(
 
 
 # 🆕 ENDPOINT ADICIONAL: Ver answers problemáticos
+# H-BW-003: Solo admin/creator pueden acceder
 @router.get("/migrate/problematic")
 async def get_problematic_answers(
     limit: int = 50,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator]))
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     """🔍 Ver answers que no se pudieron migrar"""
     
     result = db.execute(

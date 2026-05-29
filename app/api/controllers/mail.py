@@ -166,7 +166,7 @@ def _send_msg(msg: EmailMessage) -> bool:
             smtp.send_message(msg)
         return True
     except Exception as e:
-        print(f"❌ Error SMTP: {e}")
+        logger.error(f"❌ Error SMTP: {e}")
         return False
 
 
@@ -329,10 +329,10 @@ def generate_custom_template_pdf_bytes(db, form, response_obj, selected_fields: 
             response_id=response_obj.id,
         )
         result = exporter.generate().getvalue()
-        print(f"✅ PDF personalizado: {len(result)} bytes — response #{response_obj.id} — {len(selected_fields)} campos")
+        logger.info(f"✅ PDF personalizado: {len(result)} bytes — response #{response_obj.id} — {len(selected_fields)} campos")
         return result
     except Exception as e:
-        print(f"❌ Error PDF personalizado response {response_obj.id}: {e}")
+        logger.error(f"❌ Error PDF personalizado response {response_obj.id}: {e}")
         import traceback; traceback.print_exc()
         return None
 def generate_response_pdf_bytes(db, form, response_obj) -> Optional[bytes]:
@@ -343,7 +343,7 @@ def generate_response_pdf_bytes(db, form, response_obj) -> Optional[bytes]:
         if isinstance(fd, str):
             fd = json.loads(fd)
         if not fd or not isinstance(fd, list):
-            print(f"⚠️ form_design vacío o inválido para form {form.id}")
+            logger.warning(f"⚠️ form_design vacío o inválido para form {form.id}")
             return None
 
         answers_orm = (
@@ -351,7 +351,7 @@ def generate_response_pdf_bytes(db, form, response_obj) -> Optional[bytes]:
             .filter(Answer.response_id == response_obj.id).all()
         )
         if not answers_orm:
-            print(f"⚠️ No se encontraron answers para response {response_obj.id}")
+            logger.warning(f"⚠️ No se encontraron answers para response {response_obj.id}")
             return None
 
         answers = _serialize_answers_for_export(answers_orm, db, form.id, fd)
@@ -362,10 +362,10 @@ def generate_response_pdf_bytes(db, form, response_obj) -> Optional[bytes]:
             form_title=form.title, response_id=response_obj.id,
         )
         result = exporter.generate().getvalue()
-        print(f"✅ PDF generado: {len(result)} bytes para response #{response_obj.id}")
+        logger.info(f"✅ PDF generado: {len(result)} bytes para response #{response_obj.id}")
         return result
     except Exception as e:
-        print(f"❌ Error PDF response {response_obj.id}: {e}")
+        logger.error(f"❌ Error PDF response {response_obj.id}: {e}")
         import traceback; traceback.print_exc()
         return None
 
@@ -378,7 +378,7 @@ def generate_response_excel_bytes(db, form, response_obj) -> Optional[bytes]:
         if isinstance(fd, str):
             fd = json.loads(fd)
         if not fd or not isinstance(fd, list):
-            print(f"⚠️ form_design vacío o inválido para form {form.id}")
+            logger.warning(f"⚠️ form_design vacío o inválido para form {form.id}")
             return None
 
         answers_orm = (
@@ -386,7 +386,7 @@ def generate_response_excel_bytes(db, form, response_obj) -> Optional[bytes]:
             .filter(Answer.response_id == response_obj.id).all()
         )
         if not answers_orm:
-            print(f"⚠️ No se encontraron answers para response {response_obj.id}")
+            logger.warning(f"⚠️ No se encontraron answers para response {response_obj.id}")
             return None
 
         answers = _serialize_answers_for_export(answers_orm, db, form.id, fd)
@@ -397,10 +397,10 @@ def generate_response_excel_bytes(db, form, response_obj) -> Optional[bytes]:
             form_title=form.title, response_id=response_obj.id,
         )
         result = buf.getvalue()
-        print(f"✅ Excel generado: {len(result)} bytes para response #{response_obj.id}")
+        logger.info(f"✅ Excel generado: {len(result)} bytes para response #{response_obj.id}")
         return result
     except Exception as e:
-        print(f"❌ Error Excel response {response_obj.id}: {e}")
+        logger.error(f"❌ Error Excel response {response_obj.id}: {e}")
         import traceback; traceback.print_exc()
         return None
 
@@ -440,7 +440,7 @@ def send_email_daily_forms(user_email: str, user_name: str, forms: List[Dict]) -
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo diario a {user_email}: {e}")
+        logger.warning("Error enviando correo diario", extra={"event": "daily_mail_fail"})
         return False
 
 
@@ -469,7 +469,7 @@ def send_email_with_attachment(
 
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo adjunto a {to_email}: {e}")
+        logger.warning("Error enviando correo adjunto", extra={"event": "attachment_mail_fail"})
         return False
 
 
@@ -493,7 +493,60 @@ def send_welcome_email(email: str, name: str, password: str) -> bool:
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo bienvenida a {email}: {e}")
+        logger.warning("Error enviando correo de bienvenida", extra={"event": "welcome_mail_fail"})
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════
+#  ASIGNACIÓN EN ACTIVIDAD GENÉRICA
+#  (función nueva, additiva: reutiliza los helpers existentes y NO modifica
+#   la config SMTP, los templates ni las demás funciones de envío)
+# ═══════════════════════════════════════════════════════════════
+
+def send_generic_activity_assignment_email(
+    to_email: str,
+    to_name: str,
+    activity_name: str,
+    form_titles: list,
+) -> bool:
+    """Notifica a un usuario que fue asignado como diligenciador de uno o más
+    formatos dentro de una actividad genérica."""
+    try:
+        if not to_email:
+            return False
+        n = len(form_titles)
+        body = _p(
+            f'Estimado/a <strong>{to_name}</strong>, se le asignó como '
+            f'diligenciador en la actividad <strong>"{activity_name}"</strong>.'
+        )
+        rows = "".join(
+            _info_row(f"Formato {i + 1}", title) for i, title in enumerate(form_titles)
+        )
+        body += _info_block(
+            "Formato a diligenciar" if n == 1 else "Formatos a diligenciar", rows
+        )
+        body += _callout(
+            "Ingresa a SafeMetrics para diligenciar "
+            + ("el formato asignado." if n == 1 else "los formatos asignados."),
+            "info",
+        )
+        body += _btn(_APP_URL, "Ir a SafeMetrics")
+
+        subject = f"Nueva asignación · {activity_name}"
+        html = _base_email_html("Te asignaron un formato", body)
+        msg = _new_msg(subject, to_email, to_name)
+        msg.set_content(
+            f'Estimado/a {to_name}, se le asignó como diligenciador en la '
+            f'actividad "{activity_name}".\n'
+            f"Formatos: {', '.join(form_titles)}\n{_APP_URL}"
+        )
+        msg.add_alternative(html, subtype="html")
+        return _send_msg(msg)
+    except Exception:
+        logger.warning(
+            "Error enviando correo de asignación de actividad",
+            extra={"event": "activity_assignment_mail_fail"},
+        )
         return False
 
 
@@ -514,7 +567,7 @@ def send_email_plain_approval_status(
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo aprobación a {to_email}: {e}")
+        logger.warning("Error enviando correo de aprobación", extra={"event": "approval_mail_fail"})
         return False
 
 
@@ -535,7 +588,7 @@ def send_email_plain_approval_status_vencidos(
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo vencidos a {to_email}: {e}")
+        logger.warning("Error enviando correo de vencidos", extra={"event": "expired_mail_fail"})
         return False
 
 
@@ -557,7 +610,7 @@ def send_email_aprovall_next(
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo aprobador a {to_email}: {e}")
+        logger.warning("Error enviando correo a aprobador", extra={"event": "approver_mail_fail"})
         return False
 
 
@@ -625,7 +678,7 @@ def send_rejection_email(
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo rechazo a {to_email}: {e}")
+        logger.warning("Error enviando correo de rechazo", extra={"event": "rejection_mail_fail"})
         return False
 
 
@@ -662,7 +715,7 @@ def send_reconsideration_email(
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo reconsideración a {to_email}: {e}")
+        logger.warning("Error enviando correo de reconsideración", extra={"event": "reconsideration_mail_fail"})
         return False
 
 
@@ -774,7 +827,7 @@ async def send_action_notification_email(
             if response_id:
                 response_obj = db.query(Response).filter(Response.id == response_id).first()
                 if response_obj:
-                    print(f"📋 Usando response_id proporcionado: #{response_id}")
+                    logger.info(f"📋 Usando response_id proporcionado: #{response_id}")
 
             if not response_obj:
                 # Fallback: respuesta más reciente del formulario
@@ -785,9 +838,9 @@ async def send_action_notification_email(
                     .first()
                 )
                 if response_obj:
-                    print(f"📋 Usando respuesta más reciente: #{response_obj.id}")
+                    logger.info(f"📋 Usando respuesta más reciente: #{response_obj.id}")
                 else:
-                    print(f"⚠️ No se encontraron respuestas para form {form.id}")
+                    logger.warning(f"⚠️ No se encontraron respuestas para form {form.id}")
 
         # Mostrar info de la respuesta en el correo
         if response_obj:
@@ -825,59 +878,59 @@ async def send_action_notification_email(
                     Answer.response_id == response_obj.id
                 ).count()
                 if answer_count > 0:
-                    print(f"✅ Answers encontrados: {answer_count} para response #{response_obj.id} (intento {attempt})")
+                    logger.info(f"✅ Answers encontrados: {answer_count} para response #{response_obj.id} (intento {attempt})")
                     break
-                print(f"⏳ Esperando answers para response #{response_obj.id}... (intento {attempt}/7)")
+                logger.info(f"⏳ Esperando answers para response #{response_obj.id}... (intento {attempt}/7)")
                 db.expire_all()  # forzar re-lectura de la DB
                 time.sleep(1)
             else:
-                print(f"⚠️ Timeout: no se encontraron answers para response #{response_obj.id} después de 7 intentos")
+                logger.warning(f"⚠️ Timeout: no se encontraron answers para response #{response_obj.id} después de 7 intentos")
 
             if action == 'send_download_link':
                 # ★ EXCEL adjunto
-                print(f"📊 Generando Excel para response #{response_obj.id}...")
+                logger.info(f"📊 Generando Excel para response #{response_obj.id}...")
                 attachment_bytes = generate_response_excel_bytes(db, form, response_obj)
                 if attachment_bytes:
                     attachment_filename = f"Respuesta_{response_obj.id}_{safe_title}.xlsx"
                     attachment_subtype = "vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     body += _callout(f'Archivo adjunto: <strong>{attachment_filename}</strong>', 'success')
-                    print(f"✅ Excel listo: {attachment_filename} ({len(attachment_bytes)} bytes)")
+                    logger.info(f"✅ Excel listo: {attachment_filename} ({len(attachment_bytes)} bytes)")
                 else:
                     body += _callout('No se pudo generar el archivo Excel adjunto.', 'warning')
-                    print(f"❌ Falló generación de Excel para response #{response_obj.id}")
+                    logger.error(f"❌ Falló generación de Excel para response #{response_obj.id}")
 
             elif action == 'send_pdf_attachment':
                 # ★ PDF adjunto
-                print(f"📄 Generando PDF para response #{response_obj.id}...")
+                logger.info(f"📄 Generando PDF para response #{response_obj.id}...")
                 attachment_bytes = generate_response_pdf_bytes(db, form, response_obj)
                 if attachment_bytes:
                     attachment_filename = f"Respuesta_{response_obj.id}_{safe_title}.pdf"
                     attachment_subtype = "pdf"
                     body += _callout(f'Archivo adjunto: <strong>{attachment_filename}</strong>', 'success')
-                    print(f"✅ PDF listo: {attachment_filename} ({len(attachment_bytes)} bytes)")
+                    logger.info(f"✅ PDF listo: {attachment_filename} ({len(attachment_bytes)} bytes)")
                 elif pdf_bytes:
                     # Fallback: pdf_bytes externo (compatibilidad con código viejo)
                     attachment_bytes = pdf_bytes
                     attachment_filename = pdf_filename or f"Formato_{safe_title}.pdf"
                     attachment_subtype = "pdf"
                     body += _callout(f'Archivo adjunto: <strong>{attachment_filename}</strong>', 'info')
-                    print(f"📎 Usando pdf_bytes fallback: {attachment_filename}")
+                    logger.info(f"📎 Usando pdf_bytes fallback: {attachment_filename}")
                 else:
                     body += _callout('No se pudo generar el archivo PDF adjunto.', 'warning')
-                    print(f"❌ Falló generación de PDF para response #{response_obj.id}")
+                    logger.error(f"❌ Falló generación de PDF para response #{response_obj.id}")
 
             elif action == 'generate_report':
                 # ★ PDF adjunto (reporte)
-                print(f"📊 Generando reporte PDF para response #{response_obj.id}...")
+                logger.info(f"📊 Generando reporte PDF para response #{response_obj.id}...")
                 attachment_bytes = generate_response_pdf_bytes(db, form, response_obj)
                 if attachment_bytes:
                     attachment_filename = f"Reporte_{response_obj.id}_{safe_title}.pdf"
                     attachment_subtype = "pdf"
                     body += _callout(f'Reporte adjunto: <strong>{attachment_filename}</strong>', 'success')
-                    print(f"✅ Reporte PDF listo: {attachment_filename} ({len(attachment_bytes)} bytes)")
+                    logger.info(f"✅ Reporte PDF listo: {attachment_filename} ({len(attachment_bytes)} bytes)")
                 else:
                     body += _callout('No se pudo generar el reporte PDF adjunto.', 'warning')
-                    print(f"❌ Falló generación de reporte PDF para response #{response_obj.id}")
+                    logger.error(f"❌ Falló generación de reporte PDF para response #{response_obj.id}")
 
             elif action == 'send_custom_template':
                 meta        = action_meta or {}
@@ -886,17 +939,17 @@ async def send_action_notification_email(
 
                 if not template_id:
                     body += _callout('No hay plantilla personalizada configurada.', 'warning')
-                    print(f"⚠️ send_custom_template sin template_id para form {form.id}")
+                    logger.warning(f"⚠️ send_custom_template sin template_id para form {form.id}")
                 else:
                     from app.models import DownloadTemplate as DLTemplate
                     tpl = db.query(DLTemplate).filter(DLTemplate.id == template_id).first()
 
                     if not tpl:
                         body += _callout(f'Plantilla #{template_id} no encontrada.', 'warning')
-                        print(f"❌ Plantilla #{template_id} no existe en DB")
+                        logger.error(f"❌ Plantilla #{template_id} no existe en DB")
                     else:
                         selected_fields = tpl.selected_fields or []
-                        print(f"📋 Plantilla #{template_id} — {len(selected_fields)} campos")
+                        logger.info(f"📋 Plantilla #{template_id} — {len(selected_fields)} campos")
 
                         # PDF personalizado con solo los campos del template
                         attachment_bytes = generate_custom_template_pdf_bytes(
@@ -909,7 +962,7 @@ async def send_action_notification_email(
                                 f'PDF personalizado adjunto: <strong>{attachment_filename}</strong>',
                                 'success'
                             )
-                            print(f"✅ PDF personalizado listo: {attachment_filename} ({len(attachment_bytes)} bytes)")
+                            logger.info(f"✅ PDF personalizado listo: {attachment_filename} ({len(attachment_bytes)} bytes)")
                         else:
                             body += _callout('No se pudo generar el PDF personalizado.', 'warning')
 
@@ -933,7 +986,7 @@ async def send_action_notification_email(
                                     maintype="application", subtype="pdf",
                                     filename=normal_filename,
                                 )
-                                print(f"📎 Correo con 2 PDFs → {recipient}")
+                                logger.info(f"📎 Correo con 2 PDFs → {recipient}")
                                 return _send_msg(msg_2)
                             else:
                                 body += _callout('No se pudo generar el PDF completo adicional.', 'warning')
@@ -958,14 +1011,14 @@ async def send_action_notification_email(
                 subtype=attachment_subtype,
                 filename=attachment_filename,
             )
-            print(f"📎 Adjunto añadido al correo: {attachment_filename}")
+            logger.info("Adjunto añadido al correo", extra={"event": "attachment_added"})
         else:
-            print(f"⚠️ Correo '{action}' se envía SIN adjunto a {recipient}")
+            logger.warning(f"⚠️ Correo '{action}' se envía SIN adjunto a {recipient}")
 
         return _send_msg(msg)
 
     except Exception as e:
-        print(f"❌ Error correo acción '{action}' a {recipient}: {e}")
+        logger.warning("Error enviando correo de acción", extra={"event": "action_mail_fail", "action": action})
         import traceback; traceback.print_exc()
         return False
 
@@ -1018,7 +1071,7 @@ def send_response_answers_email(
             _send_msg(msg)
         return True
     except Exception as e:
-        print(f"❌ Error correo respuestas: {e}")
+        logger.warning("Error enviando correo de respuestas", extra={"event": "responses_mail_fail"})
         return False
 
 
@@ -1081,5 +1134,5 @@ def send_rule_notification_email(
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
-        print(f"❌ Error correo alerta a {user_email}: {e}")
+        logger.warning("Error enviando correo de alerta", extra={"event": "alert_mail_fail"})
         return False

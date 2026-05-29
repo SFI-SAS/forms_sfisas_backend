@@ -4,12 +4,13 @@ import os
 from pathlib import Path
 import uuid
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional, Union
 from app.api.controllers.mail import send_reconsideration_email
-from app.crud import crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, encrypt_object, finalizar_conversacion_completa, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, get_palabras_clave_by_form, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
+from app.crud import _extract_style_config, _serialize_answers, crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, encrypt_object, finalizar_conversacion_completa, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, get_palabras_clave_by_form, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
+from app.api.controllers.pdf_form_exporter import generate_form_pdf
 from app.database import get_db
 from app.schemas import UpdateMathOperationRequest, AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, GetQuestionTextsRequest, GetQuestionTextsResponse, PalabrasClaveCreate, PalabrasClaveOut, PalabrasClaveUpdate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, QuestionTextValue, RegisfacialAnswerResponse, RelationOperationMathCreate, RelationOperationMathOut, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
 from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, ClasificacionBitacoraRelacion, Form, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionType, RelationBitacora, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User
@@ -101,7 +102,7 @@ async def create_answer(
     - action="send_and_close": Guarda respuestas Y envía emails si corresponde
     - Para formato cerrado: IGNORA action, siempre envía emails
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No permission")
 
     # ✅ CAMBIO 2: Convertir a lista si es objeto individual
@@ -181,26 +182,47 @@ async def close_response(
             detail="Closed formats are automatically submitted"
         )
 
-    # Cambiar estado a submitted
-    response.status = ResponseStatus.submitted
-    
-    # Crear aprobaciones
-    form_approvals = db.query(FormApproval).filter(
-        FormApproval.form_id == form.id, 
-        FormApproval.is_active == True
-    ).all()
+    # SECURITY (fix #4 auditoría 28-may-2026): envolvemos el cambio de estado
+    # + creación de ResponseApproval en try/except con rollback. Antes, si el
+    # loop fallaba a la mitad, la sesión quedaba con cambios parciales (estado
+    # ya seteado a submitted + aprobaciones huérfanas) y el rollback implícito
+    # de FastAPI no siempre limpiaba bien — riesgo de respuesta en estado
+    # inconsistente.
+    try:
+        # Cambiar estado a submitted
+        response.status = ResponseStatus.submitted
 
-    for approver in form_approvals:
-        response_approval = ResponseApproval(
-            response_id=response_id,
-            user_id=approver.user_id,
-            sequence_number=approver.sequence_number,
-            is_mandatory=approver.is_mandatory,
-            status=ApprovalStatus.pendiente,
+        # Crear aprobaciones
+        form_approvals = db.query(FormApproval).filter(
+            FormApproval.form_id == form.id,
+            FormApproval.is_active == True
+        ).all()
+
+        for approver in form_approvals:
+            response_approval = ResponseApproval(
+                response_id=response_id,
+                user_id=approver.user_id,
+                sequence_number=approver.sequence_number,
+                is_mandatory=approver.is_mandatory,
+                status=ApprovalStatus.pendiente,
+                # Hereda firm_mode y la pregunta regisfacial fuente de la plantilla
+                # al momento de enviar. Fija las reglas para esta respuesta, aunque
+                # luego el admin cambie el template del formato.
+                firm_mode=getattr(approver, "firm_mode", "button") or "button",
+                firm_source_question_id=getattr(approver, "firm_source_question_id", None),
+            )
+            db.add(response_approval)
+
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al cerrar la respuesta. Cambios revertidos: {str(e)}"
         )
-        db.add(response_approval)
-
-    db.commit()
 
     # Enviar notificaciones
     send_mails_to_next_supporters(response_id, db)
@@ -250,7 +272,7 @@ async def upload_file(file: UploadFile = File(...), current_user: User = Depends
     - 500: Si ocurre un error al guardar el archivo.
     """
     try:
-        if current_user == None:
+        if current_user is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User does not have permission to get all questions"
@@ -471,7 +493,7 @@ def update_answer_text(payload: UpdateAnswerText, db: Session = Depends(get_db),
         - 403: Si el usuario no está autenticado.
         - 404: Si la respuesta con el ID dado no existe.
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(   
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get all questions"
@@ -956,7 +978,7 @@ def create_answer_history(data: AnswerHistoryCreate, db: Session = Depends(get_d
     Retorna:
     - Mensaje de éxito y el ID del historial creado.
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
@@ -975,6 +997,8 @@ def create_answer_history(data: AnswerHistoryCreate, db: Session = Depends(get_d
         return {"message": "Historial de respuesta guardado", "id": new_history.id}
 
 from sqlalchemy import select
+import logging
+logger = logging.getLogger(__name__)
 
 @router.post("/create-answers", status_code=status.HTTP_201_CREATED)
 async def create_answers(
@@ -1001,7 +1025,7 @@ async def create_answers(
     Retorna:
     - Un diccionario con mensaje de éxito e ID del nuevo registro de respuesta.
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create answers"
@@ -1039,9 +1063,9 @@ async def create_answers(
         # Invalidar caché después de crear la respuesta
         cache_key = f"user_responses:{response.form_id}:{current_user.id}"
         redis_client.delete(cache_key)
-        print(f"🗑️ Cache invalidado: {cache_key}")
+        logger.info(f"🗑️ Cache invalidado: {cache_key}")
         
-        print(f"✅ Respuesta creada - ID: {new_answer.id}, "
+        logger.info(f"✅ Respuesta creada - ID: {new_answer.id}, "
               f"Question: {question_id}, "
               f"FormDesignElement: {form_design_element_id}")
         
@@ -1055,7 +1079,7 @@ async def create_answers(
         
     except Exception as e:
         db.rollback()
-        print(f"❌ Error creando respuesta: {str(e)}")
+        logger.error(f"❌ Error creando respuesta: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating answer: {str(e)}"
@@ -1079,7 +1103,7 @@ def update_answer_text(data: UpdateAnswertHistory, db: Session = Depends(get_db)
     - 403: Si el usuario no está autenticado.
     - 404: Si no se encuentra la respuesta con el ID especificado.
     """
-    if current_user == None:
+    if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to get options"
@@ -1262,7 +1286,97 @@ async def get_response_with_complete_answers_and_history(
         current_answers=current_answers_list,
         answer_history=history_changes_list
     )
-    
+
+
+@router.get("/{response_id}/pdf")
+def download_response_pdf(
+    response_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Genera un PDF con la estructura visual del formato y las respuestas de
+    UN response específico (identificado por response_id).
+
+    Autorización: el usuario debe ser uno de:
+      - dueño del response
+      - admin o creator
+      - aprobador asignado a este response (tiene fila en response_approvals)
+    """
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No autenticado")
+
+    response = db.query(Response).filter(Response.id == response_id).first()
+    if not response:
+        raise HTTPException(status_code=404, detail="Respuesta no encontrada")
+
+    is_owner = response.user_id == current_user.id
+    is_admin_or_creator = current_user.user_type.name in ("admin", "creator")
+    is_approver = (
+        db.query(ResponseApproval)
+        .filter(
+            ResponseApproval.response_id == response_id,
+            ResponseApproval.user_id == current_user.id,
+        )
+        .first()
+        is not None
+    )
+    if not (is_owner or is_admin_or_creator or is_approver):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para descargar esta respuesta",
+        )
+
+    form = db.query(Form).filter(Form.id == response.form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    form_design = form.form_design
+    if isinstance(form_design, str):
+        try:
+            form_design = json.loads(form_design)
+        except json.JSONDecodeError:
+            form_design = None
+    if not form_design or not isinstance(form_design, list):
+        raise HTTPException(
+            status_code=400,
+            detail="Este formato no tiene diseño disponible para generar PDF",
+        )
+
+    answers_orm = (
+        db.query(Answer)
+        .options(joinedload(Answer.question))
+        .filter(Answer.response_id == response_id)
+        .all()
+    )
+
+    # _serialize_answers reconstruye repeated_id desde form_design,
+    # necesario para que los repeaters se rendericen en el PDF.
+    answers = _serialize_answers(answers_orm, db, form.id, form_design)
+
+    style_config = _extract_style_config(form_design)
+
+    submitted_at_str = str(response.submitted_at)[:19] if response.submitted_at else ""
+
+    output = generate_form_pdf(
+        form_design=form_design,
+        answers=answers,
+        style_config=style_config,
+        form_title=form.title,
+        submitted_at=submitted_at_str,
+        response_id=response.id,
+    )
+
+    safe_title = (form.title or "Formato").replace(" ", "_").replace("/", "_").replace("\\", "_")
+    filename = f"Respuesta_{safe_title}_{response_id}.pdf"
+
+    return StreamingResponse(
+        output,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/get_responses/all")
 def get_all_user_responses(
     db: Session = Depends(get_db),
@@ -1579,13 +1693,97 @@ async def get_regisfacial_answers(db: Session = Depends(get_db),current_user: Us
                 continue
                 
         return unique_results
-        
+
     except Exception as e:
         raise HTTPException(
-            status_code=500, 
+            status_code=500,
             detail=f"Error al obtener las respuestas: {str(e)}"
         )
-        
+
+
+@router.get("/answers/regisfacial/my-registration")
+def get_my_regisfacial_registration(
+    question_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Devuelve el registro facial más reciente del usuario logueado para una
+    pregunta `regisfacial` específica (la fuente configurada por el admin
+    en el aprobador).
+
+    Parámetro:
+      question_id — Question.id de la pregunta regisfacial fuente. Es
+                    obligatorio: distintas preguntas regisfacial conviven
+                    en el sistema (ej: "Empleados", "Contratistas") y cada
+                    aprobador valida contra una fuente concreta.
+
+    Respuesta:
+      200 OK → { answer_id, person_id, person_name }
+      400    → la pregunta no es regisfacial
+      404    → el usuario aún no tiene registro en esa pregunta
+    """
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No autenticado")
+
+    # Validar que la pregunta exista y sea regisfacial.
+    source_question = (
+        db.query(Question)
+        .filter(Question.id == question_id)
+        .first()
+    )
+    if not source_question:
+        raise HTTPException(status_code=404, detail="Pregunta fuente no encontrada.")
+    if source_question.question_type != QuestionType.regisfacial:
+        raise HTTPException(
+            status_code=400,
+            detail="La pregunta indicada no es de tipo registro facial.",
+        )
+
+    result = (
+        db.query(Answer.id.label("answer_id"), Answer.answer_text)
+        .join(Question, Answer.question_id == Question.id)
+        .join(Response, Answer.response_id == Response.id)
+        .filter(Question.id == question_id)
+        .filter(Question.question_type == QuestionType.regisfacial)
+        .filter(Response.user_id == current_user.id)
+        .filter(Answer.answer_text.isnot(None))
+        .order_by(Answer.id.desc())
+        .first()
+    )
+
+    if not result:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Aún no has registrado tu rostro. Pide al administrador que te "
+                "asigne un formato de registro facial."
+            ),
+        )
+
+    try:
+        parsed = json.loads(result.answer_text)
+        face_data = parsed.get("faceData", {}) or {}
+        person_id = face_data.get("person_id") or face_data.get("personId")
+        person_name = face_data.get("personName") or face_data.get("person_name")
+    except (json.JSONDecodeError, TypeError):
+        raise HTTPException(
+            status_code=500,
+            detail="El registro facial existe pero los datos están corruptos.",
+        )
+
+    if not person_id:
+        raise HTTPException(
+            status_code=500,
+            detail="El registro facial existe pero falta person_id.",
+        )
+
+    return {
+        "answer_id": result.answer_id,
+        "person_id": person_id,
+        "person_name": person_name,
+    }
+
 
 @router.post("/bitacora/logs-simple", summary="Crear registro en bitácora simple")
 def create_bitacora_log_endpoint(
@@ -1608,11 +1806,15 @@ def get_bitacora_eventos(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Devuelve todos los registros de la tabla bitacora_eventos.
-    Solo accesible si el usuario tiene asign_bitacora = True.
+    Devuelve todos los registros de la tabla bitacora_eventos (vista global).
+    SECURITY: requiere user_type admin/creator + asign_bitacora=True.
     """
-    # 🔐 Verificar si el usuario tiene permiso
-    if not current_user.asign_bitacora:
+    # 🔐 SECURITY (fix #1 auditoría 28-may-2026): antes solo chequeaba el
+    #    flag `asign_bitacora`, lo que permitía a cualquier `user_type='user'`
+    #    con el flag activado ver la bitácora global de TODOS los usuarios
+    #    (IDOR). Ahora se exige además rol admin o creator.
+    is_admin_or_creator = current_user.user_type.value in ("admin", "creator")
+    if not (is_admin_or_creator and current_user.asign_bitacora):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="No tienes permisos para ver los registros de bitácora."
@@ -1625,7 +1827,7 @@ def get_bitacora_eventos(
             "data": logs
         }
     except Exception as e:
-        print(f"⚠️ Error al obtener bitácora: {e}")
+        logger.error(f"⚠️ Error al obtener bitácora: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al obtener los registros de bitácora."
@@ -1640,7 +1842,7 @@ def get_mis_eventos(
     """
     Devuelve solo los registros de bitácora creados por el usuario autenticado.
     """
-    logs = get_bitacora_eventos_by_user(db, str(current_user.num_document))
+    logs = get_bitacora_eventos_by_user(db, current_user)
 
     return {
         "message": "✅ Registros del usuario autenticado obtenidos correctamente",
@@ -1741,7 +1943,7 @@ def get_bitacora_formatos(
         return {"message": "Bitácora de formatos obtenida exitosamente", "data": results}
 
     except Exception as e:
-        print(f"⚠️ Error al obtener bitácora de formatos: {e}")
+        logger.error(f"⚠️ Error al obtener bitácora de formatos: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al obtener la bitácora de formatos."
@@ -2297,11 +2499,11 @@ async def update_answer(
         # 4️⃣ Invalidar caché
         cache_key = f"user_responses:{response.form_id}:{current_user.id}"
         redis_client.delete(cache_key)
-        print(f"🗑️ Cache invalidado: {cache_key}")
+        logger.info(f"🗑️ Cache invalidado: {cache_key}")
         
-        print(f"✅ Respuesta actualizada - ID: {answer_id}")
-        print(f"   Texto anterior: '{old_text}'")
-        print(f"   Texto nuevo: '{answer_text}'")
+        logger.info(f"✅ Respuesta actualizada - ID: {answer_id}")
+        logger.info(f"   Texto anterior: '{old_text}'")
+        logger.info(f"   Texto nuevo: '{answer_text}'")
         
         return {
             "message": "Answer updated successfully",
@@ -2317,7 +2519,7 @@ async def update_answer(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ Error actualizando respuesta {answer_id}: {str(e)}")
+        logger.error(f"❌ Error actualizando respuesta {answer_id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error updating answer: {str(e)}"
