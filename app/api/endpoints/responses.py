@@ -1842,7 +1842,7 @@ def get_mis_eventos(
     """
     Devuelve solo los registros de bitácora creados por el usuario autenticado.
     """
-    logs = get_bitacora_eventos_by_user(db, str(current_user.num_document))
+    logs = get_bitacora_eventos_by_user(db, current_user)
 
     return {
         "message": "✅ Registros del usuario autenticado obtenidos correctamente",

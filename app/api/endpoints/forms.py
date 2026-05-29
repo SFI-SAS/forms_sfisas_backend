@@ -820,7 +820,57 @@ def check_form_responses(form_id: int, db: Session = Depends(get_db), current_us
     ensure_access_to_form(db, current_user, _form_for_auth)
 
     return check_form_data(db, form_id)
-    
+
+
+@router.get("/{form_id}/eligible-users")
+def list_eligible_users_for_form(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """Usuarios que pueden diligenciar este formato, agregados desde los perfiles
+    activos que lo tienen asignado directamente. Cada usuario incluye los profile_ids
+    de origen para trazabilidad. Usado por el editor de Actividades Genéricas."""
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    rows = (
+        db.query(
+            User.id.label("user_id"),
+            User.name.label("user_name"),
+            User.email.label("user_email"),
+            Profile.id.label("profile_id"),
+            Profile.name.label("profile_name"),
+        )
+        .join(ProfileUser, ProfileUser.user_id == User.id)
+        .join(Profile, Profile.id == ProfileUser.profile_id)
+        .join(ProfileForm, ProfileForm.profile_id == Profile.id)
+        .filter(
+            ProfileForm.form_id == form_id,
+            Profile.is_active == True,
+        )
+        .order_by(User.name.asc(), Profile.name.asc())
+        .all()
+    )
+
+    by_user: dict = {}
+    for r in rows:
+        u = by_user.get(r.user_id)
+        if not u:
+            u = {
+                "user_id": r.user_id,
+                "user_name": r.user_name,
+                "user_email": r.user_email,
+                "profile_ids": [],
+                "profile_names": [],
+            }
+            by_user[r.user_id] = u
+        u["profile_ids"].append(r.profile_id)
+        u["profile_names"].append(r.profile_name)
+
+    return list(by_user.values())
+
 
 @router.put("/{form_id}/questions")
 async def update_form_questions(

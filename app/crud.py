@@ -6885,36 +6885,41 @@ def get_all_bitacora_eventos(db: Session):
             detail="Error al obtener los registros de bitácora."
         )
     
-def get_bitacora_eventos_by_user(db: Session, user_identifier: str):
+def get_bitacora_eventos_by_user(db: Session, current_user: User):
     """
     Obtiene los eventos donde el usuario autenticado:
     - Es el creador (registrado_por)
     - O aparece como participante (campo participantes, CSV de identificadores)
 
-    SECURITY (fix #2 auditoría 28-may-2026): antes usaba
-    `ilike("%user_identifier%")` lo que permitía leak entre usuarios cuyo
-    num_document era substring uno del otro (ej. "1234" matcheaba a "12345").
-    Ahora:
-      - registrado_por → `==` exacto.
-      - participantes (CSV) → se envuelve con comas y se quitan espacios para
-        que el LIKE de ',X,' solo matchee el token completo.
+    Formato real en BD (ver crud.create_bitacora_log_simple:6842 y
+    ButtonEventModal.tsx:432):
+      - registrado_por: "Nombre Apellido - {num_document}"
+      - participantes:  CSV con ', ' separator de "Nombre Apellido - {num_document}"
+
+    SECURITY (fix #2 auditoría 28-may-2026 + fix de matching 29-may-2026):
+      - registrado_por se compara contra el label exacto y como fallback contra
+        sufijo "- {num_document}" (por si cambió el nombre).
+      - participantes: se agrega ', ' al final del campo y se busca
+        "%- {num_document}, %" para garantizar token completo y evitar leak
+        entre num_document que son substring uno del otro.
     """
+    me_doc = str(current_user.num_document)
+    me_label = f"{current_user.name} - {me_doc}"
+    suffix_pattern = f"%- {me_doc}"
+
+    participants_with_trailing = func.concat(
+        func.coalesce(BitacoraLogsSimple.participantes, ''),
+        ', '
+    )
+
     try:
-        # Envolver con comas + quitar espacios → buscar ',X,' garantiza token completo
-        wrapped_participants = func.concat(
-            ',',
-            func.replace(BitacoraLogsSimple.participantes, ' ', ''),
-            ','
-        )
         logs = (
             db.query(BitacoraLogsSimple)
             .filter(
                 or_(
-                    BitacoraLogsSimple.registrado_por == user_identifier,
-                    and_(
-                        BitacoraLogsSimple.participantes.isnot(None),
-                        wrapped_participants.like(f"%,{user_identifier},%")
-                    )
+                    BitacoraLogsSimple.registrado_por == me_label,
+                    BitacoraLogsSimple.registrado_por.like(suffix_pattern),
+                    participants_with_trailing.like(f"%- {me_doc}, %"),
                 )
             )
             .order_by(BitacoraLogsSimple.created_at.desc())

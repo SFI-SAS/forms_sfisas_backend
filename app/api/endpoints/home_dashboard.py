@@ -22,7 +22,8 @@ from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
 from app.database import get_db
-from app.models import ApprovalStatus, Form, FormSchedule, Response, ResponseApproval, ResponseStatus, User, UserType
+from app.models import ApprovalStatus, BitacoraLogsSimple, EstadoEvento, Form, FormSchedule, Response, ResponseApproval, ResponseStatus, User, UserType
+from sqlalchemy import and_, func, or_
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -608,4 +609,78 @@ def get_recent_activity(
             "occurred_at": ap.reviewed_at,
         }
         for ap, resp, form, actor in rows
+    ]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# To-Do: eventos de bitácora donde el usuario es CREADOR o PARTICIPANTE,
+# que aún requieren atención (estado != finalizado). El campo participantes
+# es CSV de num_document. Replica el wrapping de get_bitacora_eventos_by_user
+# para evitar falsos positivos por substring.
+# ────────────────────────────────────────────────────────────────────────────
+
+@router.get("/pending-bitacora-events")
+def list_pending_bitacora_events_for_me(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Eventos de bitácora pendientes para el usuario: o los creó él, o lo
+    agregaron como participante. Excluye los finalizados. Alimenta la sección
+    'Eventos pendientes' del To-Do del Home.
+
+    Formato de los campos en BD (ver crud.py:6842 y ButtonEventModal.tsx:432):
+      - registrado_por: "Nombre Apellido - {num_document}"
+      - participantes:  CSV con ', ' separator de "Nombre Apellido - {num_document}"
+
+    Estrategia de match:
+      - registrado_por: comparar contra el label exacto (name+doc) o, si el
+        nombre cambió, por sufijo "- {num_document}".
+      - participantes: concatenar ', ' al final del campo y buscar
+        "%- {num_document}, %" para asegurar token completo (evita falsos
+        positivos por substring entre num_documents).
+    """
+    me_doc = str(current_user.num_document)
+    me_label = f"{current_user.name} - {me_doc}"
+    suffix_pattern = f"%- {me_doc}"  # sufijo: "...- 12345"
+
+    # Para participantes: agregamos ', ' al final del campo y buscamos el token
+    # como "%- 12345, %". Garantiza que matchee el token completo, incluso si es
+    # el último de la lista.
+    participants_with_trailing = func.concat(
+        func.coalesce(BitacoraLogsSimple.participantes, ''),
+        ', '
+    )
+
+    rows = (
+        db.query(BitacoraLogsSimple)
+        .filter(
+            or_(
+                BitacoraLogsSimple.registrado_por == me_label,
+                BitacoraLogsSimple.registrado_por.like(suffix_pattern),
+                participants_with_trailing.like(f"%- {me_doc}, %"),
+            ),
+            BitacoraLogsSimple.estado != EstadoEvento.finalizado,
+        )
+        .order_by(BitacoraLogsSimple.created_at.desc())
+        .all()
+    )
+
+    def _is_creator(ev: BitacoraLogsSimple) -> bool:
+        rp = ev.registrado_por or ""
+        return rp == me_label or rp.endswith(f"- {me_doc}")
+
+    return [
+        {
+            "id": ev.id,
+            "clasificacion": ev.clasificacion,
+            "titulo": ev.titulo,
+            "fecha": ev.fecha,
+            "hora": ev.hora,
+            "ubicacion": ev.ubicacion,
+            "registrado_por": ev.registrado_por,
+            "is_creator": _is_creator(ev),
+            "estado": ev.estado.value if hasattr(ev.estado, "value") else str(ev.estado),
+            "created_at": ev.created_at.isoformat() if ev.created_at else None,
+        }
+        for ev in rows
     ]
