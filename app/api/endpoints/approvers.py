@@ -16,6 +16,8 @@ import pandas as pd
 from app.models import Answer, AnswerHistory, ApprovalRequirement, ApprovalStatus, Form, FormApproval, Question, Response, ResponseApproval, ResponseApprovalRequirement, User, UserType
 from app.schemas import ApprovalRequirementsCreateSchema, BulkUpdateFormApprovals, FormApprovalCreateSchema, FormWithApproversResponse, RequiredFormsResponse, ResponseDetailInfo, UpdateResponseApprovalRequest
 from fastapi import Form as FastAPIForm 
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -243,7 +245,7 @@ async def update_response_approval(
 
         # SECURITY (ID-043): print de update_data eliminado por filtración de PII
         # (mensajes de aprobación/rechazo, payload del cliente, etc.).
-        print("Archivos procesados:", len(uploaded_files_info))
+        logger.info("Archivos procesados:", len(uploaded_files_info))
 
         # 3. Llamar a la función original (sin modificar)
         updated_response_approval = await update_response_approval_status(
@@ -269,7 +271,7 @@ async def update_response_approval(
                 db.commit()
                 db.refresh(response_approval)
                 
-                print(f"✅ Se guardaron {len(uploaded_files_info)} archivos adjuntos")
+                logger.info(f"✅ Se guardaron {len(uploaded_files_info)} archivos adjuntos")
 
         return {
             "message": "ResponseApproval updated successfully",
@@ -858,7 +860,7 @@ def auto_approve_response_approvals(
         
     except Exception as e:
         # Log del error pero no fallar toda la operación
-        print(f"Error en auto-aprobación: {str(e)}")
+        logger.error(f"Error en auto-aprobación: {str(e)}")
         return 0
 
 # Endpoint

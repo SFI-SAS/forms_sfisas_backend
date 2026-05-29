@@ -182,31 +182,47 @@ async def close_response(
             detail="Closed formats are automatically submitted"
         )
 
-    # Cambiar estado a submitted
-    response.status = ResponseStatus.submitted
-    
-    # Crear aprobaciones
-    form_approvals = db.query(FormApproval).filter(
-        FormApproval.form_id == form.id, 
-        FormApproval.is_active == True
-    ).all()
+    # SECURITY (fix #4 auditoría 28-may-2026): envolvemos el cambio de estado
+    # + creación de ResponseApproval en try/except con rollback. Antes, si el
+    # loop fallaba a la mitad, la sesión quedaba con cambios parciales (estado
+    # ya seteado a submitted + aprobaciones huérfanas) y el rollback implícito
+    # de FastAPI no siempre limpiaba bien — riesgo de respuesta en estado
+    # inconsistente.
+    try:
+        # Cambiar estado a submitted
+        response.status = ResponseStatus.submitted
 
-    for approver in form_approvals:
-        response_approval = ResponseApproval(
-            response_id=response_id,
-            user_id=approver.user_id,
-            sequence_number=approver.sequence_number,
-            is_mandatory=approver.is_mandatory,
-            status=ApprovalStatus.pendiente,
-            # Hereda firm_mode y la pregunta regisfacial fuente de la plantilla
-            # al momento de enviar. Fija las reglas para esta respuesta, aunque
-            # luego el admin cambie el template del formato.
-            firm_mode=getattr(approver, "firm_mode", "button") or "button",
-            firm_source_question_id=getattr(approver, "firm_source_question_id", None),
+        # Crear aprobaciones
+        form_approvals = db.query(FormApproval).filter(
+            FormApproval.form_id == form.id,
+            FormApproval.is_active == True
+        ).all()
+
+        for approver in form_approvals:
+            response_approval = ResponseApproval(
+                response_id=response_id,
+                user_id=approver.user_id,
+                sequence_number=approver.sequence_number,
+                is_mandatory=approver.is_mandatory,
+                status=ApprovalStatus.pendiente,
+                # Hereda firm_mode y la pregunta regisfacial fuente de la plantilla
+                # al momento de enviar. Fija las reglas para esta respuesta, aunque
+                # luego el admin cambie el template del formato.
+                firm_mode=getattr(approver, "firm_mode", "button") or "button",
+                firm_source_question_id=getattr(approver, "firm_source_question_id", None),
+            )
+            db.add(response_approval)
+
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al cerrar la respuesta. Cambios revertidos: {str(e)}"
         )
-        db.add(response_approval)
-
-    db.commit()
 
     # Enviar notificaciones
     send_mails_to_next_supporters(response_id, db)
@@ -981,6 +997,8 @@ def create_answer_history(data: AnswerHistoryCreate, db: Session = Depends(get_d
         return {"message": "Historial de respuesta guardado", "id": new_history.id}
 
 from sqlalchemy import select
+import logging
+logger = logging.getLogger(__name__)
 
 @router.post("/create-answers", status_code=status.HTTP_201_CREATED)
 async def create_answers(
@@ -1045,9 +1063,9 @@ async def create_answers(
         # Invalidar caché después de crear la respuesta
         cache_key = f"user_responses:{response.form_id}:{current_user.id}"
         redis_client.delete(cache_key)
-        print(f"🗑️ Cache invalidado: {cache_key}")
+        logger.info(f"🗑️ Cache invalidado: {cache_key}")
         
-        print(f"✅ Respuesta creada - ID: {new_answer.id}, "
+        logger.info(f"✅ Respuesta creada - ID: {new_answer.id}, "
               f"Question: {question_id}, "
               f"FormDesignElement: {form_design_element_id}")
         
@@ -1061,7 +1079,7 @@ async def create_answers(
         
     except Exception as e:
         db.rollback()
-        print(f"❌ Error creando respuesta: {str(e)}")
+        logger.error(f"❌ Error creando respuesta: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating answer: {str(e)}"
@@ -1788,11 +1806,15 @@ def get_bitacora_eventos(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Devuelve todos los registros de la tabla bitacora_eventos.
-    Solo accesible si el usuario tiene asign_bitacora = True.
+    Devuelve todos los registros de la tabla bitacora_eventos (vista global).
+    SECURITY: requiere user_type admin/creator + asign_bitacora=True.
     """
-    # 🔐 Verificar si el usuario tiene permiso
-    if not current_user.asign_bitacora:
+    # 🔐 SECURITY (fix #1 auditoría 28-may-2026): antes solo chequeaba el
+    #    flag `asign_bitacora`, lo que permitía a cualquier `user_type='user'`
+    #    con el flag activado ver la bitácora global de TODOS los usuarios
+    #    (IDOR). Ahora se exige además rol admin o creator.
+    is_admin_or_creator = current_user.user_type.value in ("admin", "creator")
+    if not (is_admin_or_creator and current_user.asign_bitacora):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="No tienes permisos para ver los registros de bitácora."
@@ -1805,7 +1827,7 @@ def get_bitacora_eventos(
             "data": logs
         }
     except Exception as e:
-        print(f"⚠️ Error al obtener bitácora: {e}")
+        logger.error(f"⚠️ Error al obtener bitácora: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al obtener los registros de bitácora."
@@ -1921,7 +1943,7 @@ def get_bitacora_formatos(
         return {"message": "Bitácora de formatos obtenida exitosamente", "data": results}
 
     except Exception as e:
-        print(f"⚠️ Error al obtener bitácora de formatos: {e}")
+        logger.error(f"⚠️ Error al obtener bitácora de formatos: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al obtener la bitácora de formatos."
@@ -2477,11 +2499,11 @@ async def update_answer(
         # 4️⃣ Invalidar caché
         cache_key = f"user_responses:{response.form_id}:{current_user.id}"
         redis_client.delete(cache_key)
-        print(f"🗑️ Cache invalidado: {cache_key}")
+        logger.info(f"🗑️ Cache invalidado: {cache_key}")
         
-        print(f"✅ Respuesta actualizada - ID: {answer_id}")
-        print(f"   Texto anterior: '{old_text}'")
-        print(f"   Texto nuevo: '{answer_text}'")
+        logger.info(f"✅ Respuesta actualizada - ID: {answer_id}")
+        logger.info(f"   Texto anterior: '{old_text}'")
+        logger.info(f"   Texto nuevo: '{answer_text}'")
         
         return {
             "message": "Answer updated successfully",
@@ -2497,7 +2519,7 @@ async def update_answer(
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ Error actualizando respuesta {answer_id}: {str(e)}")
+        logger.error(f"❌ Error actualizando respuesta {answer_id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error updating answer: {str(e)}"

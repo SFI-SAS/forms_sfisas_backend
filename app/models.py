@@ -794,3 +794,52 @@ class IntegratorFormatAccess(Base):
     user = relationship('User', foreign_keys=[user_id], backref='integrator_format_accesses')
     assigner = relationship('User', foreign_keys=[assigned_by])
     form = relationship('Form')
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ACTIVIDADES GENÉRICAS — agrupan formatos y, por cada formato, definen quién lo
+# diligencia. El diligenciador se elige a través de un PERFIL (Profile): se elige
+# un perfil, se listan sus usuarios y se escoge uno. Un mismo formato puede tener
+# varios diligenciadores dentro de la actividad (varias filas form↔usuario).
+# Esta capa solo guarda configuración; reutiliza /profiles para leer perfiles.
+# Solo administradores gestionan estas tablas.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class GenericActivity(Base):
+    __tablename__ = 'generic_activities'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    name = Column(String(150), nullable=False, unique=True)
+    description = Column(Text, nullable=True)
+    created_by = Column(BigInteger, ForeignKey('users.id'), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    creator = relationship('User', foreign_keys=[created_by])
+    form_links = relationship('GenericActivityForm', back_populates='activity', cascade='all, delete-orphan')
+
+
+class GenericActivityForm(Base):
+    """Una fila = en la actividad, el formato F lo diligencia el usuario U,
+    elegido a través del perfil P. Varios diligenciadores por formato => varias
+    filas con el mismo (activity_id, form_id) y distinto user_id.
+    profile_id es SET NULL: si el perfil se elimina, la asignación conserva al
+    usuario pero pierde la referencia al perfil de origen."""
+    __tablename__ = 'generic_activity_forms'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    activity_id = Column(BigInteger, ForeignKey('generic_activities.id', ondelete='CASCADE'), nullable=False, index=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False, index=True)
+    profile_id = Column(BigInteger, ForeignKey('profiles.id', ondelete='SET NULL'), nullable=True, index=True)
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    assigned_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('activity_id', 'form_id', 'user_id', name='uq_generic_activity_form_user'),
+    )
+
+    activity = relationship('GenericActivity', back_populates='form_links')
+    form = relationship('Form')
+    profile = relationship('Profile')
+    user = relationship('User', foreign_keys=[user_id])

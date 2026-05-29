@@ -18,8 +18,8 @@ from app.crud import (
 from app.database import SessionLocal, engine
 from app.models import Base, EmailConfig
 from app.api.endpoints import (
-    alias, approvers, consultants, download_template, integrations, list_form, pdf_router, profiles, projects, responses,
-    responsibilitytransfer, users, forms, auth, questions
+    alias, approvers, consultants, download_template, home_dashboard, integrations, list_form, pdf_router, profiles, projects, responses,
+    responsibilitytransfer, users, forms, auth, questions, generic_activities
 )
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -122,7 +122,9 @@ app.include_router(download_template.router, prefix="/download_template", tags=[
 app.include_router(alias.router, prefix="/alias", tags=["alias"])
 app.include_router(consultants.router, prefix="/consultants", tags=["consultants"])
 app.include_router(profiles.router, prefix="/profiles", tags=["profiles"])
+app.include_router(generic_activities.router, prefix="/generic-activities", tags=["generic-activities"])
 app.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
+app.include_router(home_dashboard.router, prefix="/home", tags=["home"])
 
 # ========================================
 # CREAR TABLAS
@@ -130,9 +132,9 @@ app.include_router(integrations.router, prefix="/integrations", tags=["integrati
 # H-BW-008: create_all solo en desarrollo. En prod usar migraciones manuales (carpeta migrations/).
 if os.getenv("ENV") == "development":
     Base.metadata.create_all(bind=engine)
-    print("✅ Tablas creadas/verificadas (modo desarrollo)")
+    logger.info("✅ Tablas creadas/verificadas (modo desarrollo)")
 else:
-    print("ℹ️ Producción: create_all omitido — usá migraciones manuales (migrations/)")
+    logger.info("ℹ️ Producción: create_all omitido — usá migraciones manuales (migrations/)")
 
 # ========================================
 # EVENTOS DE INICIO Y CIERRE
@@ -142,7 +144,7 @@ else:
 @app.on_event("shutdown")
 async def shutdown_event():
     """Se ejecuta al apagar la aplicación"""
-    print("🛑 Apagando aplicación...")
+    logger.info("🛑 Apagando aplicación...")
     scheduler.shutdown()
 
 # ========================================
@@ -192,18 +194,18 @@ DIAS_SEMANA = {
 
 def daily_schedule_task():
     """Obtiene los registros activos para el día actual y ejecuta la lógica necesaria."""
-    print("⏳ Ejecutando tarea diaria de formularios programados...")
+    logger.info("⏳ Ejecutando tarea diaria de formularios programados...")
 
     db = SessionLocal()
     try:
         schedules = get_schedules_by_frequency(db)
-        print(f"📆 Registros obtenidos para hoy: {len(schedules)}")
+        logger.info(f"📆 Registros obtenidos para hoy: {len(schedules)}")
 
         response_details = get_response_details_logic(db)
-        print(f"📌 Detalles de respuestas obtenidos: {len(response_details)}")
+        logger.info(f"📌 Detalles de respuestas obtenidos: {len(response_details)}")
 
     except Exception as e:
-        print(f"⚠️ Error en la tarea diaria de formularios: {str(e)}")
+        logger.error(f"⚠️ Error en la tarea diaria de formularios: {str(e)}")
     finally:
         db.close()
 
@@ -211,7 +213,7 @@ def daily_schedule_task():
 @app.on_event("startup")
 async def startup_seed_email_config():
     """H-BW-009: Inicializa email_config (solo dev) y verifica Redis al iniciar."""
-    print("🚀 Iniciando aplicación...")
+    logger.info("🚀 Iniciando aplicación...")
     
     # ====== INICIALIZAR EMAIL_CONFIG ======
     db = SessionLocal()
@@ -227,22 +229,22 @@ async def startup_seed_email_config():
                     EmailConfig(email_address="example2@domain.com", is_active=False),
                 ])
                 db.commit()
-                print("✅ Registros de email_config inicializados (seed development)")
+                logger.info("✅ Registros de email_config inicializados (seed development)")
             else:
-                print("ℹ️ email_config vacía — si es primer deploy, ejecutá el script de seed manualmente")
+                logger.info("ℹ️ email_config vacía — si es primer deploy, ejecutá el script de seed manualmente")
         else:
-            print(f"ℹ️ email_config ya contiene {email_count} registros")
+            logger.info(f"ℹ️ email_config ya contiene {email_count} registros")
     except Exception as e:
         db.rollback()
-        print(f"❌ Error al inicializar email_config: {str(e)}")
+        logger.error(f"❌ Error al inicializar email_config: {str(e)}")
     finally:
         db.close()
     
     # Verificar conexión a Redis
     if redis_client.check_connection():
-        print("✅ Redis conectado correctamente")
+        logger.info("✅ Redis conectado correctamente")
     else:
-        print("⚠️ Advertencia: Redis no está disponible")
+        logger.warning("⚠️ Advertencia: Redis no está disponible")
         
 def notification_rules_task():
     """
@@ -252,9 +254,9 @@ def notification_rules_task():
     2. Envía correos de alerta
     3. Deshabilita las reglas ya notificadas
     """
-    print("\n" + "="*60)
-    print("⏰ Ejecutando tarea de notificaciones de reglas...")
-    print("="*60)
+    logger.info("\n" + "="*60)
+    logger.info("⏰ Ejecutando tarea de notificaciones de reglas...")
+    logger.info("="*60)
 
     db = SessionLocal()
     emails_sent = 0
@@ -265,15 +267,15 @@ def notification_rules_task():
         notifications = get_pending_notification_rules(db)
         
         if not notifications:
-            print("✅ No hay notificaciones pendientes para hoy")
+            logger.info("✅ No hay notificaciones pendientes para hoy")
             return
         
-        print(f"\n📬 Procesando {len(notifications)} notificaciones...")
+        logger.info(f"\n📬 Procesando {len(notifications)} notificaciones...")
         
         # Procesar cada notificación
         for notification in notifications:
             try:
-                print(f"\n📧 Enviando correo a {notification['user_email']}...")
+                logger.info(f"\n📧 Enviando correo a {notification['user_email']}...")
                 
                 # Enviar correo
                 email_sent = send_rule_notification_email(
@@ -297,29 +299,29 @@ def notification_rules_task():
                     disabled = disable_notification_rule(db, notification['rule_id'])
                     
                     if disabled:
-                        print(f"   ✅ Correo enviado y regla ID {notification['rule_id']} deshabilitada")
+                        logger.info(f"   ✅ Correo enviado y regla ID {notification['rule_id']} deshabilitada")
                     else:
-                        print(f"   ⚠️ Correo enviado pero no se pudo deshabilitar la regla ID {notification['rule_id']}")
+                        logger.warning(f"   ⚠️ Correo enviado pero no se pudo deshabilitar la regla ID {notification['rule_id']}")
                 else:
                     emails_failed += 1
-                    print(f"   ❌ No se pudo enviar el correo a {notification['user_email']}")
+                    logger.error(f"   ❌ No se pudo enviar el correo a {notification['user_email']}")
                     
             except Exception as e:
                 emails_failed += 1
-                print(f"   ❌ Error procesando notificación para {notification.get('user_email', 'email desconocido')}: {str(e)}")
+                logger.error(f"   ❌ Error procesando notificación para {notification.get('user_email', 'email desconocido')}: {str(e)}")
                 continue
         
         # Resumen final
-        print("\n" + "="*60)
-        print("📊 RESUMEN DE NOTIFICACIONES")
-        print("="*60)
-        print(f"✅ Correos enviados exitosamente: {emails_sent}")
-        print(f"❌ Correos fallidos: {emails_failed}")
-        print(f"📨 Total procesados: {len(notifications)}")
-        print("="*60 + "\n")
+        logger.info("\n" + "="*60)
+        logger.info("📊 RESUMEN DE NOTIFICACIONES")
+        logger.info("="*60)
+        logger.info(f"✅ Correos enviados exitosamente: {emails_sent}")
+        logger.error(f"❌ Correos fallidos: {emails_failed}")
+        logger.info(f"📨 Total procesados: {len(notifications)}")
+        logger.info("="*60 + "\n")
         
     except Exception as e:
-        print(f"❌ Error general en la tarea de notificaciones: {str(e)}")
+        logger.error(f"❌ Error general en la tarea de notificaciones: {str(e)}")
     finally:
         db.close()
 
@@ -348,9 +350,9 @@ scheduler.add_job(
 # Iniciar el scheduler
 scheduler.start()
 
-print("\n" + "="*60)
-print("📅 TAREAS PROGRAMADAS CONFIGURADAS")
-print("="*60)
-print("⏰ Formularios programados: Diario a las 7:00 AM")
-print("⏰ Notificaciones de reglas: Diario a las 8:00 AM")
-print("="*60 + "\n")
+logger.info("\n" + "="*60)
+logger.info("📅 TAREAS PROGRAMADAS CONFIGURADAS")
+logger.info("="*60)
+logger.info("⏰ Formularios programados: Diario a las 7:00 AM")
+logger.info("⏰ Notificaciones de reglas: Diario a las 8:00 AM")
+logger.info("="*60 + "\n")

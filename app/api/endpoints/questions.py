@@ -2,10 +2,13 @@
 #	modified:   app/api/endpoints/questions.py
 #
 
+import logging
 from collections import defaultdict
 import hashlib
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
+
+logger = logging.getLogger(__name__)
 from fastapi.params import Query
 from pydantic import BaseModel, Field
 from pymysql import IntegrityError
@@ -620,10 +623,10 @@ def get_all_related_answers(
             })
         except HTTPException as e:
             # Si hay error con una pregunta específica, continuar con las demás
-            print(f"Error procesando pregunta {question_id}: {e.detail}")
+            logger.error(f"Error procesando pregunta {question_id}: {e.detail}")
             continue
         except Exception as e:
-            print(f"Error inesperado procesando pregunta {question_id}: {str(e)}")
+            logger.error(f"Error inesperado procesando pregunta {question_id}: {str(e)}")
             continue
     
     return {

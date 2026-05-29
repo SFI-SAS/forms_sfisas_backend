@@ -1599,3 +1599,87 @@ class ProfileSummaryOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GENERIC ACTIVITIES (Actividades genéricas)
+# Una actividad agrupa formatos y, por cada formato, define quién lo diligencia
+# (un usuario elegido a través de un perfil). Varios diligenciadores por formato.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class GenericActivityFormItem(BaseModel):
+    """Una asignación: el formato form_id lo diligencia user_id, elegido vía
+    profile_id (el perfil del cual se escogió al usuario)."""
+    form_id: int
+    user_id: int
+    profile_id: Optional[int] = None
+
+
+class GenericActivityCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=150)
+    description: Optional[str] = None
+    items: List[GenericActivityFormItem] = []
+
+
+class GenericActivityUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=150)
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class GenericActivityFormsUpdate(BaseModel):
+    """Reemplaza por completo el conjunto de asignaciones de la actividad."""
+    items: List[GenericActivityFormItem]
+
+
+class GenericActivityFormOut(BaseModel):
+    id: int
+    form_id: int
+    form_title: str
+    profile_id: Optional[int] = None
+    profile_name: Optional[str] = None
+    user_id: int
+    user_name: str
+    user_email: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class GenericActivityOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    is_active: bool
+    created_by: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+    items: List[GenericActivityFormOut] = []
+
+    class Config:
+        from_attributes = True
+
+
+class GenericActivitySummaryOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    is_active: bool
+    form_count: int        # formatos distintos en la actividad
+    assignment_count: int  # total de asignaciones (filas formato↔usuario)
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class GenericActivityMineOut(BaseModel):
+    """Para el endpoint /me: actividades donde el usuario es diligenciador."""
+    id: int
+    name: str
+    description: Optional[str] = None
+    form_count: int  # formatos asignados a ESTE usuario en la actividad
+
+    class Config:
+        from_attributes = True

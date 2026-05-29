@@ -14,7 +14,7 @@ from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 # from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, CategoryApproval, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, FormTemplate, PalabrasClave, Profile, ProfileCategory, ProfileForm, ProfileUser, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, TemplateScope, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, CategoryApproval, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, FormTemplate, GenericActivity, GenericActivityForm, PalabrasClave, Profile, ProfileCategory, ProfileForm, ProfileUser, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, TemplateScope, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
 from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormMovimientoBase, NotificationResponse, PalabrasClaveCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, OptionCreate, ResponseCreate, AnswerCreate, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
@@ -971,55 +971,70 @@ async def post_create_response(
     last_mode_response = db.query(Response).filter(Response.mode == mode).order_by(Response.mode_sequence.desc()).first()
     new_mode_sequence = last_mode_response.mode_sequence + 1 if last_mode_response else 1
 
-    response = Response(
-        form_id=form_id,
-        user_id=user_id,
-        mode=mode,
-        mode_sequence=new_mode_sequence,
-        submitted_at=func.now(),
-        repeated_id=repeated_id,
-        status=status
-    )
-    db.add(response)
-    db.commit()
-    db.refresh(response)
-    
-    # ✅ Crear relación en bitácora
-    relation_bitacora = RelationBitacora(
-        id_response=response.id
-    )
-    db.add(relation_bitacora)
-    db.commit()
-    db.refresh(relation_bitacora)
-
+    # SECURITY (fix #5 auditoría 28-may-2026): antes había TRES `commit()`
+    # separados (Response → RelationBitacora → ResponseApproval) sin rollback.
+    # Si el segundo o tercero fallaba, la Response (y/o la relación bitácora)
+    # quedaban huérfanas en BD. Ahora se hace en UNA SOLA transacción con
+    # `db.flush()` para obtener IDs y un único `commit()` al final, con
+    # rollback explícito en error.
     approvers_created = 0
-    
-    if create_approvals:
-        form_approvals = db.query(FormApproval).filter(
-            FormApproval.form_id == form_id,
-            FormApproval.is_active == True
-        ).all()
+    try:
+        response = Response(
+            form_id=form_id,
+            user_id=user_id,
+            mode=mode,
+            mode_sequence=new_mode_sequence,
+            submitted_at=func.now(),
+            repeated_id=repeated_id,
+            status=status
+        )
+        db.add(response)
+        db.flush()  # obtiene response.id sin committear
 
-        for approver in form_approvals:
-            response_approval = ResponseApproval(
-                response_id=response.id,
-                user_id=approver.user_id,
-                sequence_number=approver.sequence_number,
-                is_mandatory=approver.is_mandatory,
-                status=ApprovalStatus.pendiente,
-                # Hereda firm_mode y la pregunta regisfacial fuente de la
-                # plantilla al momento de enviar. Fija las reglas para esta
-                # respuesta, aunque luego el admin cambie el template del formato.
-                firm_mode=getattr(approver, "firm_mode", "button") or "button",
-                firm_source_question_id=getattr(approver, "firm_source_question_id", None),
-            )
-            db.add(response_approval)
-            approvers_created += 1
+        # ✅ Crear relación en bitácora
+        relation_bitacora = RelationBitacora(
+            id_response=response.id
+        )
+        db.add(relation_bitacora)
+        db.flush()  # obtiene relation_bitacora.id sin committear
+
+        if create_approvals:
+            form_approvals = db.query(FormApproval).filter(
+                FormApproval.form_id == form_id,
+                FormApproval.is_active == True
+            ).all()
+
+            for approver in form_approvals:
+                response_approval = ResponseApproval(
+                    response_id=response.id,
+                    user_id=approver.user_id,
+                    sequence_number=approver.sequence_number,
+                    is_mandatory=approver.is_mandatory,
+                    status=ApprovalStatus.pendiente,
+                    # Hereda firm_mode y la pregunta regisfacial fuente de la
+                    # plantilla al momento de enviar. Fija las reglas para esta
+                    # respuesta, aunque luego el admin cambie el template del formato.
+                    firm_mode=getattr(approver, "firm_mode", "button") or "button",
+                    firm_source_question_id=getattr(approver, "firm_source_question_id", None),
+                )
+                db.add(response_approval)
+                approvers_created += 1
 
         db.commit()
-        
-        if approvers_created > 0:
-            send_mails_to_next_supporters(response.id, db)
+        db.refresh(response)
+        db.refresh(relation_bitacora)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al crear la respuesta. Cambios revertidos: {str(e)}"
+        )
+
+    if approvers_created > 0:
+        send_mails_to_next_supporters(response.id, db)
     
     # Si no hay aprobadores, enviar correos EN UN THREAD SEPARADO (NO BLOQUEA)
     if not create_approvals or approvers_created == 0:
@@ -1041,7 +1056,7 @@ async def post_create_response(
                 )
 
         except Exception as e:
-            print(f"❌ Error al iniciar correos de cierre: {str(e)}")
+            logger.error(f"❌ Error al iniciar correos de cierre: {str(e)}")
 
     return {
         "message": "Response saved successfully",
@@ -1445,7 +1460,7 @@ def get_all_forms(db: Session):
         for form in forms
     ]
     
-def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int = 30, profile_id: Optional[int] = None):
+def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int = 30, profile_id: Optional[int] = None, activity_id: Optional[int] = None):
     """
     Obtiene los formularios paginados sin form_design.
 
@@ -1508,6 +1523,37 @@ def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int =
             )
             .distinct()
         )
+    elif activity_id is not None:
+        # Filtrado por actividad genérica: solo los formatos asignados a ESTE
+        # usuario dentro de la actividad indicada (y solo si está activa).
+        is_assigned = (
+            db.query(GenericActivityForm.id)
+            .join(GenericActivity, GenericActivity.id == GenericActivityForm.activity_id)
+            .filter(
+                GenericActivityForm.activity_id == activity_id,
+                GenericActivityForm.user_id == user_id,
+                GenericActivity.is_active.is_(True),
+            )
+            .first()
+        )
+        if not is_assigned:
+            return {
+                "items": [],
+                "total": 0,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": 0,
+            }
+        activity_form_ids = select(GenericActivityForm.form_id).where(
+            GenericActivityForm.activity_id == activity_id,
+            GenericActivityForm.user_id == user_id,
+        )
+        base_query = (
+            db.query(Form)
+            .options(defer(Form.form_design), joinedload(Form.category))
+            .filter(Form.id.in_(activity_form_ids))
+            .distinct()
+        )
     else:
         moderator_form_ids = select(FormModerators.form_id).where(
             FormModerators.user_id == user_id
@@ -1525,6 +1571,17 @@ def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int =
             .where(ProfileUser.user_id == user_id, Profile.is_active.is_(True))
         )
 
+        # Actividades genéricas: formatos donde el usuario es diligenciador
+        # asignado dentro de una actividad activa.
+        activity_form_ids = (
+            select(GenericActivityForm.form_id)
+            .join(GenericActivity, GenericActivity.id == GenericActivityForm.activity_id)
+            .where(
+                GenericActivityForm.user_id == user_id,
+                GenericActivity.is_active.is_(True),
+            )
+        )
+
         base_query = (
             db.query(Form)
             .options(
@@ -1536,6 +1593,7 @@ def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int =
                     Form.id.in_(moderator_form_ids),
                     Form.id.in_(profile_form_ids),
                     Form.id_category.in_(profile_category_ids),
+                    Form.id.in_(activity_form_ids),
                 )
             )
             .distinct()
@@ -1616,6 +1674,17 @@ def get_forms_by_user_summary(db: Session, user_id: int):
         .where(ProfileUser.user_id == user_id, Profile.is_active.is_(True))
     )
 
+    # Actividades genéricas: formatos donde el usuario es diligenciador
+    # asignado dentro de una actividad activa.
+    activity_form_ids = (
+        select(GenericActivityForm.form_id)
+        .join(GenericActivity, GenericActivity.id == GenericActivityForm.activity_id)
+        .where(
+            GenericActivityForm.user_id == user_id,
+            GenericActivity.is_active.is_(True),
+        )
+    )
+
     results = (
         db.query(
             Form.id,
@@ -1629,6 +1698,7 @@ def get_forms_by_user_summary(db: Session, user_id: int):
                 Form.id.in_(moderator_form_ids),
                 Form.id.in_(profile_form_ids),
                 Form.id_category.in_(profile_category_ids),
+                Form.id.in_(activity_form_ids),
             )
         )
         .distinct()
@@ -1824,7 +1894,7 @@ def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page
             }
             items.append(form_dict)
         except Exception as e:
-            print(f"Error procesando form {form.id}: {str(e)}")
+            logger.error(f"Error procesando form {form.id}: {str(e)}")
             continue
     
     # Calcular total de páginas
@@ -2215,7 +2285,7 @@ def get_schedules_by_frequency(db: Session) -> List[dict]:
                 else:
                     logs.append(f"Frecuencia semanal: No se pudo encontrar el usuario o el formulario para el ID de programación {schedule.id}.")
             else:
-                print("❌ Hoy no está en repeat_days, no se enviará correo.")
+                logger.error("❌ Hoy no está en repeat_days, no se enviará correo.")
 
         elif frequency_type == "monthly":
             if today_date.day == 1:
@@ -2232,7 +2302,7 @@ def get_schedules_by_frequency(db: Session) -> List[dict]:
                 else:
                     logs.append(f"Frecuencia mensual: No se pudo encontrar el usuario o el formulario para el ID de programación {schedule.id}.")
             else:
-                print("🛑 No es el primer día del mes, no se enviará.")
+                logger.info("🛑 No es el primer día del mes, no se enviará.")
 
         elif frequency_type == "periodic":
             if interval_days and today_date.day % interval_days == 0:
@@ -2250,7 +2320,7 @@ def get_schedules_by_frequency(db: Session) -> List[dict]:
                 else:
                     logs.append(f"Frecuencia periódica: No se pudo encontrar el usuario o el formulario para el ID de programación {schedule.id}.")
             else:
-                print("🛑 No cumple el intervalo, no se enviará.")
+                logger.info("🛑 No cumple el intervalo, no se enviará.")
 
         elif frequency_type == "specific_date" and specific_date.date() == today_date:
             
@@ -2267,7 +2337,7 @@ def get_schedules_by_frequency(db: Session) -> List[dict]:
             else:
                 logs.append(f"Frecuencia por fecha específica: No se pudo encontrar el usuario o el formulario para el ID de programación {schedule.id}.")
         else:
-            print("🛑 No cumple ninguna condición para enviar.")
+            logger.info("🛑 No cumple ninguna condición para enviar.")
 
     # Enviar correos a los usuarios
     for email, data in users_forms.items():
@@ -2279,7 +2349,7 @@ def get_schedules_by_frequency(db: Session) -> List[dict]:
 
     # Imprimir los logs para ver cuál frecuencia se cumplió
     for log in logs:
-        print(log)
+        logger.info(log)
 
     return schedules
 
@@ -4649,7 +4719,7 @@ def send_mails_to_next_supporters(response_id: int, db: Session):
 
         if not exito:
             enviado_todos = False
-            print(f"❌ Falló el envío a {email}")
+            logger.error(f"❌ Falló el envío a {email}")
 
     return enviado_todos
 
@@ -4663,7 +4733,7 @@ def send_rejection_email_to_all(response_id: int, db: Session):
     aprobador_rechazo = next((a for a in aprobadores if a["status"] == ApprovalStatus.rechazado), None)
 
     if not aprobador_rechazo:
-        print("❌ No se encontró aprobador que haya rechazado.")
+        logger.error("❌ No se encontró aprobador que haya rechazado.")
         return False
 
     # Lista de correos destino
@@ -4717,7 +4787,7 @@ def get_active_form_actions(form_id: int, db):
                 if recipients:
                     active_actions.append(('send_download_link', recipients, dict(base_meta)))
             except Exception as e:
-                print(f"Error al parsear download_link_recipients: {str(e)}")
+                logger.error(f"Error al parsear download_link_recipients: {str(e)}")
         
         if config.send_pdf_attachment and config.email_recipients:
             try:
@@ -4725,7 +4795,7 @@ def get_active_form_actions(form_id: int, db):
                 if recipients:
                     active_actions.append(('send_pdf_attachment', recipients, dict(base_meta)))
             except Exception as e:
-                print(f"Error al parsear email_recipients: {str(e)}")
+                logger.error(f"Error al parsear email_recipients: {str(e)}")
         
         if config.generate_report and config.report_recipients:
             try:
@@ -4733,7 +4803,7 @@ def get_active_form_actions(form_id: int, db):
                 if recipients:
                     active_actions.append(('generate_report', recipients, dict(base_meta)))
             except Exception as e:
-                print(f"Error al parsear report_recipients: {str(e)}")
+                logger.error(f"Error al parsear report_recipients: {str(e)}")
         
         if config.send_custom_template and config.custom_template_recipients:
             try:
@@ -4750,7 +4820,7 @@ def get_active_form_actions(form_id: int, db):
                         }
                     ))
             except Exception as e:
-                print(f"Error al parsear custom_template_recipients: {str(e)}")
+                logger.error(f"Error al parsear custom_template_recipients: {str(e)}")
 
         if config.do_nothing:
             active_actions.append(('do_nothing', []))
@@ -4758,7 +4828,7 @@ def get_active_form_actions(form_id: int, db):
         return active_actions
         
     except Exception as e:
-        print(f"Error al obtener acciones activas: {str(e)}")
+        logger.error(f"Error al obtener acciones activas: {str(e)}")
         return []  
 def run_async_in_thread(async_func, db_session_factory, form_id, current_user_id, request):
     """
@@ -4782,7 +4852,7 @@ def run_async_in_thread(async_func, db_session_factory, form_id, current_user_id
                 )
             )
         except Exception as e:
-            print(f"❌ Error en thread: {str(e)}")
+            logger.error(f"❌ Error en thread: {str(e)}")
         finally:
             new_db.close()
             loop.close()
@@ -4820,9 +4890,9 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
         )
         response_id = latest_response.id if latest_response else None
         if response_id:
-            print(f"📋 Form {form_id} — Respuesta más reciente: #{response_id}")
+            logger.info(f"📋 Form {form_id} — Respuesta más reciente: #{response_id}")
         else:
-            print(f"⚠️ Form {form_id} — No se encontraron respuestas")
+            logger.warning(f"⚠️ Form {form_id} — No se encontraron respuestas")
         
         results = {
             "success": True,
@@ -4839,7 +4909,7 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
             action_meta = action_tuple[2] if len(action_tuple) > 2 else {}
 
             if action == 'do_nothing':
-                print(f"Acción 'do_nothing' detectada - no se envía correo")
+                logger.info(f"Acción 'do_nothing' detectada - no se envía correo")
                 results["actions_processed"].append({
                     "action": action,
                     "status": "skipped",
@@ -4869,7 +4939,7 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
                             "recipient": recipient,
                             "status": "success"
                         })
-                        print(f"✅ Correo enviado a {recipient} — acción '{action}' — response #{response_id}")
+                        logger.info(f"✅ Correo enviado a {recipient} — acción '{action}' — response #{response_id}")
                     else:
                         results["failed_emails"] += 1
                         results["actions_processed"].append({
@@ -4878,7 +4948,7 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
                             "status": "failed",
                             "error": "send_action_notification_email retornó False"
                         })
-                        print(f"❌ Fallo al enviar correo a {recipient} para acción '{action}'")
+                        logger.error(f"❌ Fallo al enviar correo a {recipient} para acción '{action}'")
 
                 except Exception as e:
                     results["failed_emails"] += 1
@@ -4888,12 +4958,12 @@ async def send_form_action_emails(form_id: int, db, current_user, request):
                         "status": "failed",
                         "error": str(e)
                     })
-                    print(f"❌ Error al enviar correo a {recipient}: {str(e)}")
+                    logger.error(f"❌ Error al enviar correo a {recipient}: {str(e)}")
         
         return results
         
     except Exception as e:
-        print(f"❌ Error al procesar acciones del formulario {form_id}: {str(e)}")
+        logger.error(f"❌ Error al procesar acciones del formulario {form_id}: {str(e)}")
         return {"success": False, "error": str(e), "emails_sent": 0}
 
 
@@ -4910,17 +4980,17 @@ async def send_form_action_emails_background(form_id: int, current_user_id: int,
         
         current_user = db.query(User).filter(User.id == current_user_id).first()
         if not current_user:
-            print(f"❌ Usuario con ID {current_user_id} no encontrado")
+            logger.error(f"❌ Usuario con ID {current_user_id} no encontrado")
             return
         
         form = db.query(Form).filter(Form.id == form_id).first()
         if not form:
-            print(f"❌ Formulario con ID {form_id} no encontrado")
+            logger.error(f"❌ Formulario con ID {form_id} no encontrado")
             return
         
         active_actions = get_active_form_actions(form_id, db)
         if not active_actions:
-            print(f"No hay acciones activas configuradas para el formulario {form_id}")
+            logger.info(f"No hay acciones activas configuradas para el formulario {form_id}")
             return
         
         # ══════════════════════════════════════════════════════
@@ -4934,9 +5004,9 @@ async def send_form_action_emails_background(form_id: int, current_user_id: int,
         )
         response_id = latest_response.id if latest_response else None
         if response_id:
-            print(f"📋 Form {form_id} — Respuesta más reciente: #{response_id}")
+            logger.info(f"📋 Form {form_id} — Respuesta más reciente: #{response_id}")
         else:
-            print(f"⚠️ Form {form_id} — No se encontraron respuestas")
+            logger.warning(f"⚠️ Form {form_id} — No se encontraron respuestas")
         
         results = {
             "success": True,
@@ -4953,7 +5023,7 @@ async def send_form_action_emails_background(form_id: int, current_user_id: int,
             action_meta = action_tuple[2] if len(action_tuple) > 2 else {}
 
             if action == 'do_nothing':
-                print(f"Acción 'do_nothing' detectada - no se envía correo")
+                logger.info(f"Acción 'do_nothing' detectada - no se envía correo")
                 results["actions_processed"].append({
                     "action": action,
                     "status": "skipped",
@@ -4983,7 +5053,7 @@ async def send_form_action_emails_background(form_id: int, current_user_id: int,
                             "recipient": recipient,
                             "status": "success"
                         })
-                        print(f"✅ Correo enviado a {recipient} — acción '{action}' — response #{response_id}")
+                        logger.info(f"✅ Correo enviado a {recipient} — acción '{action}' — response #{response_id}")
                     else:
                         results["failed_emails"] += 1
                         results["actions_processed"].append({
@@ -4992,7 +5062,7 @@ async def send_form_action_emails_background(form_id: int, current_user_id: int,
                             "status": "failed",
                             "error": "send_action_notification_email retornó False"
                         })
-                        print(f"❌ Fallo al enviar correo a {recipient} para acción '{action}'")
+                        logger.error(f"❌ Fallo al enviar correo a {recipient} para acción '{action}'")
 
                 except Exception as e:
                     results["failed_emails"] += 1
@@ -5002,14 +5072,14 @@ async def send_form_action_emails_background(form_id: int, current_user_id: int,
                         "status": "failed",
                         "error": str(e)
                     })
-                    print(f"❌ Error al enviar correo a {recipient}: {str(e)}")
+                    logger.error(f"❌ Error al enviar correo a {recipient}: {str(e)}")
                         
     
         
-        print(f"✅ Proceso completado para formulario {form_id}. Resultado: {results}")
+        logger.info(f"✅ Proceso completado para formulario {form_id}. Resultado: {results}")
         
     except Exception as e:
-        print(f"❌ Error al procesar acciones del formulario {form_id}: {str(e)}")
+        logger.error(f"❌ Error al procesar acciones del formulario {form_id}: {str(e)}")
 
 async def update_response_approval_status(
     response_id: int,
@@ -5187,10 +5257,10 @@ async def update_response_approval_status(
     for fa in form_approval_template:
         ra = next((r for r in response_approvals if r.user_id == fa.user_id), None)
         status = ra.status.value if ra else "pendiente"
-        print(f"  [{fa.sequence_number}] {fa.user.name} - {status}")
+        logger.info(f"  [{fa.sequence_number}] {fa.user.name} - {status}")
 
         if ra and ra.status == ApprovalStatus.rechazado and fa.is_mandatory:
-            print(f"\n⛔ El aprobador '{fa.user.name}' rechazó y su aprobación es obligatoria. El proceso se detiene.")
+            logger.info(f"\n⛔ El aprobador '{fa.user.name}' rechazó y su aprobación es obligatoria. El proceso se detiene.")
             detener_proceso = True
             break
 
@@ -5221,15 +5291,15 @@ async def update_response_approval_status(
                 current_user_id=current_user.id,
                 request=request
             )
-            print("✅ Correos de cierre iniciados en background (en thread separado)")
+            logger.info("✅ Correos de cierre iniciados en background (en thread separado)")
 
     if not detener_proceso:
         faltantes = [fa.user.name for fa in form_approval_template 
                      if not any(ra.user_id == fa.user_id for ra in response_approvals)]
         if faltantes:
-            print(f"\n🕓 Aún deben aprobar: {', '.join(faltantes)}")
+            logger.info(f"\n🕓 Aún deben aprobar: {', '.join(faltantes)}")
         else:
-            print("\n✅ Todos los aprobadores han completado su revisión.")
+            logger.info("\n✅ Todos los aprobadores han completado su revisión.")
 
     # 5. Notificaciones por correo
     notifications = db.query(FormApprovalNotification).filter(
@@ -5290,7 +5360,7 @@ def send_final_approval_email_to_original_user(response_id: int, db: Session):
         # Obtener información de la respuesta y usuario original
         response = db.query(Response).filter(Response.id == response_id).first()
         if not response:
-            print(f"❌ No se encontró la respuesta {response_id}")
+            logger.error(f"❌ No se encontró la respuesta {response_id}")
             return False
             
         form = db.query(Form).filter(Form.id == response.form_id).first()
@@ -5344,7 +5414,7 @@ Tu respuesta al formulario "{form.title}" ha sido COMPLETAMENTE APROBADA por tod
         )
         
     except Exception as e:
-        print(f"❌ Error enviando correo final al usuario original: {str(e)}")
+        logger.error(f"❌ Error enviando correo final al usuario original: {str(e)}")
         return False
 
 def fetch_completed_forms_with_all_responses(db: Session, user_id: int):
@@ -5376,7 +5446,8 @@ def fetch_completed_forms_with_all_responses(db: Session, user_id: int):
                 joinedload(Response.form).load_only(
                     Form.id,
                     Form.title,
-                    Form.description
+                    Form.description,
+                    Form.approval_mode,
                 ),
                 joinedload(Response.approvals).joinedload(ResponseApproval.user).load_only(
                     User.id,
@@ -5401,12 +5472,14 @@ def fetch_completed_forms_with_all_responses(db: Session, user_id: int):
                         "approval_id": ap.id,
                         "sequence_number": ap.sequence_number,
                         "is_mandatory": ap.is_mandatory,
+                        "status": ap.status.value if ap.status else None,
+                        "reviewed_at": ap.reviewed_at,
                         "user": {
                             "id": ap.user.id,
                             "name": ap.user.name
                         }
                     }
-                    for ap in r.approvals
+                    for ap in sorted(r.approvals, key=lambda a: a.sequence_number)
                 ]
             })
         
@@ -5419,6 +5492,7 @@ def fetch_completed_forms_with_all_responses(db: Session, user_id: int):
                 "title": form.title,
                 "description": form.description,
                 "created_at": form.created_at,
+                "approval_mode": form.approval_mode,
             },
             # Resumen de respuestas (del endpoint /responses/summary)
             "responses": responses_summary
@@ -6805,7 +6879,7 @@ def get_all_bitacora_eventos(db: Session):
         logs = db.query(BitacoraLogsSimple).order_by(BitacoraLogsSimple.created_at.desc()).all()
         return logs
     except Exception as e:
-        print(f"⚠️ Error al obtener bitácora: {e}")
+        logger.error(f"⚠️ Error al obtener bitácora: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al obtener los registros de bitácora."
@@ -6815,17 +6889,31 @@ def get_bitacora_eventos_by_user(db: Session, user_identifier: str):
     """
     Obtiene los eventos donde el usuario autenticado:
     - Es el creador (registrado_por)
-    - O aparece como participante (campo participantes)
+    - O aparece como participante (campo participantes, CSV de identificadores)
+
+    SECURITY (fix #2 auditoría 28-may-2026): antes usaba
+    `ilike("%user_identifier%")` lo que permitía leak entre usuarios cuyo
+    num_document era substring uno del otro (ej. "1234" matcheaba a "12345").
+    Ahora:
+      - registrado_por → `==` exacto.
+      - participantes (CSV) → se envuelve con comas y se quitan espacios para
+        que el LIKE de ',X,' solo matchee el token completo.
     """
     try:
+        # Envolver con comas + quitar espacios → buscar ',X,' garantiza token completo
+        wrapped_participants = func.concat(
+            ',',
+            func.replace(BitacoraLogsSimple.participantes, ' ', ''),
+            ','
+        )
         logs = (
             db.query(BitacoraLogsSimple)
             .filter(
                 or_(
-                    BitacoraLogsSimple.registrado_por.ilike(f"%{user_identifier}%"),
+                    BitacoraLogsSimple.registrado_por == user_identifier,
                     and_(
                         BitacoraLogsSimple.participantes.isnot(None),
-                        BitacoraLogsSimple.participantes.ilike(f"%{user_identifier}%")
+                        wrapped_participants.like(f"%,{user_identifier},%")
                     )
                 )
             )
@@ -6839,7 +6927,7 @@ def get_bitacora_eventos_by_user(db: Session, user_identifier: str):
         return list(unique_logs)
 
     except Exception as e:
-        print(f"⚠️ Error al obtener bitácora del usuario: {e}")
+        logger.error(f"⚠️ Error al obtener bitácora del usuario: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al obtener los registros de bitácora del usuario."
@@ -6900,7 +6988,7 @@ def get_all_bitacora_formatos(db: Session):
             "created_at": rel.created_at,
         })
         
-        print(data)
+        logger.info(data)
 
     return data
 
@@ -7567,7 +7655,7 @@ def get_pending_notification_rules(db: Session) -> List[Dict]:
         joinedload(RelationQuestionRule.question)
     ).all()
 
-    print(f"📊 Total de reglas habilitadas encontradas: {len(rules)}")
+    logger.info(f"📊 Total de reglas habilitadas encontradas: {len(rules)}")
 
     for rule in rules:
         try:
@@ -7577,25 +7665,25 @@ def get_pending_notification_rules(db: Session) -> List[Dict]:
             # Calcular la fecha en que debe enviarse la notificación
             notification_date = rule.date_notification.date() - timedelta(days=days_before)
 
-            print(f"  🔍 Regla ID {rule.id}:")
-            print(f"      - Fecha límite: {rule.date_notification.date()}")
-            print(f"      - Días antes: {days_before}")
-            print(f"      - Fecha notificación: {notification_date}")
-            print(f"      - Hoy: {today}")
+            logger.info(f"  🔍 Regla ID {rule.id}:")
+            logger.info(f"      - Fecha límite: {rule.date_notification.date()}")
+            logger.info(f"      - Días antes: {days_before}")
+            logger.info(f"      - Fecha notificación: {notification_date}")
+            logger.info(f"      - Hoy: {today}")
 
             # Verificar si hoy es el día de enviar la notificación
             if notification_date == today:
                 response = rule.related_response
 
                 if not response:
-                    print(f"      ⚠️ No se encontró la respuesta asociada")
+                    logger.warning(f"      ⚠️ No se encontró la respuesta asociada")
                     continue
 
                 user = response.user
                 form = response.form
 
                 if not user or not form:
-                    print(f"      ⚠️ No se encontró el usuario o formulario asociado")
+                    logger.warning(f"      ⚠️ No se encontró el usuario o formulario asociado")
                     continue
 
                 # ═══════════════════════════════════════════════════════════════
@@ -7609,11 +7697,11 @@ def get_pending_notification_rules(db: Session) -> List[Dict]:
                 if custom_email and str(custom_email).strip():
                     recipient_email = str(custom_email).strip()
                     is_custom_recipient = True
-                    print(f"      📮 Destinatario CUSTOM (email_notification): {recipient_email}")
+                    logger.info(f"      📮 Destinatario CUSTOM (email_notification): {recipient_email}")
                 else:
                     recipient_email = user.email
                     is_custom_recipient = False
-                    print(f"      📮 Destinatario por defecto (user del response): {recipient_email}")
+                    logger.info(f"      📮 Destinatario por defecto (user del response): {recipient_email}")
 
                 # Calcular días restantes hasta la fecha límite
                 days_remaining = (rule.date_notification.date() - today).days
@@ -7651,18 +7739,18 @@ def get_pending_notification_rules(db: Session) -> List[Dict]:
                 }
 
                 notifications_to_send.append(notification_data)
-                print(f"      ✅ Notificación agregada para {recipient_email}")
+                logger.info(f"      ✅ Notificación agregada para {recipient_email}")
             else:
-                print(f"      ⏭️ No es el día de notificar (será: {notification_date})")
+                logger.info(f"      ⏭️ No es el día de notificar (será: {notification_date})")
 
         except ValueError as e:
-            print(f"      ❌ Error al convertir time_alert '{rule.time_alert}' a entero: {e}")
+            logger.error(f"      ❌ Error al convertir time_alert '{rule.time_alert}' a entero: {e}")
             continue
         except Exception as e:
-            print(f"      ❌ Error procesando regla {rule.id}: {str(e)}")
+            logger.error(f"      ❌ Error procesando regla {rule.id}: {str(e)}")
             continue
 
-    print(f"\n📧 Total de notificaciones a enviar: {len(notifications_to_send)}")
+    logger.info(f"\n📧 Total de notificaciones a enviar: {len(notifications_to_send)}")
     return notifications_to_send
 
 def disable_notification_rule(db: Session, rule_id: int) -> bool:
@@ -7684,15 +7772,15 @@ def disable_notification_rule(db: Session, rule_id: int) -> bool:
         if rule:
             rule.enabled = False
             db.commit()
-            print(f"✅ Regla ID {rule_id} deshabilitada correctamente")
+            logger.info(f"✅ Regla ID {rule_id} deshabilitada correctamente")
             return True
         else:
-            print(f"⚠️ No se encontró la regla ID {rule_id}")
+            logger.warning(f"⚠️ No se encontró la regla ID {rule_id}")
             return False
             
     except Exception as e:
         db.rollback()
-        print(f"❌ Error al deshabilitar regla ID {rule_id}: {str(e)}")
+        logger.error(f"❌ Error al deshabilitar regla ID {rule_id}: {str(e)}")
         return False
     
 def _reconstruct_repeated_ids(form_design: list, answers_list: list, repeated_question_ids: set):
