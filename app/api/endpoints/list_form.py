@@ -1161,16 +1161,10 @@ def generate_excel_response(data: Dict):
     """Genera archivo Excel"""
     output = io.BytesIO()
 
-    # Crear DataFrame
-    df = pd.DataFrame(data['data'])
+    # Crear DataFrame y sanear datos para evitar TypeError con None.
+    df = pd.DataFrame(data.get('data', [])).fillna('')
+    df.columns = [str(c) if c is not None else '' for c in df.columns]
 
-    # ── Saneo defensivo (detectado por aria_test_runner 2026-05-30) ────────
-    # xlsxwriter crashea con TypeError 'NoneType+str' cuando:
-    #   - Alguna columna tiene name=None (df.columns.values trae None)
-    #   - Algún value es None en celdas
-    # Reemplazar None por '' en cabeceras y celdas.
-    df.columns = [str(c) if c is not None else "" for c in df.columns]
-    df = df.where(pd.notnull(df), "")
     # Cap defensivo: si df está vacío, generar un Excel vacío con 1 header
     if df.empty:
         df = pd.DataFrame({"": [""]})
