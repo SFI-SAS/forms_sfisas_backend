@@ -213,7 +213,11 @@ def create_user(db: Session, user: UserCreate):
         email=user.email,
         telephone=user.telephone,
         password=user.password,
-        nickname=nickname 
+        nickname=nickname,
+        # Fix Fase 2.9.3: respetar user_type del payload (antes se ignoraba
+        # silenciosamente y caía al default 'user' del modelo, haciendo
+        # imposible crear admin/creator vía POST /users/).
+        user_type=user.user_type,
     )
     try:
         db.add(db_user)
