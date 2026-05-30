@@ -172,7 +172,11 @@ class Form(Base):
     #                  obligatorios aprueban, queda 'aprobado'.
     # ═══════════════════════════════════════════════════════════════════════
     approval_mode = Column(String(20), nullable=False, default='sequential')
-    
+
+    # Hotfix QA runner 2026-05-30: el endpoint /projects/by-project/{id} usa
+    # Form.project_id pero el modelo no la declaraba (causaba AttributeError).
+    project_id = Column(BigInteger, ForeignKey('projects.id'), nullable=True, index=True)
+
     user = relationship('User', back_populates='forms')
     form_moderators = relationship("FormModerators", back_populates="form", cascade="all, delete-orphan")
     questions = relationship("Question", secondary="form_questions", back_populates="forms")
