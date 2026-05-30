@@ -289,6 +289,7 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             description=form.description,
             format_type=form.format_type,
             id_category=form.id_category,
+            project_id=form.project_id,
             created_at=datetime.utcnow()
         )
 

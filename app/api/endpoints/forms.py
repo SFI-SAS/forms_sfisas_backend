@@ -3831,7 +3831,7 @@ def update_form_basic_info(
         )
 
     # Validar que al menos un campo esté presente
-    if form_data.title is None and form_data.description is None and form_data.format_type is None:
+    if form_data.title is None and form_data.description is None and form_data.format_type is None and form_data.project_id is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Debe proporcionar al menos un campo para actualizar"
@@ -3846,6 +3846,9 @@ def update_form_basic_info(
     
     if form_data.format_type is not None:
         form.format_type = form_data.format_type
+
+    if form_data.project_id is not None:
+        form.project_id = form_data.project_id
 
     db.commit()
     db.refresh(form)
