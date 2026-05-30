@@ -8213,20 +8213,6 @@ def add_category_approver(
     db.commit()
     db.refresh(approver)
 
-    # Fix 2026-05-30: propagar la cadena a TODOS los forms que ya estaban
-    # asignados a esta categoría. Antes solo sync_form_approvals_from_category
-    # se llamaba al ASIGNAR el form a la categoría — pero si la categoría no
-    # tenía aprobadores en ese momento y se agregaban después, los forms
-    # quedaban con form_approvals vacío y las response_approvals nunca se
-    # generaban al crear respuestas.
-    forms_in_category = db.query(Form).filter(
-        Form.id_category == category_id
-    ).all()
-    for f in forms_in_category:
-        sync_form_approvals_from_category(
-            db=db, form_id=f.id, category_id=category_id, replace=True,
-        )
-
     # Cargar relación user
     db.refresh(approver, ['user'])
     return approver
@@ -8344,18 +8330,6 @@ def bulk_save_category_approvers(
     for a in new_approvers:
         db.refresh(a)
         db.refresh(a, ['user'])
-
-    # Fix 2026-05-30: propagar la cadena a TODOS los forms ya asignados a esta
-    # categoría. Sin esto, los aprobadores quedan en category_approvals pero
-    # los form_approvals están vacíos y las response_approvals nunca se crean
-    # cuando alguien diligencia el form.
-    forms_in_category = db.query(Form).filter(
-        Form.id_category == category_id
-    ).all()
-    for f in forms_in_category:
-        sync_form_approvals_from_category(
-            db=db, form_id=f.id, category_id=category_id, replace=True,
-        )
 
     return new_approvers
 
