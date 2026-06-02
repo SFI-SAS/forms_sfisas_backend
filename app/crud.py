@@ -282,6 +282,19 @@ def get_users(db: Session, skip: int = 0, limit: int = 10):
     return db.query(User).offset(skip).limit(limit).all()
 
 def create_form(db: Session, form: FormBaseUser, user_id: int):
+    # Nombre único: no se permiten títulos de formato repetidos
+    # (comparación sin distinguir mayúsculas ni espacios sobrantes).
+    title_clean = (form.title or "").strip()
+    if not title_clean:
+        raise HTTPException(status_code=400, detail="El título del formato es obligatorio")
+    name_taken = (
+        db.query(Form.id)
+        .filter(func.lower(func.trim(Form.title)) == title_clean.lower())
+        .first()
+    )
+    if name_taken:
+        raise HTTPException(status_code=400, detail="Ya existe un formato con ese nombre")
+
     try:
         existing_users = db.query(User.id).filter(User.id.in_(form.assign_user)).all()
         if len(existing_users) != len(form.assign_user):
@@ -325,6 +338,11 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
         }
         return response
 
+    except HTTPException:
+        # Errores de validación deliberados (nombre duplicado, usuarios
+        # inexistentes) deben propagarse con su status real, no como 500.
+        db.rollback()
+        raise
     except IntegrityError as e:
         db.rollback()
         raise HTTPException(status_code=400, detail="Error al crear el formulario")

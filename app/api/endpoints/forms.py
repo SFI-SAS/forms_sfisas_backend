@@ -3952,8 +3952,29 @@ def update_form_basic_info(
 
     # Actualizar los campos proporcionados
     if form_data.title is not None:
-        form.title = form_data.title
-    
+        new_title = form_data.title.strip()
+        if not new_title:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El título del formato no puede estar vacío",
+            )
+        # Nombre único: ningún OTRO formato puede tener el mismo título
+        # (case-insensitive, sin espacios sobrantes).
+        clash = (
+            db.query(Form.id)
+            .filter(
+                func.lower(func.trim(Form.title)) == new_title.lower(),
+                Form.id != form_id,
+            )
+            .first()
+        )
+        if clash:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Ya existe otro formato con ese nombre",
+            )
+        form.title = new_title
+
     if form_data.description is not None:
         form.description = form_data.description
     
