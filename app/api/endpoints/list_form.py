@@ -1160,18 +1160,23 @@ def apply_smart_conditions(query, conditions: List[FilterCondition], form_ids: L
 def generate_excel_response(data: Dict):
     """Genera archivo Excel"""
     output = io.BytesIO()
-    
-    # Crear DataFrame
-    df = pd.DataFrame(data['data'])
-    
+
+    # Crear DataFrame y sanear datos para evitar TypeError con None.
+    df = pd.DataFrame(data.get('data', [])).fillna('')
+    df.columns = [str(c) if c is not None else '' for c in df.columns]
+
+    # Cap defensivo: si df está vacío, generar un Excel vacío con 1 header
+    if df.empty:
+        df = pd.DataFrame({"": [""]})
+
     # Escribir a Excel con formato
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, sheet_name='Datos', index=False)
-        
+
         # Obtener workbook y worksheet para aplicar formato
         workbook = writer.book
         worksheet = writer.sheets['Datos']
-        
+
         # Formato para headers
         header_format = workbook.add_format({
             'bold': True,
@@ -1180,12 +1185,12 @@ def generate_excel_response(data: Dict):
             'fg_color': '#D7E4BC',
             'border': 1
         })
-        
+
         # Aplicar formato a headers
         for col_num, value in enumerate(df.columns.values):
             worksheet.write(0, col_num, value, header_format)
             worksheet.set_column(col_num, col_num, 20)  # Ancho de columna
-        
+
         # Agregar filtros automáticos
         worksheet.autofilter(0, 0, len(df), len(df.columns) - 1)
     

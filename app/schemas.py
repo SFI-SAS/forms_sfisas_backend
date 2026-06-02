@@ -151,6 +151,7 @@ class FormBaseUser(BaseModel):
     assign_user: List[int]
     format_type: str
     id_category: Optional[int] = None
+    project_id: Optional[int] = None
     sync_approvers: Optional[bool] = True  # ← NUEVO
 
 class FormBaseUserCreate(BaseModel):
@@ -840,6 +841,7 @@ class UpdateFormBasicInfo(BaseModel):
     title: Optional[str] = Field(None, max_length=255, min_length=1)
     description: Optional[str] = Field(None, max_length=255)
     format_type: Optional[FormatTypeEdit] = None
+    project_id: Optional[int] = None
 
 # Tu clase FormCategoryTreeResponse quedaría igual, ya que hereda la solución:
 class FormCategoryTreeResponse(FormCategoryResponse):

@@ -15,7 +15,7 @@ class AutoJSON(TypeDecorator):
     """Tipo que convierte automáticamente dict → JSON string"""
     impl = Text
     cache_ok = True
-    
+
     def process_bind_param(self, value, dialect):
         if value is None:
             return None
@@ -26,7 +26,7 @@ class AutoJSON(TypeDecorator):
             except json.JSONDecodeError:
                 return json.dumps(value, ensure_ascii=False)
         return json.dumps(value, ensure_ascii=False, default=str)
-    
+
     def process_result_value(self, value, dialect):
         if value is None:
             return None
@@ -38,6 +38,37 @@ class AutoJSON(TypeDecorator):
             except (json.JSONDecodeError, TypeError):
                 return value
         return value
+
+class CaseInsensitiveEnum(TypeDecorator):
+    """Enum que normaliza valores a minúsculas antes de validar"""
+    impl = String
+    cache_ok = True
+
+    def __init__(self, enum_class, *args, **kwargs):
+        self.enum_class = enum_class
+        super().__init__(*args, **kwargs)
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, self.enum_class):
+            return value.value.lower()
+        return str(value).lower()
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        # Convertir a minúsculas y buscar en el enum
+        value_lower = str(value).lower()
+        try:
+            return self.enum_class(value_lower)
+        except ValueError:
+            # Si no existe, intentar buscar por nombre
+            for member in self.enum_class:
+                if member.value == value_lower or member.name == value_lower:
+                    return member
+            # Si aún no existe, retornar el valor por defecto o lanzar error
+            return self.enum_class.text  # valor por defecto
 
 # ====== ENUMS ======
 
@@ -142,6 +173,10 @@ class Form(Base):
     # ═══════════════════════════════════════════════════════════════════════
     approval_mode = Column(String(20), nullable=False, default='sequential')
 
+    # Hotfix QA runner 2026-05-30: el endpoint /projects/by-project/{id} usa
+    # Form.project_id pero el modelo no la declaraba (causaba AttributeError).
+    project_id = Column(BigInteger, ForeignKey('projects.id'), nullable=True, index=True)
+
     # ═══════════════════════════════════════════════════════════════════════
     # Editores de respuestas (formatos cerrados)
     # ───────────────────────────────────────────────────────────────────────
@@ -195,7 +230,7 @@ class Question(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     question_text = Column(String(255), nullable=False)
     description = Column(String, nullable=True)
-    question_type = Column(Enum(QuestionType), default=QuestionType.text, nullable=False)
+    question_type = Column(CaseInsensitiveEnum(QuestionType), default=QuestionType.text, nullable=False)
     required = Column(Boolean, nullable=False, default=True)
     root = Column(Boolean, nullable=False, default=False)
     id_category = Column(BigInteger, ForeignKey('question_categories.id'), nullable=True)
