@@ -7191,13 +7191,23 @@ def obtener_conversacion_completa(db: Session, evento_id: int):
             .all()
         )
 
-        # ✅ Convertimos los archivos desde JSON si existen
-        archivos = []
-        if ev.archivos:
+        # ✅ Normalizar archivos. La columna usa AutoJSON, así que normalmente
+        #    ev.archivos ya viene como list. Para filas legacy puede venir como
+        #    string JSON o como texto suelto. json.loads() sobre una list lanzaba
+        #    TypeError (no JSONDecodeError) → 500 al ver la conversación.
+        raw_archivos = ev.archivos
+        if not raw_archivos:
+            archivos = []
+        elif isinstance(raw_archivos, list):
+            archivos = raw_archivos
+        elif isinstance(raw_archivos, str):
             try:
-                archivos = json.loads(ev.archivos)
-            except json.JSONDecodeError:
-                archivos = [ev.archivos]  # fallback si no está en formato JSON
+                parsed = json.loads(raw_archivos)
+                archivos = parsed if isinstance(parsed, list) else [raw_archivos]
+            except (json.JSONDecodeError, ValueError):
+                archivos = [raw_archivos]
+        else:
+            archivos = []
 
         return {
             "id": ev.id,

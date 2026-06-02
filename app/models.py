@@ -141,9 +141,22 @@ class Form(Base):
     #                  obligatorios aprueban, queda 'aprobado'.
     # ═══════════════════════════════════════════════════════════════════════
     approval_mode = Column(String(20), nullable=False, default='sequential')
-    
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Editores de respuestas (formatos cerrados)
+    # ───────────────────────────────────────────────────────────────────────
+    # Controla quién puede editar SUS PROPIAS respuestas en formatos cerrados.
+    #   'none' → nadie puede editar respuestas existentes (default).
+    #   'all'  → cualquier diligenciador asignado al formato puede editar las suyas.
+    #   'list' → solo los user_id presentes en form_answer_editors pueden editar las suyas.
+    # En formatos abierto/semi_abierto se ignora (mantienen su comportamiento legacy).
+    # En todos los casos, una respuesta YA APROBADA queda inmutable.
+    # ═══════════════════════════════════════════════════════════════════════
+    answer_editors_mode = Column(String(10), nullable=False, default='none')
+
     user = relationship('User', back_populates='forms')
     form_moderators = relationship("FormModerators", back_populates="form", cascade="all, delete-orphan")
+    answer_editors = relationship("FormAnswerEditor", back_populates="form", cascade="all, delete-orphan")
     questions = relationship("Question", secondary="form_questions", back_populates="forms")
     responses = relationship('Response', back_populates='form')
     form_answers = relationship('FormAnswer', back_populates='form')
@@ -278,6 +291,24 @@ class FormModerators(Base):
     assigned_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     form = relationship('Form', back_populates='form_moderators')
     user = relationship('User', back_populates='form_moderators')
+
+
+class FormAnswerEditor(Base):
+    """Usuarios autorizados a editar SUS PROPIAS respuestas en un formato cerrado
+    cuando Form.answer_editors_mode == 'list'. Solo aplica a formatos cerrados.
+    El motor de aprobaciones bloquea la edición una vez aprobada."""
+    __tablename__ = 'form_answer_editors'
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False, index=True)
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    assigned_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('form_id', 'user_id', name='uq_form_answer_editor'),
+    )
+
+    form = relationship('Form', back_populates='answer_editors')
+    user = relationship('User')
 
 class FormAnswer(Base):
     __tablename__ = 'form_answers'
