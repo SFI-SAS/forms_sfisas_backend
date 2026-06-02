@@ -1588,7 +1588,8 @@ def get_user_forms_summary(
 def get_completed_forms_for_user(
     page: int = 1,
     page_size: int = 30,
-    db: Session = Depends(get_db), 
+    activity_id: int = None,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -1615,8 +1616,8 @@ def get_completed_forms_for_user(
     if page < 1:
         page = 1
 
-    completed_forms_data = fetch_completed_forms_by_user(db, current_user.id, page, page_size)
-    
+    completed_forms_data = fetch_completed_forms_by_user(db, current_user.id, page, page_size, activity_id)
+
     if not completed_forms_data["items"]:
         raise HTTPException(status_code=404, detail="No completed forms found for this user")
     

@@ -1619,12 +1619,21 @@ class GenericActivityCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=150)
     description: Optional[str] = None
     items: List[GenericActivityFormItem] = []
+    # Clasificación opcional: formato + pregunta + valor elegido.
+    classification_form_id: Optional[int] = None
+    classification_question_id: Optional[int] = None
+    classification_value: Optional[str] = Field(None, max_length=255)
 
 
 class GenericActivityUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=150)
     description: Optional[str] = None
     is_active: Optional[bool] = None
+    # Clasificación: enviar los 3 juntos para fijarla; enviar value="" (o null
+    # en los tres) para limpiarla. Ver lógica del endpoint.
+    classification_form_id: Optional[int] = None
+    classification_question_id: Optional[int] = None
+    classification_value: Optional[str] = Field(None, max_length=255)
 
 
 class GenericActivityFormsUpdate(BaseModel):
@@ -1655,6 +1664,12 @@ class GenericActivityOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     items: List[GenericActivityFormOut] = []
+    # Clasificación
+    classification_form_id: Optional[int] = None
+    classification_form_title: Optional[str] = None
+    classification_question_id: Optional[int] = None
+    classification_question_text: Optional[str] = None
+    classification_value: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -1669,6 +1684,7 @@ class GenericActivitySummaryOut(BaseModel):
     assignment_count: int  # total de asignaciones (filas formato↔usuario)
     created_at: datetime
     updated_at: datetime
+    classification_value: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -1680,6 +1696,7 @@ class GenericActivityMineOut(BaseModel):
     name: str
     description: Optional[str] = None
     form_count: int  # formatos asignados a ESTE usuario en la actividad
+    classification_value: Optional[str] = None
 
     class Config:
         from_attributes = True

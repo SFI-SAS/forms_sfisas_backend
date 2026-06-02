@@ -1845,7 +1845,7 @@ def get_unrelated_questions(db: Session, form_id: int):
     return unrelated_questions
 
 
-def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int = 30):
+def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int = 30, activity_id: int = None):
     """
     Recupera los formularios que el usuario ha completado con paginación.
 
@@ -1853,18 +1853,31 @@ def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page
     :param user_id: ID del usuario.
     :param page: Número de página.
     :param page_size: Cantidad de registros por página.
+    :param activity_id: Si se indica, limita a los formatos asignados al usuario
+        en esa actividad genérica (mismo criterio que el filtro de diligenciar).
     :return: Diccionario con items paginados y metadata.
     """
     # Calcular offset
     offset = (page - 1) * page_size
-    
+
     # Query base
     base_query = (
         db.query(Form)
         .join(Response)  # Unión entre formularios y respuestas
         .filter(Response.user_id == user_id)  # Filtrar por el usuario
-        .distinct()  # Evitar duplicados si hay múltiples respuestas a un mismo formulario
     )
+
+    # Filtro opcional por actividad genérica: solo formatos asignados a ESTE
+    # usuario dentro de la actividad.
+    if activity_id is not None:
+        base_query = base_query.join(
+            GenericActivityForm, GenericActivityForm.form_id == Form.id
+        ).filter(
+            GenericActivityForm.activity_id == activity_id,
+            GenericActivityForm.user_id == user_id,
+        )
+
+    base_query = base_query.distinct()  # Evitar duplicados si hay múltiples respuestas
     
     # Contar total de registros
     total_count = base_query.count()

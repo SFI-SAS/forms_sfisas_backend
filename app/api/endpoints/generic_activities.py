@@ -24,11 +24,14 @@ from app.api.controllers.mail import send_generic_activity_assignment_email
 from app.core.security import get_current_user, require_roles
 from app.database import get_db
 from app.models import (
+    Answer,
     Form,
+    FormQuestion,
     GenericActivity,
     GenericActivityForm,
     Profile,
     ProfileUser,
+    Response,
     User,
     UserType,
 )
@@ -73,6 +76,15 @@ def _serialize_activity(a: GenericActivity) -> GenericActivityOut:
         created_at=a.created_at,
         updated_at=a.updated_at,
         items=[_serialize_item(link) for link in a.form_links],
+        classification_form_id=a.classification_form_id,
+        classification_form_title=(
+            a.classification_form.title if a.classification_form else None
+        ),
+        classification_question_id=a.classification_question_id,
+        classification_question_text=(
+            a.classification_question.question_text if a.classification_question else None
+        ),
+        classification_value=a.classification_value,
     )
 
 
@@ -87,6 +99,7 @@ def _summary(a: GenericActivity) -> GenericActivitySummaryOut:
         assignment_count=len(a.form_links),
         created_at=a.created_at,
         updated_at=a.updated_at,
+        classification_value=a.classification_value,
     )
 
 
@@ -97,6 +110,8 @@ def _load_full(db: Session, activity_id: int) -> GenericActivity:
             joinedload(GenericActivity.form_links).joinedload(GenericActivityForm.form),
             joinedload(GenericActivity.form_links).joinedload(GenericActivityForm.profile),
             joinedload(GenericActivity.form_links).joinedload(GenericActivityForm.user),
+            joinedload(GenericActivity.classification_form),
+            joinedload(GenericActivity.classification_question),
         )
         .filter(GenericActivity.id == activity_id)
         .first()
@@ -106,6 +121,55 @@ def _load_full(db: Session, activity_id: int) -> GenericActivity:
             status_code=status.HTTP_404_NOT_FOUND, detail="Actividad no encontrada"
         )
     return activity
+
+
+def _apply_classification(
+    db: Session,
+    activity: GenericActivity,
+    form_id,
+    question_id,
+    value,
+) -> None:
+    """Fija o limpia la clasificación de la actividad.
+
+    - Para FIJARLA se requieren los tres: formato, pregunta y valor.
+    - Para LIMPIARLA, enviar los tres vacíos/None.
+    Valida que el formato y la pregunta existan y que la pregunta pertenezca al
+    formato indicado.
+    """
+    clean_value = (value or "").strip()
+    if not form_id and not question_id and not clean_value:
+        activity.classification_form_id = None
+        activity.classification_question_id = None
+        activity.classification_value = None
+        return
+
+    if not (form_id and question_id and clean_value):
+        raise HTTPException(
+            400,
+            "La clasificación requiere formato, pregunta y valor (o los tres vacíos para quitarla)",
+        )
+
+    if not db.query(Form.id).filter(Form.id == form_id).first():
+        raise HTTPException(404, "Formato de clasificación no encontrado")
+
+    # La pregunta debe existir y estar vinculada al formato (form_questions).
+    belongs = (
+        db.query(FormQuestion.id)
+        .filter(
+            FormQuestion.form_id == form_id,
+            FormQuestion.question_id == question_id,
+        )
+        .first()
+    )
+    if not belongs:
+        raise HTTPException(
+            404, "La pregunta de clasificación no pertenece al formato indicado"
+        )
+
+    activity.classification_form_id = form_id
+    activity.classification_question_id = question_id
+    activity.classification_value = clean_value
 
 
 def _validate_items(
@@ -252,9 +316,35 @@ def list_my_activities(
                 name=a.name,
                 description=a.description,
                 form_count=len(my_form_ids),
+                classification_value=a.classification_value,
             )
         )
     return result
+
+
+@router.get("/classification-values")
+def classification_values(
+    form_id: int,
+    question_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """Valores DISTINCT ya respondidos para una pregunta de un formato. El admin
+    elige uno como clasificación de la actividad."""
+    rows = (
+        db.query(Answer.answer_text)
+        .join(Response, Answer.response_id == Response.id)
+        .filter(
+            Response.form_id == form_id,
+            Answer.question_id == question_id,
+            Answer.answer_text.isnot(None),
+            Answer.answer_text != "",
+        )
+        .distinct()
+        .order_by(Answer.answer_text.asc())
+        .all()
+    )
+    return {"values": [r[0] for r in rows]}
 
 
 @router.get("/{activity_id}", response_model=GenericActivityOut)
@@ -284,6 +374,13 @@ def create_activity(
         description=payload.description,
         created_by=current_user.id,
         is_active=True,
+    )
+    _apply_classification(
+        db,
+        activity,
+        payload.classification_form_id,
+        payload.classification_question_id,
+        payload.classification_value,
     )
     db.add(activity)
     db.flush()
@@ -337,6 +434,21 @@ def update_activity(
 
     if payload.is_active is not None:
         activity.is_active = payload.is_active
+
+    # Solo tocar la clasificación si el payload incluyó alguno de sus campos.
+    cls_fields = {
+        "classification_form_id",
+        "classification_question_id",
+        "classification_value",
+    }
+    if cls_fields & payload.model_fields_set:
+        _apply_classification(
+            db,
+            activity,
+            payload.classification_form_id,
+            payload.classification_question_id,
+            payload.classification_value,
+        )
 
     db.commit()
     return _serialize_activity(_load_full(db, activity.id))

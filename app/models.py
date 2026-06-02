@@ -844,10 +844,24 @@ class GenericActivity(Base):
     description = Column(Text, nullable=True)
     created_by = Column(BigInteger, ForeignKey('users.id'), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
+
+    # ── Clasificación (opcional) ────────────────────────────────────────────
+    # La clasificación de la actividad es un valor tomado de las respuestas de
+    # una pregunta de un formato (ej: el campo "proyecto" del formato "creación
+    # de proyectos"). El admin elige formato + pregunta + valor al crear/editar.
+    # El formato de clasificación es independiente de los formatos diligenciados
+    # dentro de la actividad. SET NULL para no romper si se borra el formato o
+    # la pregunta (el valor de texto queda como respaldo).
+    classification_form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='SET NULL'), nullable=True)
+    classification_question_id = Column(BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True)
+    classification_value = Column(String(255), nullable=True)
+
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     creator = relationship('User', foreign_keys=[created_by])
+    classification_form = relationship('Form', foreign_keys=[classification_form_id])
+    classification_question = relationship('Question', foreign_keys=[classification_question_id])
     form_links = relationship('GenericActivityForm', back_populates='activity', cascade='all, delete-orphan')
 
 
