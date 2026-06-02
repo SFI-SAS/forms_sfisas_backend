@@ -13,10 +13,10 @@ from app.crud import _extract_style_config, _serialize_answers, crear_palabras_c
 from app.api.controllers.pdf_form_exporter import generate_form_pdf
 from app.database import get_db
 from app.schemas import UpdateMathOperationRequest, AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, GetQuestionTextsRequest, GetQuestionTextsResponse, PalabrasClaveCreate, PalabrasClaveOut, PalabrasClaveUpdate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, QuestionTextValue, RegisfacialAnswerResponse, RelationOperationMathCreate, RelationOperationMathOut, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
-from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, ClasificacionBitacoraRelacion, Form, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionType, RelationBitacora, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User
+from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, BitacoraLogsSimple, ClasificacionBitacoraRelacion, Form, FormAnswerEditor, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionType, RelationBitacora, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User
 from app.core.security import get_current_user
 from typing import Dict
-from sqlalchemy import delete
+from sqlalchemy import delete, cast, Text as SAText
 from app.redis_client import redis_client
 router = APIRouter()
 
@@ -88,10 +88,65 @@ async def save_response(  # 🆕 Ahora es async
     
     return result
 
+def _enforce_edit_permission(response: Response, form: Form, current_user: User, db: Session) -> None:
+    """Valida si el usuario actual puede modificar answers de esta response.
+
+    Reglas (en orden):
+      1. Si response.status == 'approved' → 403 (inmutable tras aprobación).
+      2. Si response.status == 'submitted' (edición real, no creación inicial):
+         a. Solo el propietario puede editar (current_user.id == response.user_id).
+         b. Si form.format_type == 'cerrado', se respeta answer_editors_mode:
+              - 'none' → 403
+              - 'all'  → permitido (propietario diligenciador)
+              - 'list' → solo si está en form_answer_editors.
+         c. Para abierto/semi_abierto se mantiene comportamiento legacy.
+      3. Para status='draft' o 'rejected' → no se aplica este chequeo
+         (flujos de creación inicial y reconsideración respectivamente).
+    """
+    if response.status == ResponseStatus.approved:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Esta respuesta ya fue aprobada y no puede editarse."
+        )
+
+    if response.status != ResponseStatus.submitted:
+        return  # draft / rejected → sin restricción aquí
+
+    # Solo el dueño puede pedir editar.
+    if response.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo el propietario de la respuesta puede editarla."
+        )
+
+    if form.format_type != FormatType.cerrado:
+        return  # abierto/semi_abierto: comportamiento legacy
+
+    mode = (form.answer_editors_mode or 'none').lower()
+    if mode == 'all':
+        return
+    if mode == 'list':
+        in_list = db.query(FormAnswerEditor.id).filter(
+            FormAnswerEditor.form_id == form.id,
+            FormAnswerEditor.user_id == current_user.id,
+        ).first()
+        if in_list:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tenés permiso para editar respuestas de este formato cerrado."
+        )
+    # mode == 'none' o cualquier otro
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="La edición de respuestas está deshabilitada en este formato cerrado."
+    )
+
+
 @router.post("/save-answers/")
 async def create_answer(
     request: Request,
-    payload: Union[PostCreate, List[PostCreate]] = Body(...),  
+    payload: Union[PostCreate, List[PostCreate]] = Body(...),
     action: str = Query("send", enum=["send", "send_and_close"]),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -107,14 +162,23 @@ async def create_answer(
 
     # ✅ CAMBIO 2: Convertir a lista si es objeto individual
     answers_list = payload if isinstance(payload, list) else [payload]
-    
+
+    # NOTA: /save-answers/ es el endpoint de CREACIÓN de answers. El frontend lo
+    # invoca UNA VEZ POR ANSWER al diligenciar (incluyendo varias filas de
+    # repeater con el mismo question_id), y en formato cerrado la response nace
+    # 'submitted' antes de tener answers. Por eso NO se valida permiso de edición
+    # acá: hacerlo bloqueaba el guardado (con cerrado daba 403 y solo se guardaba
+    # el primer answer). El control de edición de respuestas YA EXISTENTES debe
+    # vivir en los endpoints de edición real (update-answer / delete answers),
+    # no en la creación. Ver _enforce_edit_permission().
+
     # Procesar cada respuesta
     for answer in answers_list:
         # Obtener formato del formulario
         response = db.query(Response).filter(Response.id == answer.response_id).first()
         if not response:
             raise HTTPException(status_code=404, detail="Response not found")
-        
+
         form = db.query(Form).filter(Form.id == response.form_id).first()
         if not form:
             raise HTTPException(status_code=404, detail="Form not found")
@@ -316,6 +380,7 @@ async def download_file(
     # ═══════════════════════════════════════════════════════════════════════════
     from app.core.permissions import can_user_view_response
 
+    # Fuente 1: adjuntos de respuestas de formularios (tabla answers).
     answers_with_file = (
         db.query(Answer)
         .filter(
@@ -325,16 +390,52 @@ async def download_file(
         )
         .all()
     )
-    if not answers_with_file:
+
+    # Fuente 2: adjuntos de EVENTOS DE BITÁCORA. Estos se guardan en
+    # BitacoraLogsSimple.archivos (JSON) y NO crean filas en answers, por lo que
+    # la validación anterior (solo answers) los rechazaba con 404 y las imágenes
+    # nunca cargaban. Se buscan aparte.
+    # archivos es una columna JSONB (AutoJSON): un LIKE directo NO matchea, hay
+    # que castear a texto para buscar el nombre dentro del array JSON.
+    bitacora_events_with_file = (
+        db.query(BitacoraLogsSimple)
+        .filter(cast(BitacoraLogsSimple.archivos, SAText).like(f"%{file_name}%"))
+        .all()
+    )
+
+    if not answers_with_file and not bitacora_events_with_file:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Archivo no encontrado",
         )
 
+    # Acceso vía respuesta de formulario (modelo de permisos existente).
     user_can_access = any(
         can_user_view_response(current_user, ans.response_id, db)
         for ans in answers_with_file
     )
+
+    # Acceso vía evento de bitácora: creador, participante, o admin/creator con
+    # asign_bitacora (mismo criterio que get_bitacora_eventos_by_user). El match
+    # de participantes es por token completo "- {num_document}" para no filtrar
+    # entre documentos que sean substring uno del otro.
+    if not user_can_access and bitacora_events_with_file:
+        me_token = f"- {current_user.num_document}"
+        is_bitacora_admin = (
+            current_user.user_type.value in ("admin", "creator")
+            and bool(getattr(current_user, "asign_bitacora", False))
+        )
+
+        def _user_in_event(ev) -> bool:
+            if is_bitacora_admin:
+                return True
+            if (ev.registrado_por or "").strip().endswith(me_token):
+                return True
+            partes = [p.strip() for p in (ev.participantes or "").split(",")]
+            return any(p.endswith(me_token) for p in partes)
+
+        user_can_access = any(_user_in_event(ev) for ev in bitacora_events_with_file)
+
     if not user_can_access:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

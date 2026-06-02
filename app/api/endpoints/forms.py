@@ -15,9 +15,9 @@ from app.api.controllers.excel_form_exporter import generate_form_excel
 from app.api.controllers.mail import send_response_answers_email
 from app.redis_client import redis_client
 from app.database import get_db
-from app.models import Answer, AnswerHistory, ApprovalStatus, CategoryApproval, Form, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, GenericActivity, GenericActivityForm, PalabrasClave, Profile, ProfileCategory, ProfileForm, ProfileUser, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
+from app.models import Answer, AnswerHistory, ApprovalStatus, CategoryApproval, FormatType, Form, FormAnswer, FormAnswerEditor, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, GenericActivity, GenericActivityForm, PalabrasClave, Profile, ProfileCategory, ProfileForm, ProfileUser, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
 from app.crud import  _extract_style_config, _serialize_answers, add_category_approver, analyze_form_relations, apply_template_service, bulk_save_category_approvers, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, create_template_service, delete_form, delete_form_category, delete_template_service, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_categories_with_approvers, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_approvals, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_template_detail_service, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, list_templates_service, move_category, process_regisfacial_answer, remove_category_approver, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, sync_form_approvals_from_category, toggle_form_status, update_category_approver, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status, update_template_service
-from app.schemas import AlertMessageRequest, CategoryApprovalBulkSave, CategoryApprovalCreate, CategoryApprovalResponse, CategoryApprovalUpdate, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, FormTemplateCreate, FormTemplateDetail, FormTemplateResponse, FormTemplateUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
+from app.schemas import AlertMessageRequest, AnswerEditorsConfigOut, AnswerEditorsConfigUpdate, AnswerEditorUserOut, CategoryApprovalBulkSave, CategoryApprovalCreate, CategoryApprovalResponse, CategoryApprovalUpdate, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, FormTemplateCreate, FormTemplateDetail, FormTemplateResponse, FormTemplateUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user, require_roles
 from io import BytesIO
 import pandas as pd
@@ -870,6 +870,118 @@ def list_eligible_users_for_form(
         u["profile_names"].append(r.profile_name)
 
     return list(by_user.values())
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Editores de respuestas (formatos cerrados)
+# ────────────────────────────────────────────────────────────────────────────
+
+@router.get("/{form_id}/answer-editors-config", response_model=AnswerEditorsConfigOut)
+def get_answer_editors_config(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """Devuelve la configuración de editores de respuestas para un formato:
+    el modo (none|all|list) y la lista de usuarios autorizados cuando mode='list'.
+    Solo admin/creator pueden consultarla."""
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    users: List[AnswerEditorUserOut] = []
+    if form.answer_editors_mode == 'list':
+        rows = (
+            db.query(User)
+            .join(FormAnswerEditor, FormAnswerEditor.user_id == User.id)
+            .filter(FormAnswerEditor.form_id == form_id)
+            .order_by(User.name.asc())
+            .all()
+        )
+        users = [
+            AnswerEditorUserOut(
+                id=u.id,
+                name=u.name,
+                email=u.email,
+                num_document=u.num_document,
+            )
+            for u in rows
+        ]
+
+    return AnswerEditorsConfigOut(
+        form_id=form.id,
+        format_type=form.format_type.value if hasattr(form.format_type, 'value') else str(form.format_type),
+        mode=form.answer_editors_mode,  # type: ignore[arg-type]
+        users=users,
+    )
+
+
+@router.put("/{form_id}/answer-editors-config", response_model=AnswerEditorsConfigOut)
+def set_answer_editors_config(
+    form_id: int,
+    payload: AnswerEditorsConfigUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """Actualiza el modo y la lista de editores de respuestas del formato.
+    - Solo aplica a formatos cerrados; en otros la config se guarda pero se ignora en runtime.
+    - Si mode='list', valida que todos los user_ids existan.
+    - Si mode != 'list', vacía la lista form_answer_editors para mantener consistencia."""
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    user_ids = list({uid for uid in payload.user_ids if uid})
+
+    if payload.mode == 'list' and user_ids:
+        found = {u.id for u in db.query(User.id).filter(User.id.in_(user_ids)).all()}
+        missing = set(user_ids) - found
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Usuarios no encontrados: {sorted(missing)}",
+            )
+
+    form.answer_editors_mode = payload.mode
+
+    # Borra los registros existentes y reinserta los nuevos si aplica.
+    db.query(FormAnswerEditor).filter(FormAnswerEditor.form_id == form_id).delete()
+    if payload.mode == 'list':
+        for uid in user_ids:
+            db.add(FormAnswerEditor(form_id=form_id, user_id=uid))
+
+    db.commit()
+    db.refresh(form)
+
+    return get_answer_editors_config(form_id, db, current_user)  # reusa la lectura
+
+
+@router.get("/{form_id}/can-edit-answers")
+def can_edit_answers(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Indica si el usuario actual puede editar SUS PROPIAS respuestas en este formato.
+    No considera el estado approved (eso se chequea por response). El frontend lo usa
+    para decidir si muestra/oculta el botón "Editar respuesta"."""
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    if form.format_type != FormatType.cerrado:
+        return {"can_edit_own": True, "reason": "non_closed"}
+
+    mode = (form.answer_editors_mode or 'none').lower()
+    if mode == 'all':
+        return {"can_edit_own": True, "reason": "all"}
+    if mode == 'list':
+        in_list = db.query(FormAnswerEditor.id).filter(
+            FormAnswerEditor.form_id == form.id,
+            FormAnswerEditor.user_id == current_user.id,
+        ).first()
+        return {"can_edit_own": bool(in_list), "reason": "list"}
+    return {"can_edit_own": False, "reason": "none"}
 
 
 @router.put("/{form_id}/questions")

@@ -1685,3 +1685,32 @@ class GenericActivityMineOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Editores de respuestas (formatos cerrados)
+# ─────────────────────────────────────────────────────────────────────────────
+
+AnswerEditorsModeLiteral = Literal['none', 'all', 'list']
+
+
+class AnswerEditorUserOut(BaseModel):
+    id: int
+    name: str
+    email: Optional[str] = None
+    num_document: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class AnswerEditorsConfigOut(BaseModel):
+    form_id: int
+    format_type: str
+    mode: AnswerEditorsModeLiteral
+    users: List[AnswerEditorUserOut] = []
+
+
+class AnswerEditorsConfigUpdate(BaseModel):
+    mode: AnswerEditorsModeLiteral
+    user_ids: List[int] = []
