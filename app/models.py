@@ -317,6 +317,11 @@ class FormSchedule(Base):
     interval_days = Column(Integer, nullable=True)
     specific_date = Column(DateTime, nullable=True)
     status = Column(Boolean, default=True, nullable=False)
+    # Relación a Form: el servicio de responsabilidades (responsibility_service.
+    # get_user_responsibilities) accede a `schedule.form`. Sin esta relación
+    # lanzaba AttributeError ("'FormSchedule' object has no attribute 'form'").
+    # FormApproval/FormApprovalNotification/FormModerators ya la tenían.
+    form = relationship('Form')
 
 class FormModerators(Base):
     __tablename__ = 'form_moderators'
