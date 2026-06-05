@@ -17,7 +17,7 @@ Solo administradores (UserType.admin) gestionan estas tablas.
 from typing import List, Set, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.controllers.mail import send_generic_activity_assignment_email
@@ -111,7 +111,39 @@ def _serialize_activity(a: GenericActivity) -> GenericActivityOut:
     )
 
 
-def _summary(a: GenericActivity) -> GenericActivitySummaryOut:
+def _classification_values_by_activity(db: Session, activity_ids) -> dict:
+    """Valor(es) de clasificacion de cada servicio, derivado de las RELACIONES
+    respuesta-servicio (la clasificacion unificada). Usa el valor guardado en el
+    link o, si falta, el Answer real de la pregunta clasificadora. Devuelve los
+    valores distintos unidos por coma."""
+    ids = set(activity_ids)
+    if not ids:
+        return {}
+    rows = (
+        db.query(
+            ResponseServiceLink.activity_id,
+            func.coalesce(
+                ResponseServiceLink.classification_value, Answer.answer_text
+            ).label("val"),
+        )
+        .outerjoin(
+            Answer,
+            and_(
+                Answer.response_id == ResponseServiceLink.response_id,
+                Answer.question_id == ResponseServiceLink.question_id,
+            ),
+        )
+        .filter(ResponseServiceLink.activity_id.in_(ids))
+        .all()
+    )
+    acc: dict = {}
+    for aid, val in rows:
+        if val:
+            acc.setdefault(aid, set()).add(str(val))
+    return {aid: ", ".join(sorted(vals)) for aid, vals in acc.items()}
+
+
+def _summary(a: GenericActivity, classification_value=None) -> GenericActivitySummaryOut:
     # Los formatos del servicio viven en service_form_links (feature "Servicios").
     # Se unen con los form_id de las asignaciones (legacy) para no perder los que
     # solo existian como asignacion usuario-formato.
@@ -125,7 +157,8 @@ def _summary(a: GenericActivity) -> GenericActivitySummaryOut:
         assignment_count=len(a.form_links),
         created_at=a.created_at,
         updated_at=a.updated_at,
-        classification_value=a.classification_value,
+        # Clasificacion unificada: la de las relaciones; si no hay, la legacy.
+        classification_value=classification_value or a.classification_value,
     )
 
 
@@ -305,7 +338,8 @@ def list_activities(
     if only_active:
         q = q.filter(GenericActivity.is_active.is_(True))
     activities = q.order_by(GenericActivity.created_at.desc()).all()
-    return [_summary(a) for a in activities]
+    cls_map = _classification_values_by_activity(db, {a.id for a in activities})
+    return [_summary(a, cls_map.get(a.id)) for a in activities]
 
 
 @router.get("/me", response_model=List[GenericActivityMineOut])
@@ -333,6 +367,7 @@ def list_my_activities(
         .all()
     )
 
+    cls_map = _classification_values_by_activity(db, {a.id for a in activities})
     result: List[GenericActivityMineOut] = []
     for a in activities:
         my_form_ids = {
@@ -346,7 +381,8 @@ def list_my_activities(
                 name=a.name,
                 description=a.description,
                 form_count=len(my_form_ids),
-                classification_value=a.classification_value,
+                # Clasificacion unificada (de las relaciones); si no hay, la legacy.
+                classification_value=cls_map.get(a.id) or a.classification_value,
             )
         )
     return result
