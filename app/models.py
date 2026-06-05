@@ -317,6 +317,8 @@ class FormSchedule(Base):
     interval_days = Column(Integer, nullable=True)
     specific_date = Column(DateTime, nullable=True)
     status = Column(Boolean, default=True, nullable=False)
+    form = relationship('Form')
+    user = relationship('User')
 
 class FormModerators(Base):
     __tablename__ = 'form_moderators'
