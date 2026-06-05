@@ -897,7 +897,11 @@ class GenericActivity(Base):
     creator = relationship('User', foreign_keys=[created_by])
     classification_form = relationship('Form', foreign_keys=[classification_form_id])
     classification_question = relationship('Question', foreign_keys=[classification_question_id])
+    # Diligenciadores asignados (formato↔usuario). OPCIONAL/diferido.
     form_links = relationship('GenericActivityForm', back_populates='activity', cascade='all, delete-orphan')
+    # Feature "Servicios" (2026-06-04): formatos que pertenecen al servicio,
+    # independiente de si ya tienen diligenciador. Ver GenericActivityFormLink.
+    service_form_links = relationship('GenericActivityFormLink', back_populates='activity', cascade='all, delete-orphan')
 
 
 class GenericActivityForm(Base):
@@ -923,3 +927,67 @@ class GenericActivityForm(Base):
     form = relationship('Form')
     profile = relationship('Profile')
     user = relationship('User', foreign_keys=[user_id])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature "Servicios" (ex actividades genéricas) — 2026-06-04.
+# Separa "qué formatos pertenecen al servicio" (usuarios opcionales) de "quién
+# diligencia cada formato", agrega la pregunta clasificadora por formato y la
+# relación respuesta↔servicio. Schema: _db_changes/2026-06-04_servicios/.
+# ─────────────────────────────────────────────────────────────────────────────
+class GenericActivityFormLink(Base):
+    """Formato que pertenece a un servicio. La asignación de diligenciadores es
+    opcional/diferida (vive en generic_activity_forms). Esta tabla responde
+    "¿qué formatos tiene el servicio?" aunque aún no tengan diligenciador."""
+    __tablename__ = 'generic_activity_form_links'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    activity_id = Column(BigInteger, ForeignKey('generic_activities.id', ondelete='CASCADE'), nullable=False, index=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False, index=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('activity_id', 'form_id', name='uq_generic_activity_form_link'),
+    )
+
+    activity = relationship('GenericActivity', back_populates='service_form_links')
+    form = relationship('Form')
+
+
+class FormServiceClassification(Base):
+    """La ÚNICA pregunta (texto/select) que un formato usa para clasificar
+    servicios. 1 fila por formato (form_id es PK). La marca el creador del
+    formato al finalizar (o desde editar formato)."""
+    __tablename__ = 'form_service_classification'
+
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), primary_key=True)
+    question_id = Column(BigInteger, ForeignKey('questions.id', ondelete='CASCADE'), nullable=False, index=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    form = relationship('Form')
+    question = relationship('Question')
+
+
+class ResponseServiceLink(Base):
+    """Relación respuesta↔servicio: cuando un usuario diligencia un formato con
+    pregunta clasificadora, relaciona SU respuesta con uno o varios servicios.
+    Reemplaza la "clasificación de la actividad" (que era a nivel de actividad);
+    ahora es a nivel de respuesta."""
+    __tablename__ = 'response_service_links'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    response_id = Column(BigInteger, ForeignKey('responses.id', ondelete='CASCADE'), nullable=False, index=True)
+    activity_id = Column(BigInteger, ForeignKey('generic_activities.id', ondelete='CASCADE'), nullable=False, index=True)
+    # Pregunta clasificadora usada (SET NULL si se borra; el valor queda de respaldo).
+    question_id = Column(BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True)
+    classification_value = Column(String(255), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('response_id', 'activity_id', name='uq_response_service_link'),
+    )
+
+    response = relationship('Response')
+    activity = relationship('GenericActivity')
+    question = relationship('Question')
