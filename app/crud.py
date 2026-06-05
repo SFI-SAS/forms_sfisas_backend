@@ -7270,6 +7270,33 @@ def obtener_conversacion_completa(db: Session, evento_id: int):
     return build_tree(evento)
 
 
+def eliminar_evento_completo(db: Session, evento_id: int) -> int:
+    """Elimina un evento de bitácora y TODAS sus respuestas (el árbol de la
+    conversación que cuelga de ese evento). Borra de las hojas hacia la raíz
+    para no violar la FK self-referencial. Devuelve cuántos eventos se borraron."""
+    evento = db.query(BitacoraLogsSimple).filter(BitacoraLogsSimple.id == evento_id).first()
+    if not evento:
+        raise ValueError("Evento no encontrado")
+
+    borrados = 0
+
+    def _borrar_subarbol(eid: int):
+        nonlocal borrados
+        hijos = (
+            db.query(BitacoraLogsSimple.id)
+            .filter(BitacoraLogsSimple.evento_responde_id == eid)
+            .all()
+        )
+        for (hid,) in hijos:
+            _borrar_subarbol(hid)
+        db.query(BitacoraLogsSimple).filter(BitacoraLogsSimple.id == eid).delete()
+        borrados += 1
+
+    _borrar_subarbol(evento_id)
+    db.commit()
+    return borrados
+
+
 def get_palabras_clave_by_form(db: Session, form_id: int):
     return db.query(PalabrasClave).filter(PalabrasClave.form_id == form_id).first()
 

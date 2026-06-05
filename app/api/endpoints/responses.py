@@ -9,7 +9,7 @@ from sqlalchemy import inspect
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional, Union
 from app.api.controllers.mail import send_reconsideration_email
-from app.crud import _extract_style_config, _serialize_answers, crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, encrypt_object, finalizar_conversacion_completa, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, get_palabras_clave_by_form, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
+from app.crud import _extract_style_config, _serialize_answers, crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, eliminar_evento_completo, encrypt_object, finalizar_conversacion_completa, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, get_palabras_clave_by_form, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
 from app.api.controllers.pdf_form_exporter import generate_form_pdf
 from app.database import get_db
 from app.schemas import UpdateMathOperationRequest, AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, GetQuestionTextsRequest, GetQuestionTextsResponse, PalabrasClaveCreate, PalabrasClaveOut, PalabrasClaveUpdate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, QuestionTextValue, RegisfacialAnswerResponse, RelationOperationMathCreate, RelationOperationMathOut, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
@@ -1968,6 +1968,25 @@ def reabrir_evento(evento_id: int, db: Session = Depends(get_db), user: User = D
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al reabrir el evento: {e}")
+
+
+@router.delete("/eventos/{evento_id}", summary="Eliminar un evento y toda su conversación")
+def eliminar_evento(evento_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Elimina un evento de bitácora junto con todas sus respuestas (el hilo
+    completo que cuelga de él). SOLO el administrador puede eliminar eventos."""
+    if str(user.user_type.value) != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo el administrador puede eliminar eventos."
+        )
+    try:
+        borrados = eliminar_evento_completo(db, evento_id)
+        return {"message": "🗑️ Evento eliminado correctamente", "borrados": borrados}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al eliminar el evento: {e}")
 
 
 @router.post("/eventos/{evento_id}/response", summary="Crear una respuesta a una bitácora simple")
