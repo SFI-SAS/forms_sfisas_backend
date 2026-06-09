@@ -3,6 +3,7 @@
 #
 
 import logging
+import unicodedata
 from collections import defaultdict
 import hashlib
 from datetime import datetime
@@ -21,6 +22,57 @@ from app.schemas import AnswerByQuestionResponse, AnswerSchema, DetectSelectRela
 from app.core.security import get_current_user, require_roles
 
 router = APIRouter()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Unicidad de question_text (insensible a mayúsculas, acentos y espacios).
+# No se permite crear/editar una pregunta cuyo texto ya exista. No hay constraint
+# en BD (existen duplicados históricos); la regla se aplica solo a NUEVAS
+# colisiones a nivel de aplicación.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _normalize_question_text(text: Optional[str]) -> str:
+    """Normaliza para comparar unicidad: minúsculas, sin acentos, espacios
+    colapsados/recortados."""
+    if not text:
+        return ""
+    t = unicodedata.normalize("NFKD", text)
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    return " ".join(t.lower().split())
+
+
+def _find_duplicate_question(db: Session, text: str, exclude_id: Optional[int] = None):
+    """Devuelve (id, texto) de la primera pregunta con texto normalizado idéntico,
+    o None. Compara en Python para honrar la insensibilidad a acentos sin depender
+    de extensiones de Postgres."""
+    norm = _normalize_question_text(text)
+    if not norm:
+        return None
+    q = db.query(Question.id, Question.question_text)
+    if exclude_id is not None:
+        q = q.filter(Question.id != exclude_id)
+    for qid, qtext in q.all():
+        if _normalize_question_text(qtext) == norm:
+            return (qid, qtext)
+    return None
+
+
+@router.get("/check-text")
+def check_question_text(
+    question_text: str = Query(..., min_length=1),
+    exclude_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Indica si ya existe una pregunta con el mismo texto (comparación insensible
+    a mayúsculas, acentos y espacios). Para validación en vivo en el frontend.
+    `exclude_id` excluye la propia pregunta al editar. Debe ir ANTES de cualquier
+    ruta GET `/{question_id}` para no colisionar con el parámetro de ruta."""
+    dup = _find_duplicate_question(db, question_text, exclude_id)
+    if dup:
+        return {"exists": True, "existing_id": dup[0], "existing_text": dup[1]}
+    return {"exists": False}
+
 
 # En: app/routes/questions.py
 
@@ -47,7 +99,15 @@ def create_question_endpoint(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="El alias especificado no existe"
             )
-    
+
+    # No permitir texto duplicado (insensible a mayúsculas/acentos/espacios).
+    dup = _find_duplicate_question(db, question.question_text)
+    if dup:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Ya existe una pregunta con ese texto (#{dup[0]}). No se permiten preguntas duplicadas."
+        )
+
     try:
         db_question = Question(
             question_text=question.question_text,
@@ -123,6 +183,20 @@ def update_question_endpoint(
     db_question = get_question_by_id(db, question_id)
     if not db_question:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found")
+
+    # No permitir texto duplicado SOLO si el texto realmente cambia. Si se deja
+    # igual (incluido un duplicado histórico), se permite guardar sin tocarlo.
+    if (
+        question.question_text is not None
+        and _normalize_question_text(question.question_text)
+        != _normalize_question_text(db_question.question_text)
+    ):
+        dup = _find_duplicate_question(db, question.question_text, exclude_id=question_id)
+        if dup:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Ya existe otra pregunta con ese texto (#{dup[0]}). No se permiten preguntas duplicadas."
+            )
 
     return update_question(db=db, question_id=question_id, question=question)
 
@@ -1474,6 +1548,20 @@ def update_question_endpoint(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"No se puede cambiar el tipo: vinculada a {linked_count} formato(s)"
+            )
+
+    # 2b. No permitir texto duplicado SOLO si el texto realmente cambia. Dejarlo
+    # igual (incluido un duplicado histórico) se permite sin tocarlo.
+    if (
+        payload.question_text is not None
+        and _normalize_question_text(payload.question_text)
+        != _normalize_question_text(question.question_text)
+    ):
+        dup = _find_duplicate_question(db, payload.question_text, exclude_id=question_id)
+        if dup:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Ya existe otra pregunta con ese texto (#{dup[0]}). No se permiten preguntas duplicadas."
             )
 
     # 3. Aplicar los campos del payload
