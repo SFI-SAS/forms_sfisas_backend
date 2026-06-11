@@ -1401,6 +1401,63 @@ def fetch_all_users(db: Session):
         }
         for r in results
     ]
+
+
+def fetch_users_selectable(db: Session, include_pii: bool = False):
+    """
+    Proyección liviana de usuarios para selectores (M-2).
+
+    Devuelve siempre campos NO sensibles (`id`, `name`, `nickname`, `user_type`,
+    `asign_bitacora`, `category`). La PII (`num_document`, `email`, `telephone`)
+    solo se incluye cuando `include_pii=True`, es decir cuando el que consulta es
+    `admin`/`creator`. Un usuario normal nunca recibe la cédula/correo/teléfono de
+    los demás, independientemente de la pantalla desde la que llame.
+    """
+    results = db.query(
+        User.id,
+        User.name,
+        User.nickname,
+        User.user_type,
+        User.asign_bitacora,
+        User.num_document,
+        User.email,
+        User.telephone,
+        User.id_category,
+        UserCategory.id.label('category_id'),
+        UserCategory.name.label('category_name')
+    ).outerjoin(
+        UserCategory, User.id_category == UserCategory.id
+    ).all()
+
+    if not results:
+        raise HTTPException(status_code=404, detail="No se encontraron usuarios")
+
+    def to_dict(r):
+        data = {
+            "id": r.id,
+            "name": r.name,
+            "nickname": r.nickname,
+            "user_type": r.user_type.value,
+            "asign_bitacora": r.asign_bitacora,
+            "category": {
+                "id": r.category_id,
+                "name": r.category_name
+            } if r.category_id else None,
+        }
+        if include_pii:
+            data["num_document"] = r.num_document
+            data["email"] = r.email
+            data["telephone"] = r.telephone
+        else:
+            # Campos presentes pero vacíos para no romper componentes que los leen.
+            data["num_document"] = None
+            data["email"] = None
+            data["telephone"] = None
+        return data
+
+    return [to_dict(r) for r in results]
+
+
 def get_response_id(db: Session, form_id: int, user_id: int):
     """Obtiene el ID de Response basado en form_id y user_id."""
     stmt = select(Response.id).where(Response.form_id == form_id, Response.user_id == user_id)
