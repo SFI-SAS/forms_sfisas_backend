@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 from fastapi.params import Query
 from pydantic import BaseModel, Field
 from pymysql import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from app.database import get_db
 from app.models import Answer, Response, Form, Alias, FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationQuestionRule, User, UserType
@@ -125,6 +125,11 @@ def get_questions_by_form(
 
     questions = (
         db.query(Question)
+        .options(
+            joinedload(Question.category),
+            joinedload(Question.options),
+            joinedload(Question.alias),
+        )
         .filter(Question.id_form == form_id)
         .order_by(Question.id)
         .all()
