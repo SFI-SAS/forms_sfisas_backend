@@ -13,9 +13,10 @@ from app.api.controllers.pdf_form_exporter import FormPdfExporter, generate_form
 from app.database import get_db
 
 from app.models import Answer, EmailConfig, Form, Response, User, UserCategory, UserType
-from app.crud import _extract_style_config, _serialize_answers, create_email_config, create_user, create_user_category, create_user_with_random_password, delete_user_category_by_id, fetch_all_users, get_all_email_configs, get_all_user_categories, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
+from app.crud import _extract_style_config, _serialize_answers, create_email_config, create_user, create_user_category, create_user_with_random_password, delete_user_category_by_id, fetch_all_users, fetch_users_selectable, generate_random_password, get_all_email_configs, get_all_user_categories, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
 from app.schemas import EmailConfigCreate, EmailConfigResponse, EmailConfigUpdate, EmailStatusUpdate, UpdateRecognitionId, UpdateUserCategory, UserAdminUpdate, UserBaseCreate, UserCategoryCreate, UserCategoryResponse, UserCreate, UserResponse, UserSelfUpdate, UserUpdate, UserUpdateInfo
 from app.core.security import get_current_user, hash_password, require_roles
+from app.api.controllers.password_reset_mail import send_password_reset_email
 
 router = APIRouter()
 
@@ -325,11 +326,11 @@ def download_user_responses_pdf_by_admin(
 def download_all_responses_pdf(
     form_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     """
     Genera un PDF con TODAS las respuestas de todos los usuarios.
-    Cada respuesta ocupa una página separada.
+    Cada respuesta ocupa una página separada. Solo admin/creator.
     """
     from sqlalchemy.orm import joinedload
     from weasyprint import HTML as WH  # ← reemplaza xhtml2pdf
@@ -757,14 +758,63 @@ def get_all_users(db: Session = Depends(get_db), current_user: User = Depends(ge
         Si el usuario autenticado no tiene permisos para acceder a esta información.
     """
 
-    if current_user.user_type not in [UserType.creator, UserType.admin, UserType.user]:
+    if current_user.user_type not in [UserType.creator, UserType.admin]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to search for users by email"
         )
 
     """Endpoint que llama a la función fetch_all_users."""
-    return fetch_all_users(db)  
+    return fetch_all_users(db)
+
+
+@router.get("/selectable/all")
+def get_users_selectable(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Lista liviana de usuarios para selectores (M-2).
+
+    Accesible a cualquier usuario autenticado. La PII (`num_document`, `email`,
+    `telephone`) solo se incluye con valor real cuando el solicitante es
+    `admin`/`creator`; para un usuario normal esos campos llegan en `null`.
+    Esto evita que un rol `user` obtenga el directorio de datos personales de
+    todos (reemplaza el uso de `/all-users/all` en los selectores).
+    """
+    include_pii = current_user.user_type in (UserType.admin, UserType.creator)
+    return fetch_users_selectable(db, include_pii=include_pii)
+
+
+@router.post("/{user_id}/reset-password")
+def admin_reset_user_password(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """
+    Restablece la contraseña de un usuario (acción de administrador).
+
+    Pensado para cuando un usuario olvida su contraseña y se comunica con el
+    administrador: este genera una contraseña aleatoria nueva, se guarda
+    hasheada y se envía al correo del usuario. Solo `admin` puede ejecutarlo.
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado",
+        )
+
+    new_password = generate_random_password()
+    user.password = hash_password(new_password)
+    db.commit()
+
+    email_sent = send_password_reset_email(user.email, user.name, new_password)
+    return {
+        "message": "Contraseña restablecida. Se envió la nueva contraseña al correo del usuario.",
+        "email_sent": email_sent,
+    }
 
 @router.post("/send-file-emails")
 async def send_file_to_emails(
@@ -1163,7 +1213,10 @@ class WelcomeEmailRequest(BaseModel):
     password: str
 
 @router.post("/send_welcome_email")
-def send_email(data: WelcomeEmailRequest):
+def send_email(
+    data: WelcomeEmailRequest,
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
     """
     Envía un correo electrónico de bienvenida a un nuevo usuario.
 
@@ -1197,7 +1250,8 @@ def send_email(data: WelcomeEmailRequest):
 @router.post("/create_category", response_model=UserCategoryResponse, status_code=status.HTTP_201_CREATED)
 def create_category_endpoint(
     category: UserCategoryCreate,
-    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     if current_user is None:
         raise HTTPException(
@@ -1216,7 +1270,7 @@ def list_all_user_categories(db: Session = Depends(get_db), current_user: User =
     return get_all_user_categories(db)
 
 @router.delete("/delete_user_category/{category_id}", status_code=status.HTTP_200_OK)
-def delete_user_category(category_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
+def delete_user_category(category_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_roles([UserType.admin, UserType.creator]))):
     if current_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1229,7 +1283,7 @@ def update_user_category(
     user_id: int,
     category_data: UpdateUserCategory,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     if current_user is None:
         raise HTTPException(
@@ -1260,6 +1314,7 @@ def update_user_category(
 def update_user_recognition_id(
     data: UpdateRecognitionId,
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     """
     Endpoint para actualizar el recognition_id de un usuario basado en su número de documento.

@@ -963,7 +963,8 @@ table {{ border-collapse: collapse; }} img {{ max-width: 100%; }}
 @router.post("/download/generate")
 async def generate_download(
     request: FinalDownloadRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     import json
 

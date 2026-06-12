@@ -34,6 +34,33 @@ app = FastAPI(
 )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Manejador global de errores (M-4): para respuestas 5xx NO se expone el detalle
+# interno al cliente (los `detail=str(e)` filtran esquema de BD, rutas y driver).
+# Se loguea el detalle real en el servidor y se devuelve un mensaje genérico.
+# Los 4xx conservan su mensaje (el frontend los necesita) delegando al manejador
+# por defecto de FastAPI. Cubre TODOS los endpoints sin editar su código.
+# ─────────────────────────────────────────────────────────────────────────────
+from starlette.exceptions import HTTPException as _StarletteHTTPException
+from starlette.requests import Request as _Request
+from fastapi.exception_handlers import http_exception_handler as _default_http_exception_handler
+
+
+@app.exception_handler(_StarletteHTTPException)
+async def _sanitized_http_exception_handler(request: _Request, exc: _StarletteHTTPException):
+    if exc.status_code >= 500:
+        logger.error(
+            "5xx en %s %s -> %s: %s",
+            request.method, request.url.path, exc.status_code, exc.detail,
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": "Error interno del servidor."},
+            headers=getattr(exc, "headers", None),
+        )
+    return await _default_http_exception_handler(request, exc)
+
+
 # 1. CORS debe ir primero
 import os
 _default_origins = "https://forms.sfisas.com.co,http://localhost:4321"

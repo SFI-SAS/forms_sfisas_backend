@@ -1865,7 +1865,7 @@ def download_questions_answers_excel(
 def download_questions_answers_excel_all_users(
     form_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
 
     """
@@ -2301,7 +2301,7 @@ def get_form_schedules(form_id: int, user_id: int, db: Session = Depends(get_db)
 def download_all_user_responses_excel(
     form_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     """
     Descarga TODAS las respuestas de TODOS los usuarios para un formulario.
