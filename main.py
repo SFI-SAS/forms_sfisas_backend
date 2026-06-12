@@ -329,23 +329,40 @@ def notification_rules_task():
 # Configurar el scheduler
 scheduler = BackgroundScheduler()
 
-# Tarea diaria de formularios programados (7:00 AM)
-scheduler.add_job(
-    daily_schedule_task, 
-    "cron", 
-    hour=7, 
-    minute=0,
-    id="daily_forms_task"
-)
+# ── M10 (cutover Acompañante) ────────────────────────────────────────────
+# Los DOS recordatorios proactivos programados (formularios recurrentes no
+# diligenciados + alerta de vencimiento por reglas) se solapan con el
+# Acompañante (Cargo 10) de ArIA → si ambos corren, hay DOBLE AVISO. Este flag
+# permite el cutover explícito: apagar estos triggers cuando el push del
+# Acompañante esté encendido y cubra los mismos avisos.
+#   Default ON  = comportamiento actual (cero cambio).
+#   Apagar SOLO tras encender el Acompañante: LEGACY_REMINDER_TRIGGERS_ENABLED=false
+# Los correos TRANSACCIONales (aprobación/rechazo/bienvenida/cierre) NO se tocan:
+# no son monitoreo proactivo y el Acompañante no los reemplaza.
+_LEGACY_REMINDERS_ON = os.getenv(
+    "LEGACY_REMINDER_TRIGGERS_ENABLED", "true"
+).strip().lower() not in ("0", "false", "no", "off")
 
-# ✅ NUEVA TAREA: Notificaciones de reglas (8:00 AM)
-scheduler.add_job(
-    notification_rules_task,
-    "cron",
-    hour=15,
-    minute=29,
-    id="notification_rules_task"
-)
+if _LEGACY_REMINDERS_ON:
+    # Tarea diaria de formularios programados (7:00 AM)
+    scheduler.add_job(
+        daily_schedule_task,
+        "cron",
+        hour=7,
+        minute=0,
+        id="daily_forms_task"
+    )
+    # Notificaciones de reglas (vencimientos) (15:29)
+    scheduler.add_job(
+        notification_rules_task,
+        "cron",
+        hour=15,
+        minute=29,
+        id="notification_rules_task"
+    )
+    logger.info("[M10] Recordatorios heredados ACTIVOS (daily_forms_task + notification_rules_task).")
+else:
+    logger.info("[M10] Recordatorios heredados APAGADOS — cutover al Acompañante de ArIA.")
 
 # Iniciar el scheduler
 scheduler.start()
