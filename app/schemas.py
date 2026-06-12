@@ -113,11 +113,12 @@ class QuestionBaseAll(BaseModel):
     id_alias: Optional[int] = Field(None, example=1)
     
 class QuestionCreate(QuestionBase):
-    pass # Allow creation without assignment
+    id_form: Optional[int] = None
 
 class QuestionResponse(QuestionBaseAll):
     id: int
-    
+    id_form: Optional[int] = None
+
     class Config:
         from_attributes = True
 
@@ -131,6 +132,7 @@ class QuestionOptions(QuestionBase):
 class QuestionUpdate(BaseModel):
     question_text: Optional[str] = None
     question_type: Optional[str] = None
+    id_form: Optional[int] = None
 
 class GetFormBase(BaseModel):
     id: int
@@ -759,6 +761,7 @@ class QuestionWithCategory(BaseModel):
     forms: List[FormBasicInfo] = []
     id_alias: Optional[int] = None
     alias: Optional[AliasSchema] = None
+    id_form: Optional[int] = None
     class Config:
         from_attributes = True
 
@@ -1427,6 +1430,7 @@ class QuestionUpdatePayload(BaseModel):
     question_type: Optional[str] = None
     id_category: Optional[int] = None
     id_alias: Optional[int] = None
+    id_form: Optional[int] = None
 
 
 # ===================== CONSULTANTS =====================

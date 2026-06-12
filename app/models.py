@@ -235,13 +235,15 @@ class Question(Base):
     root = Column(Boolean, nullable=False, default=False)
     id_category = Column(BigInteger, ForeignKey('question_categories.id'), nullable=True)
     id_alias = Column(Integer, ForeignKey("alias.id"), nullable=True, index=True)
-    
+    id_form = Column(BigInteger, ForeignKey('forms.id', ondelete='SET NULL'), nullable=True, index=True)
+
     category = relationship('QuestionCategory', back_populates='questions')
     forms = relationship('Form', secondary='form_questions', back_populates='questions')
     options = relationship('Option', back_populates='question')
     answers = relationship('Answer', back_populates='question')
     form_answers = relationship('FormAnswer', back_populates='question')
     alias = relationship('Alias', backref='questions')
+    default_form = relationship('Form', foreign_keys=[id_form])
 
 class QuestionCategory(Base):
     __tablename__ = 'question_categories'

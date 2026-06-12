@@ -74,7 +74,64 @@ def check_question_text(
     return {"exists": False}
 
 
-# En: app/routes/questions.py
+@router.get("/forms/available")
+def get_available_forms(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Retorna la lista de formatos disponibles para asignar a una pregunta.
+    Usado en el modal de selección de formato al crear una pregunta.
+    """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No autenticado",
+        )
+
+    forms = (
+        db.query(Form.id, Form.title, Form.description, Form.format_type)
+        .filter(Form.is_enabled == True)
+        .order_by(Form.title)
+        .all()
+    )
+
+    return [
+        {
+            "id": f.id,
+            "title": f.title,
+            "description": f.description,
+            "format_type": f.format_type.value if f.format_type else None,
+        }
+        for f in forms
+    ]
+
+
+@router.get("/by-form/{form_id}")
+def get_questions_by_form(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Retorna todas las preguntas que tienen id_form igual al form_id recibido.
+    Permite saber qué preguntas pertenecen originalmente a un formato.
+    """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No autenticado",
+        )
+
+    questions = (
+        db.query(Question)
+        .filter(Question.id_form == form_id)
+        .order_by(Question.id)
+        .all()
+    )
+
+    return questions
+
 
 @router.post("/", response_model=QuestionResponse, status_code=status.HTTP_201_CREATED)
 def create_question_endpoint(
@@ -100,6 +157,15 @@ def create_question_endpoint(
                 detail="El alias especificado no existe"
             )
 
+    # Validar que el formato exista si se especifica
+    if question.id_form:
+        form_exists = db.query(Form).filter(Form.id == question.id_form).first()
+        if not form_exists:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El formato especificado no existe"
+            )
+
     # No permitir texto duplicado (insensible a mayúsculas/acentos/espacios).
     dup = _find_duplicate_question(db, question.question_text)
     if dup:
@@ -116,7 +182,8 @@ def create_question_endpoint(
             required=question.required,
             root=question.root,
             id_category=question.id_category,
-            id_alias=question.id_alias  # ⭐ AGREGAR ESTA LÍNEA
+            id_alias=question.id_alias,
+            id_form=question.id_form,
         )
         db.add(db_question)
         db.commit()
@@ -1577,6 +1644,17 @@ def update_question_endpoint(
         question.id_alias = payload.id_alias
     elif payload.id_alias is None and "id_alias" in (payload.model_fields_set or set()):
         question.id_alias = None
+
+    if payload.id_form is not None:
+        form_exists = db.query(Form).filter(Form.id == payload.id_form).first()
+        if not form_exists:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El formato especificado no existe"
+            )
+        question.id_form = payload.id_form
+    elif "id_form" in (payload.model_fields_set or set()):
+        question.id_form = None
 
     db.commit()
     db.refresh(question)
