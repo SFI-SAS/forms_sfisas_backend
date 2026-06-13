@@ -126,7 +126,9 @@ class User(Base):
     recognition_id = Column(String(100), nullable=True, unique=True)  
     asign_bitacora = Column(Boolean, default=False, nullable=False)
     id_category = Column(BigInteger, ForeignKey('user_categories.id'), nullable=True)
-    
+    # SM-CARGO-02: fecha de creación (vigila picos de creación de usuarios, Cargo 7 Seguridad).
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
     category = relationship("UserCategory", back_populates="users")
     form_moderators = relationship('FormModerators', back_populates='user')
     forms = relationship('Form', back_populates='user')
@@ -933,6 +935,20 @@ class GenericActivityForm(Base):
     user = relationship('User', foreign_keys=[user_id])
 
 
+class AuthEvent(Base):
+    """SM-CARGO-01: eventos de autenticación para el Cargo 7 (Seguridad).
+    El backend escribe una fila en cada intento de login; ArIA solo LEE."""
+    __tablename__ = 'auth_events'
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    # login_failed | login_success | access_denied | unusual_access | overload
+    event_type = Column(String(40), nullable=False, index=True)
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    email = Column(String(255), nullable=True)
+    ip = Column(String(64), nullable=True)
+    detail = Column(Text, nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Feature "Servicios" (ex actividades genéricas) — 2026-06-04.
 # Separa "qué formatos pertenecen al servicio" (usuarios opcionales) de "quién
@@ -1052,3 +1068,5 @@ class QuestionRequestField(Base):
     alias_rel = relationship('Alias')
     created_question = relationship('Question', foreign_keys=[created_question_id])
     reviewer = relationship('User', foreign_keys=[reviewed_by])
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+

@@ -485,40 +485,11 @@ def _user_can_manage_schedules(user: User) -> bool:
         return False
 
 
-@router.delete("/schedules/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_form_schedule(
-    schedule_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Elimina una programación periódica de un formato por su id.
-
-    Permisos:
-      - admin/creator: pueden borrar cualquier schedule.
-      - resto de usuarios: solo pueden borrar schedules cuyo `user_id` es el suyo.
-    """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated",
-        )
-
-    sch = db.query(FormSchedule).filter(FormSchedule.id == schedule_id).first()
-    if sch is None:
-        raise HTTPException(status_code=404, detail="Programación no encontrada")
-
-    if not _user_can_manage_schedules(current_user) and sch.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tienes permiso para eliminar esta programación",
-        )
-
-    db.delete(sch)
-    db.commit()
-    return
-
-
+# IMPORTANTE: la ruta literal /schedules/by-form-user DEBE declararse ANTES que
+# la paramétrica /schedules/{schedule_id}. FastAPI matchea en orden de definición;
+# si {schedule_id} va primero, "by-form-user" cae ahí y falla con 422 int_parsing
+# (schedule_id='by-form-user'). Esto rompía delete_schedule_by_form_user (siempre
+# 422). Hallado por el harness de cobertura de tools de ArIA (2026-06-04).
 @router.delete("/schedules/by-form-user", status_code=status.HTTP_204_NO_CONTENT)
 def delete_form_schedule_by_form_user(
     form_id: int = Query(..., description="ID del formato"),
@@ -561,6 +532,40 @@ def delete_form_schedule_by_form_user(
         "delete_form_schedule_by_form_user: form_id=%s user_id=%s deleted=%s",
         form_id, user_id, deleted,
     )
+    return
+
+
+@router.delete("/schedules/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_form_schedule(
+    schedule_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Elimina una programación periódica de un formato por su id.
+
+    Permisos:
+      - admin/creator: pueden borrar cualquier schedule.
+      - resto de usuarios: solo pueden borrar schedules cuyo `user_id` es el suyo.
+    """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not authenticated",
+        )
+
+    sch = db.query(FormSchedule).filter(FormSchedule.id == schedule_id).first()
+    if sch is None:
+        raise HTTPException(status_code=404, detail="Programación no encontrada")
+
+    if not _user_can_manage_schedules(current_user) and sch.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para eliminar esta programación",
+        )
+
+    db.delete(sch)
+    db.commit()
     return
 
 
