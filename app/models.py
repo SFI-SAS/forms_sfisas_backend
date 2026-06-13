@@ -237,13 +237,15 @@ class Question(Base):
     root = Column(Boolean, nullable=False, default=False)
     id_category = Column(BigInteger, ForeignKey('question_categories.id'), nullable=True)
     id_alias = Column(Integer, ForeignKey("alias.id"), nullable=True, index=True)
-    
+    id_form = Column(BigInteger, ForeignKey('forms.id', ondelete='SET NULL'), nullable=True, index=True)
+
     category = relationship('QuestionCategory', back_populates='questions')
     forms = relationship('Form', secondary='form_questions', back_populates='questions')
     options = relationship('Option', back_populates='question')
     answers = relationship('Answer', back_populates='question')
     form_answers = relationship('FormAnswer', back_populates='question')
     alias = relationship('Alias', backref='questions')
+    default_form = relationship('Form', foreign_keys=[id_form])
 
 class QuestionCategory(Base):
     __tablename__ = 'question_categories'
@@ -319,11 +321,8 @@ class FormSchedule(Base):
     interval_days = Column(Integer, nullable=True)
     specific_date = Column(DateTime, nullable=True)
     status = Column(Boolean, default=True, nullable=False)
-    # Relación a Form: el servicio de responsabilidades (responsibility_service.
-    # get_user_responsibilities) accede a `schedule.form`. Sin esta relación
-    # lanzaba AttributeError ("'FormSchedule' object has no attribute 'form'").
-    # FormApproval/FormApprovalNotification/FormModerators ya la tenían.
     form = relationship('Form')
+    user = relationship('User')
 
 class FormModerators(Base):
     __tablename__ = 'form_moderators'
@@ -886,11 +885,29 @@ class GenericActivity(Base):
     description = Column(Text, nullable=True)
     created_by = Column(BigInteger, ForeignKey('users.id'), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
+
+    # ── Clasificación (opcional) ────────────────────────────────────────────
+    # La clasificación de la actividad es un valor tomado de las respuestas de
+    # una pregunta de un formato (ej: el campo "proyecto" del formato "creación
+    # de proyectos"). El admin elige formato + pregunta + valor al crear/editar.
+    # El formato de clasificación es independiente de los formatos diligenciados
+    # dentro de la actividad. SET NULL para no romper si se borra el formato o
+    # la pregunta (el valor de texto queda como respaldo).
+    classification_form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='SET NULL'), nullable=True)
+    classification_question_id = Column(BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True)
+    classification_value = Column(String(255), nullable=True)
+
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     creator = relationship('User', foreign_keys=[created_by])
+    classification_form = relationship('Form', foreign_keys=[classification_form_id])
+    classification_question = relationship('Question', foreign_keys=[classification_question_id])
+    # Diligenciadores asignados (formato↔usuario). OPCIONAL/diferido.
     form_links = relationship('GenericActivityForm', back_populates='activity', cascade='all, delete-orphan')
+    # Feature "Servicios" (2026-06-04): formatos que pertenecen al servicio,
+    # independiente de si ya tienen diligenciador. Ver GenericActivityFormLink.
+    service_form_links = relationship('GenericActivityFormLink', back_populates='activity', cascade='all, delete-orphan')
 
 
 class GenericActivityForm(Base):
@@ -930,3 +947,126 @@ class AuthEvent(Base):
     ip = Column(String(64), nullable=True)
     detail = Column(Text, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature "Servicios" (ex actividades genéricas) — 2026-06-04.
+# Separa "qué formatos pertenecen al servicio" (usuarios opcionales) de "quién
+# diligencia cada formato", agrega la pregunta clasificadora por formato y la
+# relación respuesta↔servicio. Schema: _db_changes/2026-06-04_servicios/.
+# ─────────────────────────────────────────────────────────────────────────────
+class GenericActivityFormLink(Base):
+    """Formato que pertenece a un servicio. La asignación de diligenciadores es
+    opcional/diferida (vive en generic_activity_forms). Esta tabla responde
+    "¿qué formatos tiene el servicio?" aunque aún no tengan diligenciador."""
+    __tablename__ = 'generic_activity_form_links'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    activity_id = Column(BigInteger, ForeignKey('generic_activities.id', ondelete='CASCADE'), nullable=False, index=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False, index=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('activity_id', 'form_id', name='uq_generic_activity_form_link'),
+    )
+
+    activity = relationship('GenericActivity', back_populates='service_form_links')
+    form = relationship('Form')
+
+
+class FormServiceClassification(Base):
+    """La ÚNICA pregunta (texto/select) que un formato usa para clasificar
+    servicios. 1 fila por formato (form_id es PK). La marca el creador del
+    formato al finalizar (o desde editar formato)."""
+    __tablename__ = 'form_service_classification'
+
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), primary_key=True)
+    question_id = Column(BigInteger, ForeignKey('questions.id', ondelete='CASCADE'), nullable=False, index=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    form = relationship('Form')
+    question = relationship('Question')
+
+
+class ResponseServiceLink(Base):
+    """Relación respuesta↔servicio: cuando un usuario diligencia un formato con
+    pregunta clasificadora, relaciona SU respuesta con uno o varios servicios.
+    Reemplaza la "clasificación de la actividad" (que era a nivel de actividad);
+    ahora es a nivel de respuesta."""
+    __tablename__ = 'response_service_links'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    response_id = Column(BigInteger, ForeignKey('responses.id', ondelete='CASCADE'), nullable=False, index=True)
+    activity_id = Column(BigInteger, ForeignKey('generic_activities.id', ondelete='CASCADE'), nullable=False, index=True)
+    # Pregunta clasificadora usada (SET NULL si se borra; el valor queda de respaldo).
+    question_id = Column(BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True)
+    classification_value = Column(String(255), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('response_id', 'activity_id', name='uq_response_service_link'),
+    )
+
+    response = relationship('Response')
+    activity = relationship('GenericActivity')
+    question = relationship('Question')
+
+
+class QuestionRequest(Base):
+    """Solicitud de creacion de campo enviada por un creator al admin."""
+    __tablename__ = 'question_requests'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    requester_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False, index=True)
+    question_text = Column(String(255), nullable=False)
+    question_type = Column(String(50), nullable=False, default='text')
+    description = Column(Text, nullable=True)
+    required = Column(Boolean, nullable=False, default=True)
+    id_category = Column(BigInteger, ForeignKey('question_categories.id', ondelete='SET NULL'), nullable=True)
+    id_alias = Column(BigInteger, ForeignKey('alias.id', ondelete='SET NULL'), nullable=True)
+    requester_message = Column(Text, nullable=True)
+    status = Column(String(20), nullable=False, default='pending', index=True)
+    created_question_id = Column(BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True)
+    reviewed_by = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    requester = relationship('User', foreign_keys=[requester_id])
+    reviewer = relationship('User', foreign_keys=[reviewed_by])
+    form = relationship('Form')
+    category = relationship('QuestionCategory')
+    alias_rel = relationship('Alias')
+    created_question = relationship('Question', foreign_keys=[created_question_id])
+    fields = relationship('QuestionRequestField', back_populates='request', cascade='all, delete-orphan')
+
+
+class QuestionRequestField(Base):
+    """Campo individual dentro de una solicitud de creacion."""
+    __tablename__ = 'question_request_fields'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    request_id = Column(BigInteger, ForeignKey('question_requests.id', ondelete='CASCADE'), nullable=False, index=True)
+    question_text = Column(String(255), nullable=False)
+    question_type = Column(String(50), nullable=False, default='text')
+    description = Column(Text, nullable=True)
+    required = Column(Boolean, nullable=False, default=True)
+    id_category = Column(BigInteger, ForeignKey('question_categories.id', ondelete='SET NULL'), nullable=True)
+    id_alias = Column(BigInteger, ForeignKey('alias.id', ondelete='SET NULL'), nullable=True)
+    status = Column(String(20), nullable=False, default='pending', index=True)
+    created_question_id = Column(BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True)
+    reviewed_by = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    request = relationship('QuestionRequest', back_populates='fields')
+    category = relationship('QuestionCategory')
+    alias_rel = relationship('Alias')
+    created_question = relationship('Question', foreign_keys=[created_question_id])
+    reviewer = relationship('User', foreign_keys=[reviewed_by])
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+

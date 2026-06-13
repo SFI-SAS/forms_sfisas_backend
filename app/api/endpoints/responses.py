@@ -9,12 +9,12 @@ from sqlalchemy import inspect
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional, Union
 from app.api.controllers.mail import send_reconsideration_email
-from app.crud import _extract_style_config, _serialize_answers, crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, encrypt_object, finalizar_conversacion_completa, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, get_palabras_clave_by_form, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
+from app.crud import _extract_style_config, _serialize_answers, crear_palabras_clave_service, create_answer_in_db, create_bitacora_log_simple, eliminar_evento_completo, encrypt_object, finalizar_conversacion_completa, generate_unique_serial, get_all_bitacora_eventos, get_all_bitacora_formatos, get_bitacora_eventos_by_user, get_palabras_clave_by_form, obtener_conversacion_completa, post_create_response, process_responses_with_history, reabrir_evento_service, response_bitacora_log_simple, send_form_action_emails, send_mails_to_next_supporters
 from app.api.controllers.pdf_form_exporter import generate_form_pdf
 from app.database import get_db
 from app.schemas import UpdateMathOperationRequest, AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, GetQuestionTextsRequest, GetQuestionTextsResponse, PalabrasClaveCreate, PalabrasClaveOut, PalabrasClaveUpdate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, QuestionTextValue, RegisfacialAnswerResponse, RelationOperationMathCreate, RelationOperationMathOut, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
-from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, BitacoraLogsSimple, ClasificacionBitacoraRelacion, Form, FormAnswerEditor, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionType, RelationBitacora, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User
-from app.core.security import get_current_user
+from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, BitacoraLogsSimple, ClasificacionBitacoraRelacion, Form, FormAnswerEditor, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionType, RelationBitacora, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, UserType
+from app.core.security import get_current_user, require_roles
 from typing import Dict
 from sqlalchemy import delete, cast, Text as SAText
 from app.redis_client import redis_client
@@ -499,7 +499,7 @@ async def download_file(
 def get_table_columns(
     table_name: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     if current_user is None:
         raise HTTPException(
@@ -604,6 +604,18 @@ def update_answer_text(payload: UpdateAnswerText, db: Session = Depends(get_db),
 
         if not answer:
             raise HTTPException(status_code=404, detail="Respuesta no encontrada")
+
+        # Control de acceso: solo el dueño de la respuesta o admin/creator pueden
+        # editar el texto (evita IDOR de manipulación de respuestas ajenas).
+        response = db.query(Response).filter(Response.id == answer.response_id).first()
+        if response is not None and not (
+            response.user_id == current_user.id
+            or current_user.user_type.name in ("admin", "creator")
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permiso para modificar esta respuesta",
+            )
 
         answer.answer_text = payload.answer_text
         db.commit()
@@ -1210,9 +1222,20 @@ def update_answer_text(data: UpdateAnswertHistory, db: Session = Depends(get_db)
             detail="User does not have permission to get options"
         )
     answer = db.query(Answer).filter(Answer.id == data.id_answer).first()
-    
+
     if not answer:
         raise HTTPException(status_code=404, detail="Respuesta no encontrada")
+
+    # Control de acceso: solo el dueño o admin/creator (evita IDOR).
+    response = db.query(Response).filter(Response.id == answer.response_id).first()
+    if response is not None and not (
+        response.user_id == current_user.id
+        or current_user.user_type.name in ("admin", "creator")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para modificar esta respuesta",
+        )
 
     answer.answer_text = data.answer_text
     db.commit()
@@ -1277,6 +1300,7 @@ async def delete_answer(
 async def get_response_with_complete_answers_and_history(
     response_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Obtiene todas las respuestas actuales y el historial de cambios de un `response` específico.
@@ -1294,7 +1318,17 @@ async def get_response_with_complete_answers_and_history(
 
     Errores:
     - 404: Si el `response` no existe.
+    - 403: Si el usuario no tiene permiso para ver esta respuesta.
     """
+
+    # Control de acceso a nivel de fila: dueño, admin/creator, aprobador asignado
+    # o consultor con visibilidad. Evita IDOR (leer respuestas e historial ajenos).
+    from app.core.permissions import can_user_view_response
+    if not can_user_view_response(current_user, response_id, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para ver esta respuesta",
+        )
 
     # Buscar el response con sus respuestas actuales
     response = db.query(Response).options(
@@ -1645,6 +1679,16 @@ async def delete_response(
                 detail=f"Response with id {response_id} not found"
             )
 
+        # Control de acceso: solo el dueño o admin/creator pueden eliminar la
+        # respuesta (evita IDOR de borrado destructivo de respuestas ajenas).
+        is_owner = response.user_id == current_user.id
+        is_admin_or_creator = current_user.user_type.name in ("admin", "creator")
+        if not (is_owner or is_admin_or_creator):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permiso para eliminar esta respuesta",
+            )
+
         # 1. Obtener IDs de las respuestas (Answer)
         answer_ids = db.query(Answer.id).filter(Answer.response_id == response_id).all()
         answer_ids_list = [answer.id for answer in answer_ids]
@@ -1968,6 +2012,25 @@ def reabrir_evento(evento_id: int, db: Session = Depends(get_db), user: User = D
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al reabrir el evento: {e}")
+
+
+@router.delete("/eventos/{evento_id}", summary="Eliminar un evento y toda su conversación")
+def eliminar_evento(evento_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Elimina un evento de bitácora junto con todas sus respuestas (el hilo
+    completo que cuelga de él). SOLO el administrador puede eliminar eventos."""
+    if str(user.user_type.value) != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo el administrador puede eliminar eventos."
+        )
+    try:
+        borrados = eliminar_evento_completo(db, evento_id)
+        return {"message": "🗑️ Evento eliminado correctamente", "borrados": borrados}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al eliminar el evento: {e}")
 
 
 @router.post("/eventos/{evento_id}/response", summary="Crear una respuesta a una bitácora simple")

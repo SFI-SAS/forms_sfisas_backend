@@ -1588,7 +1588,8 @@ def get_user_forms_summary(
 def get_completed_forms_for_user(
     page: int = 1,
     page_size: int = 30,
-    db: Session = Depends(get_db), 
+    activity_id: int = None,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -1615,8 +1616,8 @@ def get_completed_forms_for_user(
     if page < 1:
         page = 1
 
-    completed_forms_data = fetch_completed_forms_by_user(db, current_user.id, page, page_size)
-    
+    completed_forms_data = fetch_completed_forms_by_user(db, current_user.id, page, page_size, activity_id)
+
     if not completed_forms_data["items"]:
         raise HTTPException(status_code=404, detail="No completed forms found for this user")
     
@@ -1864,7 +1865,7 @@ def download_questions_answers_excel(
 def download_questions_answers_excel_all_users(
     form_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
 
     """
@@ -2300,7 +2301,7 @@ def get_form_schedules(form_id: int, user_id: int, db: Session = Depends(get_db)
 def download_all_user_responses_excel(
     form_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     """
     Descarga TODAS las respuestas de TODOS los usuarios para un formulario.
@@ -3951,8 +3952,29 @@ def update_form_basic_info(
 
     # Actualizar los campos proporcionados
     if form_data.title is not None:
-        form.title = form_data.title
-    
+        new_title = form_data.title.strip()
+        if not new_title:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El título del formato no puede estar vacío",
+            )
+        # Nombre único: ningún OTRO formato puede tener el mismo título
+        # (case-insensitive, sin espacios sobrantes).
+        clash = (
+            db.query(Form.id)
+            .filter(
+                func.lower(func.trim(Form.title)) == new_title.lower(),
+                Form.id != form_id,
+            )
+            .first()
+        )
+        if clash:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Ya existe otro formato con ese nombre",
+            )
+        form.title = new_title
+
     if form_data.description is not None:
         form.description = form_data.description
     

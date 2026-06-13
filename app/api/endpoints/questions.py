@@ -3,6 +3,7 @@
 #
 
 import logging
+import unicodedata
 from collections import defaultdict
 import hashlib
 from datetime import datetime
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 from fastapi.params import Query
 from pydantic import BaseModel, Field
 from pymysql import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from app.database import get_db
 from app.models import Answer, Response, Form, Alias, FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationQuestionRule, User, UserType
@@ -22,7 +23,120 @@ from app.core.security import get_current_user, require_roles
 
 router = APIRouter()
 
-# En: app/routes/questions.py
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Unicidad de question_text (insensible a mayúsculas, acentos y espacios).
+# No se permite crear/editar una pregunta cuyo texto ya exista. No hay constraint
+# en BD (existen duplicados históricos); la regla se aplica solo a NUEVAS
+# colisiones a nivel de aplicación.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _normalize_question_text(text: Optional[str]) -> str:
+    """Normaliza para comparar unicidad: minúsculas, sin acentos, espacios
+    colapsados/recortados."""
+    if not text:
+        return ""
+    t = unicodedata.normalize("NFKD", text)
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    return " ".join(t.lower().split())
+
+
+def _find_duplicate_question(db: Session, text: str, exclude_id: Optional[int] = None):
+    """Devuelve (id, texto) de la primera pregunta con texto normalizado idéntico,
+    o None. Compara en Python para honrar la insensibilidad a acentos sin depender
+    de extensiones de Postgres."""
+    norm = _normalize_question_text(text)
+    if not norm:
+        return None
+    q = db.query(Question.id, Question.question_text)
+    if exclude_id is not None:
+        q = q.filter(Question.id != exclude_id)
+    for qid, qtext in q.all():
+        if _normalize_question_text(qtext) == norm:
+            return (qid, qtext)
+    return None
+
+
+@router.get("/check-text")
+def check_question_text(
+    question_text: str = Query(..., min_length=1),
+    exclude_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Indica si ya existe una pregunta con el mismo texto (comparación insensible
+    a mayúsculas, acentos y espacios). Para validación en vivo en el frontend.
+    `exclude_id` excluye la propia pregunta al editar. Debe ir ANTES de cualquier
+    ruta GET `/{question_id}` para no colisionar con el parámetro de ruta."""
+    dup = _find_duplicate_question(db, question_text, exclude_id)
+    if dup:
+        return {"exists": True, "existing_id": dup[0], "existing_text": dup[1]}
+    return {"exists": False}
+
+
+@router.get("/forms/available")
+def get_available_forms(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Retorna la lista de formatos disponibles para asignar a una pregunta.
+    Usado en el modal de selección de formato al crear una pregunta.
+    """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No autenticado",
+        )
+
+    forms = (
+        db.query(Form.id, Form.title, Form.description, Form.format_type)
+        .filter(Form.is_enabled == True)
+        .order_by(Form.title)
+        .all()
+    )
+
+    return [
+        {
+            "id": f.id,
+            "title": f.title,
+            "description": f.description,
+            "format_type": f.format_type.value if f.format_type else None,
+        }
+        for f in forms
+    ]
+
+
+@router.get("/by-form/{form_id}")
+def get_questions_by_form(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Retorna todas las preguntas que tienen id_form igual al form_id recibido.
+    Permite saber qué preguntas pertenecen originalmente a un formato.
+    """
+    if current_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No autenticado",
+        )
+
+    questions = (
+        db.query(Question)
+        .options(
+            joinedload(Question.category),
+            joinedload(Question.options),
+            joinedload(Question.alias),
+        )
+        .filter(Question.id_form == form_id)
+        .order_by(Question.id)
+        .all()
+    )
+
+    return questions
+
 
 @router.post("/", response_model=QuestionResponse, status_code=status.HTTP_201_CREATED)
 def create_question_endpoint(
@@ -47,7 +161,24 @@ def create_question_endpoint(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="El alias especificado no existe"
             )
-    
+
+    # Validar que el formato exista si se especifica
+    if question.id_form:
+        form_exists = db.query(Form).filter(Form.id == question.id_form).first()
+        if not form_exists:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El formato especificado no existe"
+            )
+
+    # No permitir texto duplicado (insensible a mayúsculas/acentos/espacios).
+    dup = _find_duplicate_question(db, question.question_text)
+    if dup:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Ya existe una pregunta con ese texto (#{dup[0]}). No se permiten preguntas duplicadas."
+        )
+
     try:
         db_question = Question(
             question_text=question.question_text,
@@ -56,7 +187,8 @@ def create_question_endpoint(
             required=question.required,
             root=question.root,
             id_category=question.id_category,
-            id_alias=question.id_alias  # ⭐ AGREGAR ESTA LÍNEA
+            id_alias=question.id_alias,
+            id_form=question.id_form,
         )
         db.add(db_question)
         db.commit()
@@ -123,6 +255,20 @@ def update_question_endpoint(
     db_question = get_question_by_id(db, question_id)
     if not db_question:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found")
+
+    # No permitir texto duplicado SOLO si el texto realmente cambia. Si se deja
+    # igual (incluido un duplicado histórico), se permite guardar sin tocarlo.
+    if (
+        question.question_text is not None
+        and _normalize_question_text(question.question_text)
+        != _normalize_question_text(db_question.question_text)
+    ):
+        dup = _find_duplicate_question(db, question.question_text, exclude_id=question_id)
+        if dup:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Ya existe otra pregunta con ese texto (#{dup[0]}). No se permiten preguntas duplicadas."
+            )
 
     return update_question(db=db, question_id=question_id, question=question)
 
@@ -1476,6 +1622,20 @@ def update_question_endpoint(
                 detail=f"No se puede cambiar el tipo: vinculada a {linked_count} formato(s)"
             )
 
+    # 2b. No permitir texto duplicado SOLO si el texto realmente cambia. Dejarlo
+    # igual (incluido un duplicado histórico) se permite sin tocarlo.
+    if (
+        payload.question_text is not None
+        and _normalize_question_text(payload.question_text)
+        != _normalize_question_text(question.question_text)
+    ):
+        dup = _find_duplicate_question(db, payload.question_text, exclude_id=question_id)
+        if dup:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Ya existe otra pregunta con ese texto (#{dup[0]}). No se permiten preguntas duplicadas."
+            )
+
     # 3. Aplicar los campos del payload
     if payload.question_text is not None:
         question.question_text = payload.question_text.strip()
@@ -1489,6 +1649,17 @@ def update_question_endpoint(
         question.id_alias = payload.id_alias
     elif payload.id_alias is None and "id_alias" in (payload.model_fields_set or set()):
         question.id_alias = None
+
+    if payload.id_form is not None:
+        form_exists = db.query(Form).filter(Form.id == payload.id_form).first()
+        if not form_exists:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El formato especificado no existe"
+            )
+        question.id_form = payload.id_form
+    elif "id_form" in (payload.model_fields_set or set()):
+        question.id_form = None
 
     db.commit()
     db.refresh(question)

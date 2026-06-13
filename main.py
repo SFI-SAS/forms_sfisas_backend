@@ -19,7 +19,7 @@ from app.database import SessionLocal, engine
 from app.models import Base, EmailConfig
 from app.api.endpoints import (
     alias, approvers, consultants, download_template, home_dashboard, integrations, list_form, pdf_router, profiles, projects, responses,
-    responsibilitytransfer, users, forms, auth, questions, generic_activities, security
+    responsibilitytransfer, users, forms, auth, questions, generic_activities, security, question_requests
 )
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -32,6 +32,33 @@ app = FastAPI(
     description="API para gestión de formularios",
     openapi_version="3.1.0"
 )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Manejador global de errores (M-4): para respuestas 5xx NO se expone el detalle
+# interno al cliente (los `detail=str(e)` filtran esquema de BD, rutas y driver).
+# Se loguea el detalle real en el servidor y se devuelve un mensaje genérico.
+# Los 4xx conservan su mensaje (el frontend los necesita) delegando al manejador
+# por defecto de FastAPI. Cubre TODOS los endpoints sin editar su código.
+# ─────────────────────────────────────────────────────────────────────────────
+from starlette.exceptions import HTTPException as _StarletteHTTPException
+from starlette.requests import Request as _Request
+from fastapi.exception_handlers import http_exception_handler as _default_http_exception_handler
+
+
+@app.exception_handler(_StarletteHTTPException)
+async def _sanitized_http_exception_handler(request: _Request, exc: _StarletteHTTPException):
+    if exc.status_code >= 500:
+        logger.error(
+            "5xx en %s %s -> %s: %s",
+            request.method, request.url.path, exc.status_code, exc.detail,
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": "Error interno del servidor."},
+            headers=getattr(exc, "headers", None),
+        )
+    return await _default_http_exception_handler(request, exc)
 
 
 # 1. CORS debe ir primero
@@ -126,6 +153,7 @@ app.include_router(generic_activities.router, prefix="/generic-activities", tags
 app.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
 app.include_router(home_dashboard.router, prefix="/home", tags=["home"])
 app.include_router(security.router, prefix="/security", tags=["security"])
+app.include_router(question_requests.router, prefix="/question-requests", tags=["Question Requests"])
 
 # ========================================
 # CREAR TABLAS

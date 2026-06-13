@@ -30,9 +30,13 @@ if len(SECRET_KEY) < 32:
 ALGORITHM = "HS256"
 
 # H-BW-005: tiempos de vida calibrados.
-#   - Access token: corto (30 min). Reduce la ventana de uso si el token es robado.
+#   - Access token: 120 min. Subido desde 30 min (04-jun-2026, pedido de dvertel):
+#     usuarios reportaban "sesión cerrada mientras trabajaba". El refresh
+#     transparente (axios + wrapper de fetch en el frontend) cubre la renovación,
+#     pero un TTL más holgado reduce el ruido en sesiones largas de diligenciamiento.
+#     OJO: este valor era parte de la decisión de auditoría H-BW-005 — avisar a Andrés.
 #   - Refresh token: largo (7 días), en cookie HttpOnly. Solo se envía a /auth/refresh.
-ACCESS_TOKEN_MINUTES = 30
+ACCESS_TOKEN_MINUTES = 120
 REFRESH_TOKEN_DAYS   = 7
 
 # Define el modelo de datos para el payload del token

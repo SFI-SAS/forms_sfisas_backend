@@ -113,11 +113,12 @@ class QuestionBaseAll(BaseModel):
     id_alias: Optional[int] = Field(None, example=1)
     
 class QuestionCreate(QuestionBase):
-    pass # Allow creation without assignment
+    id_form: Optional[int] = None
 
 class QuestionResponse(QuestionBaseAll):
     id: int
-    
+    id_form: Optional[int] = None
+
     class Config:
         from_attributes = True
 
@@ -131,6 +132,7 @@ class QuestionOptions(QuestionBase):
 class QuestionUpdate(BaseModel):
     question_text: Optional[str] = None
     question_type: Optional[str] = None
+    id_form: Optional[int] = None
 
 class GetFormBase(BaseModel):
     id: int
@@ -759,6 +761,7 @@ class QuestionWithCategory(BaseModel):
     forms: List[FormBasicInfo] = []
     id_alias: Optional[int] = None
     alias: Optional[AliasSchema] = None
+    id_form: Optional[int] = None
     class Config:
         from_attributes = True
 
@@ -1427,6 +1430,7 @@ class QuestionUpdatePayload(BaseModel):
     question_type: Optional[str] = None
     id_category: Optional[int] = None
     id_alias: Optional[int] = None
+    id_form: Optional[int] = None
 
 
 # ===================== CONSULTANTS =====================
@@ -1621,12 +1625,24 @@ class GenericActivityCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=150)
     description: Optional[str] = None
     items: List[GenericActivityFormItem] = []
+    # Feature "Servicios": formatos del servicio (la asignación de usuarios es
+    # OPCIONAL/diferida). Pueden venir solo aquí, sin items.
+    form_ids: List[int] = []
+    # Clasificación opcional: formato + pregunta + valor elegido.
+    classification_form_id: Optional[int] = None
+    classification_question_id: Optional[int] = None
+    classification_value: Optional[str] = Field(None, max_length=255)
 
 
 class GenericActivityUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=150)
     description: Optional[str] = None
     is_active: Optional[bool] = None
+    # Clasificación: enviar los 3 juntos para fijarla; enviar value="" (o null
+    # en los tres) para limpiarla. Ver lógica del endpoint.
+    classification_form_id: Optional[int] = None
+    classification_question_id: Optional[int] = None
+    classification_value: Optional[str] = Field(None, max_length=255)
 
 
 class GenericActivityFormsUpdate(BaseModel):
@@ -1648,6 +1664,16 @@ class GenericActivityFormOut(BaseModel):
         from_attributes = True
 
 
+class GenericActivityFormLinkOut(BaseModel):
+    """Un formato que pertenece al servicio (sin/independiente de diligenciador)."""
+    id: int
+    form_id: int
+    form_title: str
+
+    class Config:
+        from_attributes = True
+
+
 class GenericActivityOut(BaseModel):
     id: int
     name: str
@@ -1656,7 +1682,15 @@ class GenericActivityOut(BaseModel):
     created_by: Optional[int] = None
     created_at: datetime
     updated_at: datetime
+    # Formatos del servicio (feature "Servicios"). Independiente de items.
+    forms: List[GenericActivityFormLinkOut] = []
     items: List[GenericActivityFormOut] = []
+    # Clasificación
+    classification_form_id: Optional[int] = None
+    classification_form_title: Optional[str] = None
+    classification_question_id: Optional[int] = None
+    classification_question_text: Optional[str] = None
+    classification_value: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -1671,6 +1705,7 @@ class GenericActivitySummaryOut(BaseModel):
     assignment_count: int  # total de asignaciones (filas formato↔usuario)
     created_at: datetime
     updated_at: datetime
+    classification_value: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -1682,9 +1717,83 @@ class GenericActivityMineOut(BaseModel):
     name: str
     description: Optional[str] = None
     form_count: int  # formatos asignados a ESTE usuario en la actividad
+    classification_value: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature "Servicios" — pregunta clasificadora por formato + relación
+# respuesta↔servicio + selección de servicios al diligenciar.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ClassifiableQuestionOut(BaseModel):
+    """Pregunta texto/select candidata a clasificar servicios."""
+    question_id: int
+    question_text: str
+    question_type: str
+
+
+class FormServiceClassificationOut(BaseModel):
+    """Pregunta clasificadora actual de un formato (vacía si no hay)."""
+    form_id: int
+    question_id: Optional[int] = None
+    question_text: Optional[str] = None
+
+
+class FormServiceClassificationSet(BaseModel):
+    """Fija (question_id) o limpia (question_id=null) la pregunta clasificadora."""
+    question_id: Optional[int] = None
+
+
+class ServiceSelectableOut(BaseModel):
+    """Servicio activo (id+nombre) para el modal de relación al diligenciar."""
+    id: int
+    name: str
+
+
+class ResponseServiceLinkCreate(BaseModel):
+    """Relaciona la respuesta con un servicio. classification_value es el valor
+    respondido en la pregunta clasificadora (respaldo)."""
+    activity_id: int
+    question_id: Optional[int] = None
+    classification_value: Optional[str] = Field(None, max_length=255)
+
+
+class ResponseServiceLinkOut(BaseModel):
+    id: int
+    response_id: int
+    activity_id: int
+    activity_name: str
+    question_id: Optional[int] = None
+    classification_value: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ResponseServiceLinkDetailOut(BaseModel):
+    """Una respuesta relacionada con el servicio al diligenciar (clasificación
+    a nivel de respuesta). Para mostrarla en el apartado de Servicios."""
+    response_id: int
+    form_id: int
+    form_title: str
+    user_name: str
+    classification_value: Optional[str] = None
+    submitted_at: Optional[datetime] = None
+
+
+class ServiceFormLinksAdd(BaseModel):
+    """Agrega formatos a un servicio existente (additivo)."""
+    form_ids: List[int]
+
+
+class ServiceAssignmentsAdd(BaseModel):
+    """Asigna diligenciadores a un formato del servicio (additivo)."""
+    form_id: int
+    user_ids: List[int]
+    profile_id: Optional[int] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

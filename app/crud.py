@@ -282,6 +282,19 @@ def get_users(db: Session, skip: int = 0, limit: int = 10):
     return db.query(User).offset(skip).limit(limit).all()
 
 def create_form(db: Session, form: FormBaseUser, user_id: int):
+    # Nombre único: no se permiten títulos de formato repetidos
+    # (comparación sin distinguir mayúsculas ni espacios sobrantes).
+    title_clean = (form.title or "").strip()
+    if not title_clean:
+        raise HTTPException(status_code=400, detail="El título del formato es obligatorio")
+    name_taken = (
+        db.query(Form.id)
+        .filter(func.lower(func.trim(Form.title)) == title_clean.lower())
+        .first()
+    )
+    if name_taken:
+        raise HTTPException(status_code=400, detail="Ya existe un formato con ese nombre")
+
     try:
         existing_users = db.query(User.id).filter(User.id.in_(form.assign_user)).all()
         if len(existing_users) != len(form.assign_user):
@@ -325,6 +338,11 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
         }
         return response
 
+    except HTTPException:
+        # Errores de validación deliberados (nombre duplicado, usuarios
+        # inexistentes) deben propagarse con su status real, no como 500.
+        db.rollback()
+        raise
     except IntegrityError as e:
         db.rollback()
         raise HTTPException(status_code=400, detail="Error al crear el formulario")
@@ -1385,6 +1403,63 @@ def fetch_all_users(db: Session):
         }
         for r in results
     ]
+
+
+def fetch_users_selectable(db: Session, include_pii: bool = False):
+    """
+    Proyección liviana de usuarios para selectores (M-2).
+
+    Devuelve siempre campos NO sensibles (`id`, `name`, `nickname`, `user_type`,
+    `asign_bitacora`, `category`). La PII (`num_document`, `email`, `telephone`)
+    solo se incluye cuando `include_pii=True`, es decir cuando el que consulta es
+    `admin`/`creator`. Un usuario normal nunca recibe la cédula/correo/teléfono de
+    los demás, independientemente de la pantalla desde la que llame.
+    """
+    results = db.query(
+        User.id,
+        User.name,
+        User.nickname,
+        User.user_type,
+        User.asign_bitacora,
+        User.num_document,
+        User.email,
+        User.telephone,
+        User.id_category,
+        UserCategory.id.label('category_id'),
+        UserCategory.name.label('category_name')
+    ).outerjoin(
+        UserCategory, User.id_category == UserCategory.id
+    ).all()
+
+    if not results:
+        raise HTTPException(status_code=404, detail="No se encontraron usuarios")
+
+    def to_dict(r):
+        data = {
+            "id": r.id,
+            "name": r.name,
+            "nickname": r.nickname,
+            "user_type": r.user_type.value,
+            "asign_bitacora": r.asign_bitacora,
+            "category": {
+                "id": r.category_id,
+                "name": r.category_name
+            } if r.category_id else None,
+        }
+        if include_pii:
+            data["num_document"] = r.num_document
+            data["email"] = r.email
+            data["telephone"] = r.telephone
+        else:
+            # Campos presentes pero vacíos para no romper componentes que los leen.
+            data["num_document"] = None
+            data["email"] = None
+            data["telephone"] = None
+        return data
+
+    return [to_dict(r) for r in results]
+
+
 def get_response_id(db: Session, form_id: int, user_id: int):
     """Obtiene el ID de Response basado en form_id y user_id."""
     stmt = select(Response.id).where(Response.form_id == form_id, Response.user_id == user_id)
@@ -1856,7 +1931,7 @@ def get_unrelated_questions(db: Session, form_id: int):
     return unrelated_questions
 
 
-def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int = 30):
+def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int = 30, activity_id: int = None):
     """
     Recupera los formularios que el usuario ha completado con paginación.
 
@@ -1864,18 +1939,31 @@ def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page
     :param user_id: ID del usuario.
     :param page: Número de página.
     :param page_size: Cantidad de registros por página.
+    :param activity_id: Si se indica, limita a los formatos asignados al usuario
+        en esa actividad genérica (mismo criterio que el filtro de diligenciar).
     :return: Diccionario con items paginados y metadata.
     """
     # Calcular offset
     offset = (page - 1) * page_size
-    
+
     # Query base
     base_query = (
         db.query(Form)
         .join(Response)  # Unión entre formularios y respuestas
         .filter(Response.user_id == user_id)  # Filtrar por el usuario
-        .distinct()  # Evitar duplicados si hay múltiples respuestas a un mismo formulario
     )
+
+    # Filtro opcional por actividad genérica: solo formatos asignados a ESTE
+    # usuario dentro de la actividad.
+    if activity_id is not None:
+        base_query = base_query.join(
+            GenericActivityForm, GenericActivityForm.form_id == Form.id
+        ).filter(
+            GenericActivityForm.activity_id == activity_id,
+            GenericActivityForm.user_id == user_id,
+        )
+
+    base_query = base_query.distinct()  # Evitar duplicados si hay múltiples respuestas
     
     # Contar total de registros
     total_count = base_query.count()
@@ -7239,6 +7327,33 @@ def obtener_conversacion_completa(db: Session, evento_id: int):
         }
 
     return build_tree(evento)
+
+
+def eliminar_evento_completo(db: Session, evento_id: int) -> int:
+    """Elimina un evento de bitácora y TODAS sus respuestas (el árbol de la
+    conversación que cuelga de ese evento). Borra de las hojas hacia la raíz
+    para no violar la FK self-referencial. Devuelve cuántos eventos se borraron."""
+    evento = db.query(BitacoraLogsSimple).filter(BitacoraLogsSimple.id == evento_id).first()
+    if not evento:
+        raise ValueError("Evento no encontrado")
+
+    borrados = 0
+
+    def _borrar_subarbol(eid: int):
+        nonlocal borrados
+        hijos = (
+            db.query(BitacoraLogsSimple.id)
+            .filter(BitacoraLogsSimple.evento_responde_id == eid)
+            .all()
+        )
+        for (hid,) in hijos:
+            _borrar_subarbol(hid)
+        db.query(BitacoraLogsSimple).filter(BitacoraLogsSimple.id == eid).delete()
+        borrados += 1
+
+    _borrar_subarbol(evento_id)
+    db.commit()
+    return borrados
 
 
 def get_palabras_clave_by_form(db: Session, form_id: int):
