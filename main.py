@@ -19,7 +19,7 @@ from app.database import SessionLocal, engine
 from app.models import Base, EmailConfig
 from app.api.endpoints import (
     alias, approvers, consultants, download_template, home_dashboard, integrations, list_form, pdf_router, profiles, projects, responses,
-    responsibilitytransfer, users, forms, auth, questions, generic_activities, question_requests
+    responsibilitytransfer, users, forms, auth, questions, generic_activities, question_requests, security
 )
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -153,6 +153,7 @@ app.include_router(generic_activities.router, prefix="/generic-activities", tags
 app.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
 app.include_router(home_dashboard.router, prefix="/home", tags=["home"])
 app.include_router(question_requests.router, prefix="/question-requests", tags=["Question Requests"])
+app.include_router(security.router, prefix="/security", tags=["security"])
 
 # ========================================
 # CREAR TABLAS
