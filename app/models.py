@@ -995,3 +995,60 @@ class ResponseServiceLink(Base):
     response = relationship('Response')
     activity = relationship('GenericActivity')
     question = relationship('Question')
+
+
+class QuestionRequest(Base):
+    """Solicitud de creacion de campo enviada por un creator al admin."""
+    __tablename__ = 'question_requests'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    requester_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False, index=True)
+    question_text = Column(String(255), nullable=False)
+    question_type = Column(String(50), nullable=False, default='text')
+    description = Column(Text, nullable=True)
+    required = Column(Boolean, nullable=False, default=True)
+    id_category = Column(BigInteger, ForeignKey('question_categories.id', ondelete='SET NULL'), nullable=True)
+    id_alias = Column(BigInteger, ForeignKey('alias.id', ondelete='SET NULL'), nullable=True)
+    requester_message = Column(Text, nullable=True)
+    status = Column(String(20), nullable=False, default='pending', index=True)
+    created_question_id = Column(BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True)
+    reviewed_by = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    requester = relationship('User', foreign_keys=[requester_id])
+    reviewer = relationship('User', foreign_keys=[reviewed_by])
+    form = relationship('Form')
+    category = relationship('QuestionCategory')
+    alias_rel = relationship('Alias')
+    created_question = relationship('Question', foreign_keys=[created_question_id])
+    fields = relationship('QuestionRequestField', back_populates='request', cascade='all, delete-orphan')
+
+
+class QuestionRequestField(Base):
+    """Campo individual dentro de una solicitud de creacion."""
+    __tablename__ = 'question_request_fields'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    request_id = Column(BigInteger, ForeignKey('question_requests.id', ondelete='CASCADE'), nullable=False, index=True)
+    question_text = Column(String(255), nullable=False)
+    question_type = Column(String(50), nullable=False, default='text')
+    description = Column(Text, nullable=True)
+    required = Column(Boolean, nullable=False, default=True)
+    id_category = Column(BigInteger, ForeignKey('question_categories.id', ondelete='SET NULL'), nullable=True)
+    id_alias = Column(BigInteger, ForeignKey('alias.id', ondelete='SET NULL'), nullable=True)
+    status = Column(String(20), nullable=False, default='pending', index=True)
+    created_question_id = Column(BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True)
+    reviewed_by = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    request = relationship('QuestionRequest', back_populates='fields')
+    category = relationship('QuestionCategory')
+    alias_rel = relationship('Alias')
+    created_question = relationship('Question', foreign_keys=[created_question_id])
+    reviewer = relationship('User', foreign_keys=[reviewed_by])
