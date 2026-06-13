@@ -1837,3 +1837,52 @@ async def update_approval_requirement(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error al actualizar requisito de aprobación: {str(e)}"
         )
+
+
+@router.get("/pending-responses")
+def list_pending_responses(
+    approver_user_id: str = "all",
+    limit: int = 500,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """SM-CARGO-03 · Respuestas que esperan aprobación, con su fecha de envío
+    (antigüedad). Lo consume el Cargo 4 (Seguimiento) para detectar cadenas
+    estancadas. ArIA solo LEE. `approver_user_id='all'` = toda la cola (admin)."""
+    is_admin = current_user.user_type in (UserType.admin, UserType.creator)
+    limit = max(1, min(int(limit), 2000))
+
+    q = (
+        db.query(ResponseApproval, Response, Form.title)
+        .join(Response, ResponseApproval.response_id == Response.id)
+        .join(Form, Response.form_id == Form.id)
+        .filter(ResponseApproval.status == ApprovalStatus.pendiente)
+    )
+
+    if approver_user_id == "all":
+        if not is_admin:
+            q = q.filter(ResponseApproval.user_id == current_user.id)
+    else:
+        try:
+            uid = int(approver_user_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="approver_user_id debe ser un id o 'all'")
+        if not is_admin and uid != current_user.id:
+            raise HTTPException(status_code=403, detail="No podés ver la cola de otro aprobador")
+        q = q.filter(ResponseApproval.user_id == uid)
+
+    rows = q.order_by(Response.submitted_at.asc()).limit(limit).all()
+    return {
+        "data": [
+            {
+                "response_id": ra.response_id,
+                "form_id": resp.form_id,
+                "form_name": form_title,
+                "submitted_at": resp.submitted_at.isoformat() if resp.submitted_at else None,
+                "approver_user_id": ra.user_id,
+                "current_step": ra.sequence_number,
+                "status": "pending",
+            }
+            for ra, resp, form_title in rows
+        ]
+    }
