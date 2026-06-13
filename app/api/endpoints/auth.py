@@ -17,7 +17,26 @@ from app.core.security import (
 )
 from app.crud import get_user_by_email
 from fastapi.security import OAuth2PasswordRequestForm
-from app.models import User
+from app.models import User, AuthEvent
+
+
+def _client_ip(request: Request) -> str:
+    """IP del cliente respetando el proxy (CapRover/nginx) vía X-Forwarded-For."""
+    xff = request.headers.get("x-forwarded-for") if request else None
+    if xff:
+        return xff.split(",")[0].strip()[:64]
+    return (request.client.host if request and request.client else "")[:64]
+
+
+def _log_auth_event(db, event_type: str, *, user_id=None, email=None,
+                    ip: str = "", detail: str = None) -> None:
+    """SM-CARGO-01: registra un evento de auth. Nunca debe romper el login."""
+    try:
+        db.add(AuthEvent(event_type=event_type, user_id=user_id,
+                         email=email, ip=ip, detail=detail))
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 # H-BW-005: helper para emitir las dos cookies de auth en una llamada.
@@ -65,6 +84,7 @@ router = APIRouter()
 
 @router.post("/token", response_model=Token)
 def login_for_access_token(
+    request: Request,
     response: Response,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
@@ -97,11 +117,21 @@ def login_for_access_token(
     """
     user = get_user_by_email(db, form_data.username)
     if user is None or not verify_password(form_data.password, user.password):
+        # SM-CARGO-01: login fallido → evento de seguridad (Cargo 7).
+        _log_auth_event(
+            db, "login_failed",
+            user_id=(user.id if user else None),
+            email=form_data.username, ip=_client_ip(request),
+            detail="credenciales inválidas",
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # SM-CARGO-01: login exitoso.
+    _log_auth_event(db, "login_success", user_id=user.id, email=user.email, ip=_client_ip(request))
 
     # H-BW-005: emitir ambos tokens.
     access_token  = create_access_token(data={"sub": user.email})

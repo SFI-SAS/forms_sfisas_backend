@@ -3099,3 +3099,40 @@ def aggregate_responses(
         },
         "buckets": buckets,
     }
+
+
+@router.get("/aggregate")
+def aggregate_responses_global(
+    since: Optional[str] = Query(None, description="ISO8601 — solo respuestas desde esta fecha"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """SM-CARGO-04 · Conteo global de respuestas por formulario y semana ISO.
+    Lo consume el Cargo 3 (Analista) para tendencias de volumen sin iterar form
+    por form. ArIA solo LEE. Requiere admin/creator."""
+    from sqlalchemy import func
+    if current_user.user_type not in (UserType.admin, UserType.creator):
+        raise HTTPException(status_code=403, detail="Requiere rol admin/creator")
+
+    week = func.to_char(func.date_trunc('week', Response.submitted_at), 'IYYY-"W"IW')
+    q = (
+        db.query(
+            Response.form_id, Form.title,
+            week.label("period"), func.count(Response.id).label("count"),
+        )
+        .join(Form, Response.form_id == Form.id)
+    )
+    if since:
+        try:
+            dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="`since` debe ser ISO8601")
+        q = q.filter(Response.submitted_at >= dt)
+
+    rows = q.group_by(Response.form_id, Form.title, week).order_by(week).all()
+    return {
+        "data": [
+            {"form_id": fid, "form_name": title, "period": period, "count": cnt}
+            for fid, title, period, cnt in rows
+        ]
+    }
