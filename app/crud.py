@@ -6060,7 +6060,11 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
         db.flush()
 
         db_form.form_design = design
-        db_form.is_enabled = True  # habilitar AL FINAL, con preguntas ya vinculadas
+        # habilitar AL FINAL, con preguntas ya vinculadas. activate=False => queda
+        # BORRADOR (deshabilitado PERO con preguntas vinculadas = válido, no
+        # fantasma) para el flujo wizard preview->publicar.
+        _activate = bool(payload.get("activate", True))
+        db_form.is_enabled = _activate
 
         # Conteos DENTRO de la tx (no segunda lectura).
         questions_persisted = db.query(FormQuestion).filter(FormQuestion.form_id == form_id).count()
@@ -6075,7 +6079,7 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
         db.commit()
         return {"status": "ok", "form_id": form_id, "title": title,
                 "questions_persisted": questions_persisted,
-                "elements_linked": elements_linked, "is_enabled": True, "error": None}
+                "elements_linked": elements_linked, "is_enabled": _activate, "error": None}
     except Exception as e:
         db.rollback()
         logger.exception("create_form_atomic falló")

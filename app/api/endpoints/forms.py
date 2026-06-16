@@ -179,6 +179,7 @@ class AtomicFormCreate(_BaseModel):
     id_category: Optional[int] = None
     assign_user: List[int] = _Field(default_factory=list)
     fields: List[AtomicFormField] = _Field(default_factory=list)
+    activate: bool = True  # False => borrador (deshabilitado pero con preguntas vinculadas)
 
 
 @router.post("/create-atomic")
