@@ -27,11 +27,11 @@ def _generate_format_abbreviation(title: str) -> str:
     return ''.join(w[0] for w in words)[:5]
 
 
-def _build_final_question_text(original_text: str, format_title: str | None) -> str:
-    if not format_title:
+def _build_final_question_text(original_text: str, form_id: int | None) -> str:
+    """Construye el nombre final usando el ID del formato como prefijo unico."""
+    if not form_id:
         return original_text
-    abbr = _generate_format_abbreviation(format_title)
-    return f"{abbr}_{original_text}"
+    return f"{form_id}_{original_text}"
 
 
 def _find_duplicate_question(db: Session, text: str, exclude_id: int | None = None):
@@ -300,7 +300,7 @@ def approve_field(
     if not form:
         raise HTTPException(status_code=404, detail="Formato no encontrado")
 
-    final_question_text = _build_final_question_text(final_text, form.title)
+    final_question_text = _build_final_question_text(final_text, form.id)
 
     dup = _find_duplicate_question(db, final_question_text)
     if dup:
