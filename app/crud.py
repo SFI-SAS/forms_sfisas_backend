@@ -1375,6 +1375,7 @@ def fetch_all_users(db: Session):
         User.recognition_id,
         User.asign_bitacora,
         User.id_category,
+        User.created_at,
         UserCategory.id.label('category_id'),
         UserCategory.name.label('category_name')
     ).outerjoin(
@@ -1394,6 +1395,7 @@ def fetch_all_users(db: Session):
             "asign_bitacora": r.asign_bitacora,
             "name": r.name,
             "telephone": r.telephone,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
             "category": {
                 "id": r.category_id,
                 "name": r.category_name
