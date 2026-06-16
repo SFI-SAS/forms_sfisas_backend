@@ -5962,6 +5962,127 @@ def update_notification_status(notification_id: int, notify_on: str, db: Session
 
     return notification
 
+
+def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
+    """F2 (SM-F2-02): crea un formato COMPLETO en UNA transacción —
+    form (deshabilitado) -> questions -> options -> form_questions ->
+    form_design -> habilitar AL FINAL. Cualquier fallo => ROLLBACK total.
+    Mata el 'formato fantasma' (questions:[] / is_enabled sin preguntas).
+    Conteos calculados DENTRO de la tx (P1/§6 del plan de remediación).
+
+    payload: {title, description?, format_type, id_category?, assign_user:[ids],
+              fields:[{label, question_type, required?, options?, description?}]}
+    Return: {status:'ok'|'error', form_id, title, questions_persisted,
+             elements_linked, is_enabled, error}. Errores estructurados (SM-F2-04).
+    """
+    import uuid as _uuid
+    from app.models import QuestionType as _QT, FormatType as _FT
+
+    def _err(code, message, offending_param=None, suggested_fix=""):
+        return {"status": "error", "form_id": None, "questions_persisted": 0,
+                "elements_linked": 0, "is_enabled": False,
+                "error": {"code": code, "message": message,
+                          "offending_param": offending_param, "suggested_fix": suggested_fix}}
+
+    title = (payload.get("title") or "").strip()
+    if not title:
+        return _err("SCHEMA_MISMATCH", "Falta el título del formato.", "title", "Definí title.")
+    fields = payload.get("fields") or []
+    if not fields:
+        return _err("EMPTY_SECTIONS", "No hay campos para crear el formato.",
+                    "fields", "Agregá al menos 1 campo.")
+
+    CHOICE = {"one_choice", "multiple_choice"}
+    QTYPE_TO_ITEM = {
+        "text": "input", "number": "input", "date": "date", "time": "input",
+        "file": "file", "one_choice": "select", "multiple_choice": "select",
+        "location": "input", "firm": "firm", "regisfacial": "regisfacial", "table": "select",
+    }
+
+    norm_fields = []
+    for i, f in enumerate(fields):
+        label = (f.get("label") or f.get("question_text") or "").strip()
+        if not label:
+            return _err("SCHEMA_MISMATCH", f"fields[{i}] sin label.",
+                        f"fields[{i}].label", "Cada campo necesita label.")
+        qtype = (f.get("question_type") or f.get("type") or "text").strip().lower()
+        try:
+            _QT(qtype)
+        except Exception:
+            return _err("SCHEMA_MISMATCH", f"Tipo inválido '{qtype}' en '{label}'.",
+                        f"fields[{i}].question_type",
+                        f"Tipos válidos: {[e.value for e in _QT]}")
+        opts = [str(o).strip() for o in (f.get("options") or []) if str(o).strip()]
+        if qtype in CHOICE and len(opts) < 2:
+            return _err("INSUFFICIENT_FIELDS", f"'{label}' es {qtype} pero tiene <2 opciones.",
+                        f"fields[{i}].options", "Un campo de lista necesita >=2 opciones.")
+        norm_fields.append({"label": label, "qtype": qtype,
+                            "required": bool(f.get("required", True)),
+                            "description": f.get("description"), "options": opts})
+
+    # Título único (mismo criterio que create_form).
+    if db.query(Form.id).filter(func.lower(func.trim(Form.title)) == title.lower()).first():
+        return _err("SLUG_COLLISION", f"Ya existe un formato con el título '{title}'.",
+                    "title", "Usá otro título o reutilizá el existente.")
+
+    fmt = payload.get("format_type") or "abierto"
+    assign_user = list(payload.get("assign_user") or ([user_id] if user_id else []))
+
+    try:
+        db_form = Form(
+            user_id=user_id, title=title, description=payload.get("description"),
+            format_type=(fmt if isinstance(fmt, _FT) else _FT(fmt)),
+            id_category=payload.get("id_category"), is_enabled=False,
+            created_at=datetime.utcnow(),
+        )
+        for uid in assign_user:
+            db_form.form_moderators.append(FormModerators(user_id=uid))
+        db.add(db_form)
+        db.flush()  # asigna db_form.id SIN commit
+        form_id = db_form.id
+
+        design = []
+        for nf in norm_fields:
+            q = Question(question_text=nf["label"], question_type=_QT(nf["qtype"]),
+                         required=nf["required"], description=nf.get("description"))
+            db.add(q)
+            db.flush()  # asigna q.id
+            if nf["qtype"] in CHOICE:
+                for ot in nf["options"]:
+                    db.add(Option(question_id=q.id, option_text=ot))
+            db.add(FormQuestion(form_id=form_id, question_id=q.id))
+            props = {"label": nf["label"], "required": nf["required"], "space": 12}
+            if nf["qtype"] in CHOICE:
+                props["options"] = nf["options"]
+            design.append({"id": str(_uuid.uuid4()),
+                           "type": QTYPE_TO_ITEM.get(nf["qtype"], "input"),
+                           "linkExternalId": int(q.id), "props": props})
+        db.flush()
+
+        db_form.form_design = design
+        db_form.is_enabled = True  # habilitar AL FINAL, con preguntas ya vinculadas
+
+        # Conteos DENTRO de la tx (no segunda lectura).
+        questions_persisted = db.query(FormQuestion).filter(FormQuestion.form_id == form_id).count()
+        elements_linked = sum(1 for d in design if d.get("linkExternalId"))
+        if questions_persisted != len(norm_fields) or elements_linked != len(norm_fields):
+            db.rollback()
+            return _err("LINK_FAILED",
+                        f"Vinculación inconsistente: persisted={questions_persisted}, "
+                        f"linked={elements_linked}, esperado={len(norm_fields)}.",
+                        "fields", "Reintentar la creación.")
+
+        db.commit()
+        return {"status": "ok", "form_id": form_id, "title": title,
+                "questions_persisted": questions_persisted,
+                "elements_linked": elements_linked, "is_enabled": True, "error": None}
+    except Exception as e:
+        db.rollback()
+        logger.exception("create_form_atomic falló")
+        return _err("TX_ROLLED_BACK", f"{type(e).__name__}: {str(e)[:200]}",
+                    None, "Revisar los datos y reintentar.")
+
+
 def delete_form(db: Session, form_id: int):
     form = db.query(Form).filter(Form.id == form_id).first()
 

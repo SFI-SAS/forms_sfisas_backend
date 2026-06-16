@@ -158,6 +158,59 @@ def create_form_endpoint(
 
     return create_form(db=db, form=form, user_id=current_user.id)
 
+
+# ── F2 (SM-F2-02): creación ATÓMICA de formato ──────────────────────────────
+from pydantic import BaseModel as _BaseModel, Field as _Field
+from app.crud import create_form_atomic as _create_form_atomic
+
+
+class AtomicFormField(_BaseModel):
+    label: str
+    question_type: str = "text"
+    required: bool = True
+    options: Optional[List[str]] = None
+    description: Optional[str] = None
+
+
+class AtomicFormCreate(_BaseModel):
+    title: str
+    description: Optional[str] = None
+    format_type: str = "abierto"
+    id_category: Optional[int] = None
+    assign_user: List[int] = _Field(default_factory=list)
+    fields: List[AtomicFormField] = _Field(default_factory=list)
+
+
+@router.post("/create-atomic")
+def create_form_atomic_endpoint(
+    payload: AtomicFormCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """F2 (SM-F2-02): crea un formato COMPLETO en UNA transacción —
+    form (deshabilitado) -> questions -> options -> form_questions ->
+    form_design -> habilitar AL FINAL. Cualquier fallo => ROLLBACK total
+    (mata el 'formato fantasma'). Devuelve respuesta rica con conteos
+    calculados DENTRO de la tx. Si falla, error ESTRUCTURADO con HTTP 422
+    (EMPTY_SECTIONS, INSUFFICIENT_FIELDS, SLUG_COLLISION, LINK_FAILED,
+    TX_ROLLED_BACK)."""
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to create forms",
+        )
+    data = payload.dict()
+    if not data.get("assign_user"):
+        data["assign_user"] = [current_user.id]
+    result = _create_form_atomic(db=db, payload=data, user_id=current_user.id)
+    if result.get("status") != "ok":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=result.get("error"),
+        )
+    return result
+
+
 @router.get("/category-approvals", summary="Todas las categorías con sus aprobadores")
 def list_all_categories_with_approvers(
     db: Session = Depends(get_db),
