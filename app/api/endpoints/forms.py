@@ -172,13 +172,24 @@ class AtomicFormField(_BaseModel):
     description: Optional[str] = None
 
 
+class AtomicFormElement(_BaseModel):
+    """Grupo del diseño: 'field' (campo suelto), 'row' (fila horizontal) o
+    'repeater' (repetidor). Sus 'fields' generan las preguntas."""
+    kind: str = "field"  # field | row | repeater
+    title: Optional[str] = None          # label del repeater / título de la fila
+    min_items: Optional[int] = None      # repeater
+    max_items: Optional[int] = None      # repeater
+    fields: List[AtomicFormField] = _Field(default_factory=list)
+
+
 class AtomicFormCreate(_BaseModel):
     title: str
     description: Optional[str] = None
     format_type: str = "abierto"
     id_category: Optional[int] = None
     assign_user: List[int] = _Field(default_factory=list)
-    fields: List[AtomicFormField] = _Field(default_factory=list)
+    fields: List[AtomicFormField] = _Field(default_factory=list)   # camino simple (1 por línea)
+    elements: Optional[List[AtomicFormElement]] = None             # estructura: filas/repetidores
     activate: bool = True  # False => borrador (deshabilitado pero con preguntas vinculadas)
 
 

@@ -5988,9 +5988,9 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
     if not title:
         return _err("SCHEMA_MISMATCH", "Falta el título del formato.", "title", "Definí title.")
     fields = payload.get("fields") or []
-    if not fields:
+    if not fields and not (payload.get("elements") or []):
         return _err("EMPTY_SECTIONS", "No hay campos para crear el formato.",
-                    "fields", "Agregá al menos 1 campo.")
+                    "fields", "Agregá al menos 1 campo (o un 'elements' con campos).")
 
     CHOICE = {"one_choice", "multiple_choice"}
     QTYPE_TO_ITEM = {
@@ -5999,26 +5999,60 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
         "location": "input", "firm": "firm", "regisfacial": "regisfacial", "table": "select",
     }
 
-    norm_fields = []
-    for i, f in enumerate(fields):
+    def _normf(f, path):
+        """Valida y normaliza un campo. Devuelve (normfield, None) o (None, error)."""
         label = (f.get("label") or f.get("question_text") or "").strip()
         if not label:
-            return _err("SCHEMA_MISMATCH", f"fields[{i}] sin label.",
-                        f"fields[{i}].label", "Cada campo necesita label.")
+            return None, _err("SCHEMA_MISMATCH", f"{path} sin label.", f"{path}.label",
+                              "Cada campo necesita label.")
         qtype = (f.get("question_type") or f.get("type") or "text").strip().lower()
         try:
             _QT(qtype)
         except Exception:
-            return _err("SCHEMA_MISMATCH", f"Tipo inválido '{qtype}' en '{label}'.",
-                        f"fields[{i}].question_type",
-                        f"Tipos válidos: {[e.value for e in _QT]}")
+            return None, _err("SCHEMA_MISMATCH", f"Tipo inválido '{qtype}' en '{label}'.",
+                              f"{path}.question_type", f"Tipos válidos: {[e.value for e in _QT]}")
         opts = [str(o).strip() for o in (f.get("options") or []) if str(o).strip()]
         if qtype in CHOICE and len(opts) < 2:
-            return _err("INSUFFICIENT_FIELDS", f"'{label}' es {qtype} pero tiene <2 opciones.",
-                        f"fields[{i}].options", "Un campo de lista necesita >=2 opciones.")
-        norm_fields.append({"label": label, "qtype": qtype,
-                            "required": bool(f.get("required", True)),
-                            "description": f.get("description"), "options": opts})
+            return None, _err("INSUFFICIENT_FIELDS", f"'{label}' es {qtype} pero tiene <2 opciones.",
+                              f"{path}.options", "Un campo de lista necesita >=2 opciones.")
+        return {"label": label, "qtype": qtype, "required": bool(f.get("required", True)),
+                "description": f.get("description"), "options": opts}, None
+
+    # Normalizar a GRUPOS. Si viene 'elements' (estructura con filas/repetidores),
+    # se respeta; si no, cada field de 'fields' es su propio grupo "field" (un
+    # campo por línea = comportamiento simple anterior).
+    groups = []
+    _elements = payload.get("elements")
+    if _elements:
+        for gi, el in enumerate(_elements):
+            kind = (el.get("kind") or "field").strip().lower()
+            if kind in ("horizontallayout", "horizontal", "fila", "row"):
+                kind = "row"
+            elif kind in ("repeater", "repetidor"):
+                kind = "repeater"
+            else:
+                kind = "field"
+            gfields = []
+            for fi, f in enumerate(el.get("fields") or []):
+                nf, err = _normf(f, f"elements[{gi}].fields[{fi}]")
+                if err:
+                    return err
+                gfields.append(nf)
+            if gfields:
+                groups.append({"kind": kind, "title": (el.get("title") or el.get("label") or "").strip(),
+                               "min_items": el.get("min_items"), "max_items": el.get("max_items"),
+                               "fields": gfields})
+    else:
+        for fi, f in enumerate(fields):
+            nf, err = _normf(f, f"fields[{fi}]")
+            if err:
+                return err
+            groups.append({"kind": "field", "title": "", "fields": [nf]})
+
+    all_fields = [nf for g in groups for nf in g["fields"]]
+    if not all_fields:
+        return _err("EMPTY_SECTIONS", "No hay campos para crear el formato.",
+                    "fields", "Agregá al menos 1 campo.")
 
     # Título único (mismo criterio que create_form).
     if db.query(Form.id).filter(func.lower(func.trim(Form.title)) == title.lower()).first():
@@ -6027,6 +6061,15 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
 
     fmt = payload.get("format_type") or "abierto"
     assign_user = list(payload.get("assign_user") or ([user_id] if user_id else []))
+
+    def _count_links(items):
+        n = 0
+        for it in items:
+            if isinstance(it, dict):
+                if it.get("linkExternalId"):
+                    n += 1
+                n += _count_links(it.get("children") or [])
+        return n
 
     try:
         db_form = Form(
@@ -6041,8 +6084,15 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
         db.flush()  # asigna db_form.id SIN commit
         form_id = db_form.id
 
-        design = []
-        for nf in norm_fields:
+        def _mk_item(nf, qid, space=12):
+            props = {"label": nf["label"], "required": nf["required"], "space": int(space)}
+            if nf["qtype"] in CHOICE:
+                props["options"] = nf["options"]
+            return {"id": str(_uuid.uuid4()),
+                    "type": QTYPE_TO_ITEM.get(nf["qtype"], "input"),
+                    "linkExternalId": int(qid), "props": props}
+
+        def _persist(nf):
             q = Question(question_text=nf["label"], question_type=_QT(nf["qtype"]),
                          required=nf["required"], description=nf.get("description"))
             db.add(q)
@@ -6051,12 +6101,34 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
                 for ot in nf["options"]:
                     db.add(Option(question_id=q.id, option_text=ot))
             db.add(FormQuestion(form_id=form_id, question_id=q.id))
-            props = {"label": nf["label"], "required": nf["required"], "space": 12}
-            if nf["qtype"] in CHOICE:
-                props["options"] = nf["options"]
-            design.append({"id": str(_uuid.uuid4()),
-                           "type": QTYPE_TO_ITEM.get(nf["qtype"], "input"),
-                           "linkExternalId": int(q.id), "props": props})
+            return q.id
+
+        design = []
+        for g in groups:
+            n = len(g["fields"])
+            if g["kind"] == "row" and n > 1:
+                row_id = str(_uuid.uuid4())
+                sp = max(1, 12 // n)
+                children = []
+                for nf in g["fields"]:
+                    it = _mk_item(nf, _persist(nf), space=sp)
+                    it["parentId"] = row_id
+                    children.append(it)
+                design.append({"id": row_id, "type": "horizontalLayout",
+                               "props": {"spacing": 2}, "children": children})
+            elif g["kind"] == "repeater":
+                rep_id = str(_uuid.uuid4())
+                children = [_mk_item(nf, _persist(nf), space=12) for nf in g["fields"]]
+                _max = int(g.get("max_items") or 0)
+                design.append({"id": rep_id, "type": "repeater",
+                               "props": {"label": g["title"] or "Repetidor",
+                                         "minItems": int(g.get("min_items") or 1),
+                                         "maxItems": _max if _max > 0 else 99,
+                                         "addButtonText": "Agregar", "space": 12},
+                               "children": children})
+            else:  # 'field' (o 'row' de 1) → items sueltos a ancho completo
+                for nf in g["fields"]:
+                    design.append(_mk_item(nf, _persist(nf), space=12))
         db.flush()
 
         db_form.form_design = design
@@ -6066,14 +6138,16 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
         _activate = bool(payload.get("activate", True))
         db_form.is_enabled = _activate
 
-        # Conteos DENTRO de la tx (no segunda lectura).
+        # Conteos DENTRO de la tx (no segunda lectura). elements_linked cuenta
+        # RECURSIVO (incluye los items dentro de filas/repetidores).
         questions_persisted = db.query(FormQuestion).filter(FormQuestion.form_id == form_id).count()
-        elements_linked = sum(1 for d in design if d.get("linkExternalId"))
-        if questions_persisted != len(norm_fields) or elements_linked != len(norm_fields):
+        elements_linked = _count_links(design)
+        _expected = len(all_fields)
+        if questions_persisted != _expected or elements_linked != _expected:
             db.rollback()
             return _err("LINK_FAILED",
                         f"Vinculación inconsistente: persisted={questions_persisted}, "
-                        f"linked={elements_linked}, esperado={len(norm_fields)}.",
+                        f"linked={elements_linked}, esperado={_expected}.",
                         "fields", "Reintentar la creación.")
 
         db.commit()
