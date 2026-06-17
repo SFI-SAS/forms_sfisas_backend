@@ -31,7 +31,10 @@ def create_alias(
         )
 
     try:
-        db_alias = Alias(name=alias_data.name, description=alias_data.description)
+        db_alias = Alias(
+            name=alias_data.name.upper().strip() if alias_data.name else alias_data.name,
+            description=alias_data.description.upper().strip() if alias_data.description else alias_data.description
+        )
         db.add(db_alias)
         db.commit()
         db.refresh(db_alias)
@@ -114,9 +117,9 @@ def update_alias(
 
     try:
         if alias_data.name:
-            db_alias.name = alias_data.name
+            db_alias.name = alias_data.name.upper().strip()
         if alias_data.description is not None:
-            db_alias.description = alias_data.description
+            db_alias.description = alias_data.description.upper().strip() if alias_data.description else alias_data.description
 
         db.commit()
         db.refresh(db_alias)

@@ -302,8 +302,8 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
 
         db_form = Form(
             user_id=user_id,
-            title=form.title,
-            description=form.description,
+            title=form.title.upper().strip() if form.title else form.title,
+            description=form.description.upper().strip() if form.description else form.description,
             format_type=form.format_type,
             id_category=form.id_category,
             project_id=form.project_id,
@@ -780,7 +780,7 @@ def create_options(db: Session, options: List[OptionCreate]):
     try:
         db_options = []
         for option in options:
-            db_option = Option(question_id=option.question_id, option_text=option.option_text)
+            db_option = Option(question_id=option.question_id, option_text=option.option_text.upper().strip() if option.option_text else option.option_text)
             db.add(db_option)
             db_options.append(db_option)
         db.commit()
@@ -833,7 +833,12 @@ def create_project(db: Session, project_data: ProjectCreate):
     Project:
         Objeto del proyecto recién creado.
     """
-    new_project = Project(**project_data.dict())
+    data = project_data.dict()
+    if data.get('name'):
+        data['name'] = data['name'].upper().strip()
+    if data.get('description'):
+        data['description'] = data['description'].upper().strip()
+    new_project = Project(**data)
     db.add(new_project)
     db.commit()
     db.refresh(new_project)
@@ -6719,7 +6724,12 @@ def create_form_category(db: Session, category: FormCategoryCreate):
         )
     
     try:
-        db_category = FormCategory(**category.dict())
+        cat_data = category.dict()
+        if cat_data.get('name'):
+            cat_data['name'] = cat_data['name'].upper().strip()
+        if cat_data.get('description'):
+            cat_data['description'] = cat_data['description'].upper().strip()
+        db_category = FormCategory(**cat_data)
         db.add(db_category)
         db.commit()
         db.refresh(db_category)
