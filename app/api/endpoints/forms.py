@@ -3973,10 +3973,10 @@ def update_form_basic_info(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Ya existe otro formato con ese nombre",
             )
-        form.title = new_title
+        form.title = new_title.upper().strip()
 
     if form_data.description is not None:
-        form.description = form_data.description
+        form.description = form_data.description.upper().strip() if form_data.description else form_data.description
     
     if form_data.format_type is not None:
         form.format_type = form_data.format_type

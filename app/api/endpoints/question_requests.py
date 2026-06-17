@@ -106,9 +106,9 @@ def create_question_request(
     req = QuestionRequest(
         requester_id=current_user.id,
         form_id=payload.form_id,
-        question_text=payload.fields[0].question_text,
+        question_text=payload.fields[0].question_text.upper().strip(),
         question_type=payload.fields[0].question_type,
-        requester_message=payload.requester_message,
+        requester_message=payload.requester_message.upper().strip() if payload.requester_message else payload.requester_message,
         status='pending',
     )
     db.add(req)
@@ -117,9 +117,9 @@ def create_question_request(
     for f in payload.fields:
         field = QuestionRequestField(
             request_id=req.id,
-            question_text=f.question_text,
+            question_text=f.question_text.upper().strip() if f.question_text else f.question_text,
             question_type=f.question_type,
-            description=f.description,
+            description=f.description.upper().strip() if f.description else f.description,
             required=f.required,
             id_category=f.id_category,
             id_alias=f.id_alias,
@@ -310,8 +310,8 @@ def approve_field(
         )
 
     new_question = Question(
-        question_text=final_question_text,
-        description=final_desc,
+        question_text=final_question_text.upper().strip() if final_question_text else final_question_text,
+        description=final_desc.upper().strip() if final_desc else final_desc,
         question_type=final_type,
         required=final_required,
         root=False,

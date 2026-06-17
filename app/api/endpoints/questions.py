@@ -181,8 +181,8 @@ def create_question_endpoint(
 
     try:
         db_question = Question(
-            question_text=question.question_text,
-            description=question.description,
+            question_text=question.question_text.upper().strip() if question.question_text else question.question_text,
+            description=question.description.upper().strip() if question.description else question.description,
             question_type=question.question_type,
             required=question.required,
             root=question.root,
@@ -919,7 +919,7 @@ def create_question_category(
     if existing:
         raise HTTPException(status_code=400, detail="La categoría ya existe")
 
-    new_category = QuestionCategory(name=category.name, parent_id=category.parent_id)
+    new_category = QuestionCategory(name=category.name.upper().strip() if category.name else category.name, parent_id=category.parent_id)
     db.add(new_category)
     db.commit()
     db.refresh(new_category)
@@ -1638,9 +1638,9 @@ def update_question_endpoint(
 
     # 3. Aplicar los campos del payload
     if payload.question_text is not None:
-        question.question_text = payload.question_text.strip()
+        question.question_text = payload.question_text.strip().upper()
     if payload.description is not None:
-        question.description = payload.description.strip()
+        question.description = payload.description.strip().upper()
     if payload.question_type is not None:
         question.question_type = payload.question_type
     if payload.id_category is not None:
