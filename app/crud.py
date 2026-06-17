@@ -975,10 +975,17 @@ async def post_create_response(
     mode: str = "online",
     repeated_id: str = None,
     create_approvals: bool = True,
-    status = None  # ResponseStatus
+    status = None,  # ResponseStatus
+    send_notifications: bool = True,
 ):
     """
     Función modificada para incluir el estado y el envío de correos EN BACKGROUND.
+
+    `send_notifications`: por defecto True (diligenciamiento normal, sin cambios).
+    La importación masiva por Excel lo pasa en False para NO enviar un correo de
+    notificación por cada registro (eso satura el SMTP y dispara bloqueos por
+    "actividad inusual"); en ese flujo el usuario recibe un único correo resumen
+    al terminar el job. Las aprobaciones, bitácora y estado se crean igual.
     """
     from app.models import Form, User, Response, ResponseApproval, FormApproval, FormCloseConfig
     from app.models import ApprovalStatus, ResponseStatus
@@ -1060,11 +1067,11 @@ async def post_create_response(
             detail=f"Error al crear la respuesta. Cambios revertidos: {str(e)}"
         )
 
-    if approvers_created > 0:
+    if send_notifications and approvers_created > 0:
         send_mails_to_next_supporters(response.id, db)
-    
+
     # Si no hay aprobadores, enviar correos EN UN THREAD SEPARADO (NO BLOQUEA)
-    if not create_approvals or approvers_created == 0:
+    if send_notifications and (not create_approvals or approvers_created == 0):
         try:
             form_close_config = db.query(FormCloseConfig).filter(
                 FormCloseConfig.form_id == form_id
@@ -4007,6 +4014,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
 
     form_approvals = (
         db.query(FormApproval)
+        .options(joinedload(FormApproval.form))
         .filter(FormApproval.user_id == user_id, FormApproval.is_active == True)
         .all()
     )
@@ -4028,19 +4036,26 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
             .all()
         )
 
-        approval_template = db.query(FormApproval).filter(FormApproval.form_id == form.id).order_by(FormApproval.sequence_number).all()
-
-        for approver in approval_template:
-            approver_user = approver.user
-
-        responses = db.query(Response).filter(Response.form_id == form.id).all()
+        # Respuestas del formulario con su autor y todas sus aprobaciones (con
+        # el usuario de cada aprobación) cargados de forma anticipada. Esto evita
+        # varias consultas por respuesta más abajo (patrón N+1).
+        responses = (
+            db.query(Response)
+            .options(
+                joinedload(Response.user),
+                joinedload(Response.approvals).joinedload(ResponseApproval.user),
+            )
+            .filter(Response.form_id == form.id)
+            .all()
+        )
 
         for response in responses:
+            # Todas las aprobaciones de esta respuesta, ordenadas por secuencia
+            # (ya vienen cargadas vía joinedload; sin consultas adicionales).
+            all_ra_sorted = sorted(response.approvals, key=lambda a: a.sequence_number)
+
             # Filtramos todas las aprobaciones del usuario para esta respuesta
-            response_approvals = db.query(ResponseApproval).filter(
-                ResponseApproval.response_id == response.id,
-                ResponseApproval.user_id == user_id
-            ).order_by(ResponseApproval.sequence_number).all()
+            response_approvals = [ra for ra in all_ra_sorted if ra.user_id == user_id]
 
             # Identificamos cuál está pendiente o cuál está en el turno actual
             response_approval = next(
@@ -4054,11 +4069,10 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
             sequence = response_approval.sequence_number
 
             # Verificar si todos los aprobadores anteriores obligatorios ya aprobaron
-            prev_approvers = db.query(ResponseApproval).filter(
-                ResponseApproval.response_id == response.id,
-                ResponseApproval.sequence_number < sequence,
-                ResponseApproval.is_mandatory == True
-            ).all()
+            prev_approvers = [
+                ra for ra in all_ra_sorted
+                if ra.sequence_number < sequence and ra.is_mandatory
+            ]
 
             all_prev_approved = all(pa.status == ApprovalStatus.aprobado for pa in prev_approvers)
 
@@ -4127,12 +4141,8 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                     previous_answer_ids.add(history.previous_answer_id)
 
             # Mostrar estado de cada aprobador de esta respuesta
-            response_approvals_all = db.query(ResponseApproval).filter(
-                ResponseApproval.response_id == response.id
-            ).order_by(ResponseApproval.sequence_number).all()
-
-            for ra in response_approvals_all:
-                user_ra = ra.user
+            # (reutilizamos la lista ya ordenada y precargada).
+            response_approvals_all = all_ra_sorted
 
             # Obtener respuestas actuales (excluyendo las que son previous_answer_ids)
             answers = db.query(Answer, Question).join(Question).filter(
@@ -4195,7 +4205,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 }
             } for ra in response_approvals_all]
 
-            user_response = db.query(User).filter(User.id == response.user_id).first()
+            user_response = response.user
 
             # Construir información de requisitos de aprobación con estado de diligenciamiento
             requirements_data = []
@@ -5525,81 +5535,77 @@ def fetch_completed_forms_with_all_responses(db: Session, user_id: int):
     :param user_id: ID del usuario.
     :return: Lista de formularios con todas sus respuestas y aprobaciones.
     """
-    # Primero obtenemos los formularios completados (sin duplicados)
-    completed_forms = (
-        db.query(Form)
-        .join(Response)
-        .filter(Response.user_id == user_id)
-        .distinct()
-        .all()
-    )
-    
-    result = []
-    
-    for form in completed_forms:
-        # Para cada formulario, obtenemos todas sus respuestas con aprobaciones
-        stmt = (
-            select(Response)
-            .where(Response.form_id == form.id, Response.user_id == user_id)
-            .options(
-                joinedload(Response.form).load_only(
-                    Form.id,
-                    Form.title,
-                    Form.description,
-                    Form.approval_mode,
-                ),
-                joinedload(Response.approvals).joinedload(ResponseApproval.user).load_only(
-                    User.id,
-                    User.name,
-                    User.email,
-                    User.nickname,
-                    User.num_document
-                )
+    # Una sola consulta: todas las respuestas del usuario con su formulario y
+    # aprobaciones cargadas de forma anticipada (evita el patrón N+1 anterior,
+    # que hacía 1 query por cada formulario completado).
+    stmt = (
+        select(Response)
+        .where(Response.user_id == user_id)
+        .options(
+            joinedload(Response.form).load_only(
+                Form.id,
+                Form.user_id,
+                Form.title,
+                Form.description,
+                Form.created_at,
+                Form.approval_mode,
+            ),
+            joinedload(Response.approvals).joinedload(ResponseApproval.user).load_only(
+                User.id,
+                User.name,
+                User.email,
+                User.nickname,
+                User.num_document
             )
         )
-        
-        responses = db.execute(stmt).unique().scalars().all()
-        
-        # Construir las respuestas en el formato del endpoint /responses/summary
-        responses_summary = []
-        for r in responses:
-            responses_summary.append({
-                "response_id": r.id,
-                "submitted_at": r.submitted_at,
-                "approvals": [
-                    {
-                        "approval_id": ap.id,
-                        "sequence_number": ap.sequence_number,
-                        "is_mandatory": ap.is_mandatory,
-                        "status": ap.status.value if ap.status else None,
-                        "reviewed_at": ap.reviewed_at,
-                        "user": {
-                            "id": ap.user.id,
-                            "name": ap.user.name
-                        }
+    )
+
+    responses = db.execute(stmt).unique().scalars().all()
+
+    # Agrupamos las respuestas por formulario manteniendo el mismo formato de salida.
+    forms_map = {}
+    for r in responses:
+        form = r.form
+        if form is None:
+            continue
+
+        form_entry = forms_map.get(form.id)
+        if form_entry is None:
+            form_entry = {
+                # Datos del formulario (del endpoint /users/completed_forms)
+                "form": {
+                    "id": form.id,
+                    "user_id": form.user_id,
+                    "title": form.title,
+                    "description": form.description,
+                    "created_at": form.created_at,
+                    "approval_mode": form.approval_mode,
+                },
+                # Resumen de respuestas (del endpoint /responses/summary)
+                "responses": []
+            }
+            forms_map[form.id] = form_entry
+
+        form_entry["responses"].append({
+            "response_id": r.id,
+            "submitted_at": r.submitted_at,
+            "approvals": [
+                {
+                    "approval_id": ap.id,
+                    "sequence_number": ap.sequence_number,
+                    "is_mandatory": ap.is_mandatory,
+                    "status": ap.status.value if ap.status else None,
+                    "reviewed_at": ap.reviewed_at,
+                    "user": {
+                        "id": ap.user.id,
+                        "name": ap.user.name
                     }
-                    for ap in sorted(r.approvals, key=lambda a: a.sequence_number)
-                ]
-            })
-        
-        # Combinar información del formulario con sus respuestas
-        form_data = {
-            # Datos del formulario (del endpoint /users/completed_forms)
-            "form": {
-                "id": form.id,
-                "user_id": form.user_id,
-                "title": form.title,
-                "description": form.description,
-                "created_at": form.created_at,
-                "approval_mode": form.approval_mode,
-            },
-            # Resumen de respuestas (del endpoint /responses/summary)
-            "responses": responses_summary
-        }
-        
-        result.append(form_data)
-    
-    return result
+                }
+                for ap in sorted(r.approvals, key=lambda a: a.sequence_number)
+            ]
+        })
+
+    return list(forms_map.values())
 
 def get_response_approval_status(response_approvals: list) -> dict:
     """

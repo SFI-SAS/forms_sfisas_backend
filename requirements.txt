@@ -49,7 +49,11 @@ python-multipart==0.0.27
 pytz==2026.1.post1
 PyYAML==6.0.3
 qrcode==8.2
-redis==7.4.0
+# redis-py debe ser <6 porque celery 5.5.x lo exige. El cliente (app/redis_client.py)
+# solo usa ops estándar, compatibles con 5.2.1.
+redis==5.2.1
+# Cola de envíos masivos por Excel (broker/backend = Redis).
+celery[redis]==5.5.3
 reportlab==4.5.0
 requests==2.33.1
 rich==15.0.0

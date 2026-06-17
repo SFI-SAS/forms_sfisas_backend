@@ -683,6 +683,7 @@ def get_form_questions(
             "question_text": question.question_text,
             "question_type": question.question_type,
             "required": question.required,
+            "unique_answer": getattr(question, "unique_answer", False),
             "root": question.root if hasattr(question, 'root') else False,
             "options": [
                 {"id": opt.id, "option_text": opt.option_text}

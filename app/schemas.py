@@ -97,17 +97,19 @@ class QuestionBase(BaseModel):
     question_text: str = Field(..., example="What is your favorite color?")
     description: Optional[str] = None
     question_type: str = Field(..., example="multiple_choice")
-    required: bool = Field(..., example=True) 
-    root:bool =  Field(..., example=True) 
+    required: bool = Field(..., example=True)
+    unique_answer: bool = Field(False, example=False)
+    root:bool =  Field(..., example=True)
     id_category: Optional[int] = None
     id_alias: Optional[int] = Field(None, example=1)
 
 
 class QuestionBaseAll(BaseModel):
     question_text: str = Field(..., example="What is your favorite color?")
-    description: Optional[str] = None 
+    description: Optional[str] = None
     question_type: str = Field(..., example="multiple_choice")
-    required: bool = Field(..., example=True) 
+    required: bool = Field(..., example=True)
+    unique_answer: bool = Field(False, example=False)
     root:bool =  Field(..., example=True)
     id_category: int | None = None
     id_alias: Optional[int] = Field(None, example=1)
@@ -132,6 +134,7 @@ class QuestionOptions(QuestionBase):
 class QuestionUpdate(BaseModel):
     question_text: Optional[str] = None
     question_type: Optional[str] = None
+    unique_answer: Optional[bool] = None
     id_form: Optional[int] = None
 
 class GetFormBase(BaseModel):

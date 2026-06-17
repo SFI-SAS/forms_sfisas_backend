@@ -234,6 +234,10 @@ class Question(Base):
     description = Column(String, nullable=True)
     question_type = Column(CaseInsensitiveEnum(QuestionType), default=QuestionType.text, nullable=False)
     required = Column(Boolean, nullable=False, default=True)
+    # Respuestas no repetidas: si True, el valor de esta pregunta (texto/número)
+    # no puede coincidir con el de otra respuesta ya registrada (alcance global
+    # por pregunta). Se valida en vivo al diligenciar y al guardar.
+    unique_answer = Column(Boolean, nullable=False, default=False, server_default='false')
     root = Column(Boolean, nullable=False, default=False)
     id_category = Column(BigInteger, ForeignKey('question_categories.id'), nullable=True)
     id_alias = Column(Integer, ForeignKey("alias.id"), nullable=True, index=True)

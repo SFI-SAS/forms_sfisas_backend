@@ -74,6 +74,39 @@ def check_question_text(
     return {"exists": False}
 
 
+def _normalize_answer_value(value: Optional[str]) -> str:
+    """Normaliza un valor de respuesta para comparar unicidad: recorta y colapsa
+    espacios y pasa a minúsculas. No quita acentos (valores como teléfonos/correos
+    rara vez los usan y preferimos no fusionar valores legítimamente distintos)."""
+    if value is None:
+        return ""
+    return " ".join(str(value).strip().lower().split())
+
+
+@router.get("/{question_id}/answer-exists")
+def check_answer_exists(
+    question_id: int,
+    value: str = Query(..., min_length=1),
+    exclude_response_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Indica si `value` ya fue registrado para esta pregunta en CUALQUIER
+    respuesta (alcance global por pregunta). Alimenta la validación de
+    "respuestas no repetidas" al diligenciar. `exclude_response_id` ignora la
+    propia respuesta al editar."""
+    norm = _normalize_answer_value(value)
+    if not norm:
+        return {"exists": False}
+    rows = get_answers_by_question_id(db, question_id)
+    for r in rows:
+        if exclude_response_id is not None and r.response_id == exclude_response_id:
+            continue
+        if _normalize_answer_value(r.answer_text) == norm:
+            return {"exists": True, "response_id": r.response_id}
+    return {"exists": False}
+
+
 @router.get("/forms/available")
 def get_available_forms(
     db: Session = Depends(get_db),
@@ -185,6 +218,7 @@ def create_question_endpoint(
             description=question.description,
             question_type=question.question_type,
             required=question.required,
+            unique_answer=getattr(question, "unique_answer", False),
             root=question.root,
             id_category=question.id_category,
             id_alias=question.id_alias,

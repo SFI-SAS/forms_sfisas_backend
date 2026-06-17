@@ -19,7 +19,8 @@ from app.database import SessionLocal, engine
 from app.models import Base, EmailConfig
 from app.api.endpoints import (
     alias, approvers, consultants, download_template, home_dashboard, integrations, list_form, pdf_router, profiles, projects, responses,
-    responsibilitytransfer, users, forms, auth, questions, generic_activities, security, question_requests
+    responsibilitytransfer, users, forms, auth, questions, generic_activities, security, question_requests,
+    bulk_import
 )
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -154,6 +155,8 @@ app.include_router(integrations.router, prefix="/integrations", tags=["integrati
 app.include_router(home_dashboard.router, prefix="/home", tags=["home"])
 app.include_router(security.router, prefix="/security", tags=["security"])
 app.include_router(question_requests.router, prefix="/question-requests", tags=["Question Requests"])
+# Importación masiva por Excel vía cola (Celery + Redis). Comparte prefijo /responses.
+app.include_router(bulk_import.router, prefix="/responses", tags=["bulk-import"])
 
 # ========================================
 # CREAR TABLAS

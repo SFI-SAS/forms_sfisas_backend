@@ -28,7 +28,12 @@ from app.api.schemas.integrations import (
     IntegratorAccessList,
     MyIntegrationsResponse,
 )
-from app.core.security import get_current_user
+from app.core.security import (
+    get_current_user,
+    get_integrator_or_user,
+    create_integrator_token,
+    INTEGRATOR_TOKEN_DAYS,
+)
 from app.crud import post_create_response
 from app.database import get_db
 from app.models import (
@@ -332,7 +337,7 @@ async def submit_integration_answer(
     payload: IntegrationAnswerPayload = Body(...),
     request: Request = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_integrator_or_user),
 ):
     """
     Recibe una respuesta diligenciada de un sistema externo y la guarda como
@@ -470,7 +475,7 @@ async def submit_integration_answer(
 @router.get("/my-formats", response_model=MyIntegrationsResponse)
 def my_integration_formats(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_integrator_or_user),
 ):
     """Lista los formatos a los que el usuario actual tiene acceso de integración."""
     if current_user is None:
@@ -533,6 +538,46 @@ def my_integration_formats(
         )
 
     return MyIntegrationsResponse(formats=formats_out)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Admin: generar token de integrador (separado del token de usuario)
+# ────────────────────────────────────────────────────────────────────────────
+
+@router.post("/token/{user_id}")
+def generate_integrator_token(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Genera un token de integrador (type=integrator, larga vida) para un
+    usuario que tenga ≥1 acceso de integración. Solo admin. El sistema externo
+    lo usa como Bearer en /integrations/answers y /my-formats; NO sirve en el
+    resto de la app (get_current_user rechaza type=integrator)."""
+    _ensure_admin(current_user)
+
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    has_access = (
+        db.query(IntegratorFormatAccess.id)
+        .filter(IntegratorFormatAccess.user_id == user_id)
+        .first()
+    )
+    if not has_access:
+        raise HTTPException(
+            status_code=400,
+            detail="El usuario no tiene accesos de integración asignados.",
+        )
+
+    token = create_integrator_token(target.email)
+    return {
+        "integrator_token": token,
+        "user_id": target.id,
+        "email": target.email,
+        "expires_days": INTEGRATOR_TOKEN_DAYS,
+    }
 
 
 # ────────────────────────────────────────────────────────────────────────────

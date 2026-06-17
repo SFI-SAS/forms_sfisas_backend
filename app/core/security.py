@@ -36,8 +36,11 @@ ALGORITHM = "HS256"
 #     pero un TTL más holgado reduce el ruido en sesiones largas de diligenciamiento.
 #     OJO: este valor era parte de la decisión de auditoría H-BW-005 — avisar a Andrés.
 #   - Refresh token: largo (7 días), en cookie HttpOnly. Solo se envía a /auth/refresh.
-ACCESS_TOKEN_MINUTES = 120
+ACCESS_TOKEN_MINUTES = 1440  # 24h (pedido de dvertel). El refresh cubre la renovación.
 REFRESH_TOKEN_DAYS   = 7
+# Token de integraciones (máquina-a-máquina): vida larga y SEPARADO del de usuario.
+# Solo es válido en los endpoints de /integrations/* (ver get_integrator_or_user).
+INTEGRATOR_TOKEN_DAYS = int(os.getenv("INTEGRATOR_TOKEN_DAYS", "365"))
 
 # Define el modelo de datos para el payload del token
 class TokenData(BaseModel):
@@ -90,6 +93,10 @@ def get_current_user(db: Session = Depends(get_db), token: str = Depends(oauth2_
     try:
         # Decodificar el token para obtener los datos del usuario
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        # Los tokens de integración (type=integrator) NO valen en endpoints normales;
+        # solo en /integrations/* (ver get_integrator_or_user). Así quedan acotados.
+        if payload.get("type") == "integrator":
+            raise credentials_exception
         user_id: int = payload.get("sub")
         if user_id is None:
             raise credentials_exception
@@ -98,6 +105,42 @@ def get_current_user(db: Session = Depends(get_db), token: str = Depends(oauth2_
 
     # Buscar el usuario en la base de datos
     user = db.query(User).filter(User.email == user_id).first()
+    if user is None:
+        raise credentials_exception
+    return user
+
+
+def create_integrator_token(email: str) -> str:
+    """Token de larga vida para integraciones máquina-a-máquina (type=integrator).
+    Separado del token de usuario y solo válido en /integrations/*."""
+    expire = datetime.now(timezone.utc) + timedelta(days=INTEGRATOR_TOKEN_DAYS)
+    to_encode = {"sub": email, "exp": expire, "type": "integrator"}
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def get_integrator_or_user(
+    db: Session = Depends(get_db),
+    token: str = Depends(oauth2_scheme),
+):
+    """Dependencia para los endpoints de integración: acepta el token de
+    integrador (type=integrator) Y el token normal de usuario (type=access).
+    Rechaza refresh tokens."""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload.get("type") == "refresh":
+            raise credentials_exception
+        email = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+
+    user = db.query(User).filter(User.email == email).first()
     if user is None:
         raise credentials_exception
     return user
