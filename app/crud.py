@@ -6030,6 +6030,8 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
                 kind = "row"
             elif kind in ("repeater", "repetidor"):
                 kind = "repeater"
+            elif kind in ("conditional", "condicional", "condition"):
+                kind = "conditional"
             else:
                 kind = "field"
             gfields = []
@@ -6041,6 +6043,9 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
             if gfields:
                 groups.append({"kind": kind, "title": (el.get("title") or el.get("label") or "").strip(),
                                "min_items": el.get("min_items"), "max_items": el.get("max_items"),
+                               "source_label": (el.get("source_label") or "").strip(),
+                               "expected_value": str(el.get("expected_value") or "").strip(),
+                               "operator": (el.get("operator") or "==").strip(),
                                "fields": gfields})
     else:
         for fi, f in enumerate(fields):
@@ -6092,6 +6097,9 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
                     "type": QTYPE_TO_ITEM.get(nf["qtype"], "input"),
                     "linkExternalId": int(qid), "props": props}
 
+        label_to_qid = {}
+        pending_conditions = []  # [{source_label, expected_value, operator, filtered_qids}]
+
         def _persist(nf):
             q = Question(question_text=nf["label"], question_type=_QT(nf["qtype"]),
                          required=nf["required"], description=nf.get("description"))
@@ -6101,6 +6109,7 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
                 for ot in nf["options"]:
                     db.add(Option(question_id=q.id, option_text=ot))
             db.add(FormQuestion(form_id=form_id, question_id=q.id))
+            label_to_qid.setdefault((nf["label"] or "").strip().lower(), q.id)
             return q.id
 
         design = []
@@ -6126,10 +6135,54 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
                                          "maxItems": _max if _max > 0 else 99,
                                          "addButtonText": "Agregar", "space": 12},
                                "children": children})
+            elif g["kind"] == "conditional":
+                # Campos condicionales: van en el diseño como items normales; su
+                # visibilidad la controla question_filter_conditions (mostrar si la
+                # respuesta del campo fuente cumple la condición). El campo fuente
+                # se resuelve por label DESPUÉS (puede haberse creado en otro grupo).
+                _fqids = []
+                for nf in g["fields"]:
+                    qid = _persist(nf)
+                    design.append(_mk_item(nf, qid, space=12))
+                    _fqids.append(qid)
+                pending_conditions.append({
+                    "source_label": (g.get("source_label") or "").strip().lower(),
+                    "expected_value": g.get("expected_value") or "",
+                    "operator": g.get("operator") or "==",
+                    "filtered_qids": _fqids,
+                })
             else:  # 'field' (o 'row' de 1) → items sueltos a ancho completo
                 for nf in g["fields"]:
                     design.append(_mk_item(nf, _persist(nf), space=12))
         db.flush()
+
+        # Crear condiciones (question_filter_conditions) DENTRO de la tx: cada
+        # campo condicional se muestra cuando la respuesta del campo fuente cumple
+        # operator/expected_value. El fuente se resuelve por label en el form.
+        for pc in pending_conditions:
+            if not pc["source_label"] or not pc["expected_value"]:
+                db.rollback()
+                return _err("SCHEMA_MISMATCH",
+                            "Un layout condicional requiere 'source_label' (campo fuente) "
+                            "y 'expected_value' (valor que lo activa).",
+                            "elements[conditional]",
+                            "Definí source_label y expected_value en el elemento conditional.")
+            src_qid = label_to_qid.get(pc["source_label"])
+            if not src_qid:
+                db.rollback()
+                return _err("SCHEMA_MISMATCH",
+                            f"El layout condicional referencia el campo fuente "
+                            f"'{pc['source_label']}' que no existe en el formato.",
+                            "source_label",
+                            "El campo fuente debe ser un campo del mismo formato.")
+            for fq in pc["filtered_qids"]:
+                db.add(QuestionFilterCondition(
+                    form_id=form_id, filtered_question_id=fq,
+                    source_question_id=src_qid, condition_question_id=src_qid,
+                    expected_value=str(pc["expected_value"])[:255],
+                    operator=pc["operator"] or "=="))
+        if pending_conditions:
+            db.flush()
 
         db_form.form_design = design
         # habilitar AL FINAL, con preguntas ya vinculadas. activate=False => queda

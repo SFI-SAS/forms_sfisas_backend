@@ -173,12 +173,16 @@ class AtomicFormField(_BaseModel):
 
 
 class AtomicFormElement(_BaseModel):
-    """Grupo del diseño: 'field' (campo suelto), 'row' (fila horizontal) o
-    'repeater' (repetidor). Sus 'fields' generan las preguntas."""
-    kind: str = "field"  # field | row | repeater
+    """Grupo del diseño: 'field' (campo suelto), 'row' (fila horizontal),
+    'repeater' (repetidor) o 'conditional' (campos que se muestran según el valor
+    de otro campo). Sus 'fields' generan las preguntas."""
+    kind: str = "field"  # field | row | repeater | conditional
     title: Optional[str] = None          # label del repeater / título de la fila
     min_items: Optional[int] = None      # repeater
     max_items: Optional[int] = None      # repeater
+    source_label: Optional[str] = None   # conditional: label del campo fuente (controlador)
+    expected_value: Optional[str] = None # conditional: valor que activa los campos
+    operator: Optional[str] = None       # conditional: operador (default ==)
     fields: List[AtomicFormField] = _Field(default_factory=list)
 
 
