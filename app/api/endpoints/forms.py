@@ -227,6 +227,36 @@ def create_form_atomic_endpoint(
     return result
 
 
+class FieldConditionsBody(_BaseModel):
+    source_label: str                       # label del campo controlador
+    expected_value: str                     # valor que activa los condicionales
+    conditional_labels: List[str] = _Field(default_factory=list)  # campos a mostrar
+    operator: str = "=="
+
+
+@router.post("/{form_id}/field-conditions")
+def add_field_conditions_endpoint(
+    form_id: int,
+    body: FieldConditionsBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """F2 (layout condicional): agrega condiciones de visibilidad a un form
+    EXISTENTE por LABEL. Cada campo de conditional_labels se muestra solo si la
+    respuesta de source_label cumple operator/expected_value. Idempotente."""
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="User does not have permission to edit forms")
+    from app.crud import add_field_conditions as _afc
+    result = _afc(db=db, form_id=form_id, source_label=body.source_label,
+                  expected_value=body.expected_value,
+                  conditional_labels=body.conditional_labels, operator=body.operator)
+    if result.get("status") != "ok":
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=result.get("error"))
+    return result
+
+
 @router.get("/category-approvals", summary="Todas las categorías con sus aprobadores")
 def list_all_categories_with_approvers(
     db: Session = Depends(get_db),

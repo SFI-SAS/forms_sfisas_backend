@@ -6214,6 +6214,64 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
                     None, "Revisar los datos y reintentar.")
 
 
+def add_field_conditions(db: Session, form_id: int, source_label: str,
+                         expected_value: str, conditional_labels: list,
+                         operator: str = "==") -> dict:
+    """F2: agrega condiciones de visibilidad a un form EXISTENTE por LABEL de
+    campo (resuelve labels -> question_ids dentro del form). Cada campo de
+    conditional_labels se MUESTRA solo si la respuesta del campo source_label
+    cumple operator/expected_value. Crea filas en question_filter_conditions en
+    UNA transacción. Idempotente (no duplica). Devuelve {status, created,
+    unresolved, source_resolved}.
+    """
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        return {"status": "error", "error": {"code": "SCHEMA_MISMATCH",
+                "message": f"Form {form_id} no existe.", "offending_param": "form_id"}}
+
+    # Mapa label(lower) -> question_id de las preguntas vinculadas al form.
+    rows = (db.query(Question.id, Question.question_text)
+            .join(FormQuestion, FormQuestion.question_id == Question.id)
+            .filter(FormQuestion.form_id == form_id).all())
+    by_label = {}
+    for qid, qtext in rows:
+        by_label.setdefault((qtext or "").strip().lower(), qid)
+
+    src = by_label.get((source_label or "").strip().lower())
+    if not src:
+        return {"status": "error", "error": {"code": "SCHEMA_MISMATCH",
+                "message": f"El campo fuente '{source_label}' no existe en el form {form_id}.",
+                "offending_param": "source_label",
+                "suggested_fix": f"Campos disponibles: {sorted(by_label.keys())[:20]}"}}
+
+    op = (operator or "==").strip() or "=="
+    expv = str(expected_value or "").strip()[:255]
+    created, unresolved = 0, []
+    try:
+        for lbl in (conditional_labels or []):
+            fq = by_label.get((lbl or "").strip().lower())
+            if not fq:
+                unresolved.append(lbl)
+                continue
+            exists = db.query(QuestionFilterCondition).filter_by(
+                form_id=form_id, filtered_question_id=fq, source_question_id=src,
+                condition_question_id=src, expected_value=expv, operator=op).first()
+            if exists:
+                continue
+            db.add(QuestionFilterCondition(
+                form_id=form_id, filtered_question_id=fq, source_question_id=src,
+                condition_question_id=src, expected_value=expv, operator=op))
+            created += 1
+        db.commit()
+        return {"status": "ok", "created": created, "unresolved": unresolved,
+                "source_resolved": True, "form_id": form_id}
+    except Exception as e:
+        db.rollback()
+        logger.exception("add_field_conditions falló")
+        return {"status": "error", "error": {"code": "TX_ROLLED_BACK",
+                "message": f"{type(e).__name__}: {str(e)[:200]}"}}
+
+
 def delete_form(db: Session, form_id: int):
     form = db.query(Form).filter(Form.id == form_id).first()
 
