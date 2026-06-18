@@ -6229,15 +6229,24 @@ def add_field_conditions(db: Session, form_id: int, source_label: str,
         return {"status": "error", "error": {"code": "SCHEMA_MISMATCH",
                 "message": f"Form {form_id} no existe.", "offending_param": "form_id"}}
 
-    # Mapa label(lower) -> question_id de las preguntas vinculadas al form.
+    # Mapa label-normalizado -> question_id (insensible a acentos/espacios/case:
+    # el LLM o el usuario pueden escribir 'Razon social' vs 'Razón social').
+    import unicodedata as _ud
+
+    def _norm_lbl(s):
+        s = (s or "").strip().lower()
+        s = _ud.normalize("NFD", s)
+        s = "".join(c for c in s if _ud.category(c) != "Mn")  # quita tildes
+        return " ".join(s.split())  # colapsa espacios
+
     rows = (db.query(Question.id, Question.question_text)
             .join(FormQuestion, FormQuestion.question_id == Question.id)
             .filter(FormQuestion.form_id == form_id).all())
     by_label = {}
     for qid, qtext in rows:
-        by_label.setdefault((qtext or "").strip().lower(), qid)
+        by_label.setdefault(_norm_lbl(qtext), qid)
 
-    src = by_label.get((source_label or "").strip().lower())
+    src = by_label.get(_norm_lbl(source_label))
     if not src:
         return {"status": "error", "error": {"code": "SCHEMA_MISMATCH",
                 "message": f"El campo fuente '{source_label}' no existe en el form {form_id}.",
@@ -6249,7 +6258,7 @@ def add_field_conditions(db: Session, form_id: int, source_label: str,
     created, unresolved = 0, []
     try:
         for lbl in (conditional_labels or []):
-            fq = by_label.get((lbl or "").strip().lower())
+            fq = by_label.get(_norm_lbl(lbl))
             if not fq:
                 unresolved.append(lbl)
                 continue
