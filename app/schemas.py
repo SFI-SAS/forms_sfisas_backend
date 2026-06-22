@@ -1212,12 +1212,25 @@ class AliasList(BaseModel):
     class Config:
         from_attributes = True
 
+class MovementAliasGroup(BaseModel):
+    """
+    Agrupa varios campos (preguntas) de un movimiento bajo un mismo alias.
+    Es ESPECÍFICO del movimiento (aislado): no toca la tabla global `alias`
+    ni `Question.id_alias`. Ej: alias "NOMBRE" une "nombre del empleado" y
+    "nombre del ingeniero" para que representen lo mismo dentro del movimiento.
+    """
+    name: str = Field(..., min_length=1, max_length=255, example="NOMBRE")
+    description: Optional[str] = Field(None, max_length=500)
+    question_ids: List[int] = []
+
+
 class FormMovimientoBase(BaseModel):
     form_ids: List[int] = []
     question_ids: List[int] = []
     title: str
     description: Optional[str] = None
     id_category: Optional[int] = None
+    alias_groups: List[MovementAliasGroup] = []
 
 
 class FormMovimientoResponse(BaseModel):
@@ -1230,6 +1243,7 @@ class FormMovimientoResponse(BaseModel):
     id_category: Optional[int]
     is_enabled: bool
     created_at: datetime
+    alias_groups: List[MovementAliasGroup] = []
     
 class LastAnswerFilterRequest(BaseModel):
     form_id: int

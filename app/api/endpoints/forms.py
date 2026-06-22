@@ -4782,6 +4782,19 @@ def get_answers_by_movement(
         Form.id.in_(movimiento.form_ids)
     ).all()
 
+    # 🏷️ Alias por movimiento (aislado): mapa question_id -> alias
+    # Se arma desde movimiento.alias_groups, NO desde el alias global de la
+    # pregunta. Movimientos viejos (sin alias_groups) => mapa vacío => alias null.
+    alias_by_question = {}
+    for grupo in (movimiento.alias_groups or []):
+        alias_info = {
+            "id": None,  # alias por movimiento: no hay id de tabla global
+            "name": grupo.get("name"),
+            "description": grupo.get("description"),
+        }
+        for qid in (grupo.get("question_ids") or []):
+            alias_by_question[qid] = alias_info
+
     result = []
 
     for form in forms:
@@ -4820,11 +4833,7 @@ def get_answers_by_movement(
                             a.question.id,
                             a.question.question_text
                         ),
-                        "alias": {
-                            "id": a.question.alias.id,
-                            "name": a.question.alias.name,
-                            "description": a.question.alias.description
-                        } if a.question.alias else None,  # 👈 NUEVO
+                        "alias": alias_by_question.get(a.question.id),  # 👈 alias por movimiento
                         "answer_text": a.answer_text,
                         "file_path": a.file_path
                     }

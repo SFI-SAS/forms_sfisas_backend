@@ -646,8 +646,12 @@ class FormMovimientos(Base):
     __tablename__ = 'forms_movimientos'
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
-    form_ids = Column(AutoJSON, nullable=False)  # Lista de IDs de formularios  
+    form_ids = Column(AutoJSON, nullable=False)  # Lista de IDs de formularios
     question_ids = Column(AutoJSON, nullable=False)  # Lista de IDs de preguntas
+    # Alias por movimiento (aislado): agrupa campos equivalentes de distintos
+    # formatos bajo un mismo nombre, solo dentro de este movimiento. No usa la
+    # tabla global `alias`. Estructura: [{"name", "description", "question_ids"}]
+    alias_groups = Column(AutoJSON, nullable=True, default=list)
     title = Column(String(255), nullable=False)
     description = Column(String(255), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)

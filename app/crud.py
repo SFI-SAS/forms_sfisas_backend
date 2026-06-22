@@ -7691,6 +7691,76 @@ def get_answers_by_question_id(
         .all()
     )
 
+def _build_movimiento_alias_groups(raw_groups, question_ids):
+    """
+    Valida y normaliza los alias de un movimiento (alias por movimiento, aislado).
+
+    Reglas:
+    - Cada question_id de un grupo debe pertenecer a los question_ids del movimiento.
+    - Un mismo campo no puede estar en más de un alias.
+    - El nombre del alias es obligatorio y único dentro del movimiento (case-insensitive).
+    - Se ignoran los grupos sin campos asignados.
+
+    Devuelve una lista de dicts lista para persistir en AutoJSON.
+    """
+    allowed = set(question_ids or [])
+    seen_questions = set()
+    seen_names = set()
+    result = []
+
+    for group in raw_groups or []:
+        # Soporta pydantic model o dict
+        if hasattr(group, "model_dump"):
+            group = group.model_dump()
+        elif hasattr(group, "dict"):
+            group = group.dict()
+
+        name = (group.get("name") or "").strip().upper()
+        if not name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cada alias debe tener un nombre"
+            )
+
+        qids = []
+        for qid in group.get("question_ids") or []:
+            if qid not in allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"El alias '{name}' incluye un campo que no pertenece al movimiento"
+                )
+            if qid in seen_questions:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Un campo no puede pertenecer a más de un alias"
+                )
+            seen_questions.add(qid)
+            qids.append(qid)
+
+        # Grupos vacíos se descartan silenciosamente
+        if not qids:
+            continue
+
+        if name in seen_names:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"El nombre de alias '{name}' está repetido en el movimiento"
+            )
+        seen_names.add(name)
+
+        description = group.get("description")
+        if description is not None:
+            description = description.strip().upper() or None
+
+        result.append({
+            "name": name,
+            "description": description,
+            "question_ids": qids
+        })
+
+    return result
+
+
 def create_form_movimiento(
     db: Session,
     movimiento: FormMovimientoBase,
@@ -7721,10 +7791,17 @@ def create_form_movimiento(
                     detail="Una o más preguntas no existen"
                 )
 
+        # ✅ Validar y normalizar alias_groups (alias por movimiento, aislado)
+        alias_groups = _build_movimiento_alias_groups(
+            getattr(movimiento, "alias_groups", None) or [],
+            movimiento.question_ids or []
+        )
+
         db_movimiento = FormMovimientos(
             user_id=user_id,
             form_ids=movimiento.form_ids or [],        # ✅ nunca NULL
             question_ids=movimiento.question_ids or [],# ✅ nunca NULL
+            alias_groups=alias_groups,                 # ✅ nunca NULL
             title=movimiento.title,
             description=movimiento.description,
             id_category=movimiento.id_category,
@@ -7744,7 +7821,8 @@ def create_form_movimiento(
             "description": db_movimiento.description,
             "id_category": db_movimiento.id_category,
             "is_enabled": db_movimiento.is_enabled,
-            "created_at": db_movimiento.created_at
+            "created_at": db_movimiento.created_at,
+            "alias_groups": db_movimiento.alias_groups or []
         }
 
     except IntegrityError:
