@@ -16,7 +16,7 @@ from pymysql import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from app.database import get_db
-from app.models import Answer, Response, Form, Alias, FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationQuestionRule, User, UserType
+from app.models import Answer, Response, Form, FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationQuestionRule, User, UserType
 from app.crud import  create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_answers_by_question_id, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers_optimized, get_related_or_filtered_answers_with_forms, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
 from app.schemas import AnswerByQuestionResponse, AnswerSchema, DetectSelectRelationsRequest, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionUpdatePayload, QuestionWithCategory, RelationQuestionRuleCreate, RelationQuestionRuleResponse, UpdateQuestionCategory
 from app.core.security import get_current_user, require_roles
@@ -161,7 +161,6 @@ def get_questions_by_form(
         .options(
             joinedload(Question.category),
             joinedload(Question.options),
-            joinedload(Question.alias),
         )
         .filter(Question.id_form == form_id)
         .order_by(Question.id)
@@ -178,7 +177,7 @@ def create_question_endpoint(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Crea una nueva pregunta con alias opcional.
+    Crea una nueva pregunta.
     """
     if current_user.user_type.name != "admin":
         raise HTTPException(
@@ -186,15 +185,6 @@ def create_question_endpoint(
             detail="User does not have permission to create questions"
         )
     
-    # ⭐ VALIDAR QUE EL ALIAS EXISTA
-    if question.id_alias:
-        alias = db.query(Alias).filter(Alias.id == question.id_alias).first()
-        if not alias:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="El alias especificado no existe"
-            )
-
     # Validar que el formato exista si se especifica
     if question.id_form:
         form_exists = db.query(Form).filter(Form.id == question.id_form).first()
@@ -221,7 +211,6 @@ def create_question_endpoint(
             unique_answer=getattr(question, "unique_answer", False),
             root=question.root,
             id_category=question.id_category,
-            id_alias=question.id_alias,
             id_form=question.id_form,
         )
         db.add(db_question)
@@ -1679,11 +1668,6 @@ def update_question_endpoint(
         question.question_type = payload.question_type
     if payload.id_category is not None:
         question.id_category = payload.id_category
-    if payload.id_alias is not None:
-        question.id_alias = payload.id_alias
-    elif payload.id_alias is None and "id_alias" in (payload.model_fields_set or set()):
-        question.id_alias = None
-
     if payload.id_form is not None:
         form_exists = db.query(Form).filter(Form.id == payload.id_form).first()
         if not form_exists:
