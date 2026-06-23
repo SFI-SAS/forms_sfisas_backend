@@ -4688,35 +4688,53 @@ def create_form_movimiento_endpoint(
     )
 
 
+def _user_can_view_movimiento(user: User, mov) -> bool:
+    """Reglas de visibilidad de un movimiento:
+    - admin: ve todos
+    - dueño (creador del movimiento): ve el suyo
+    - usuario en la lista de visores (allowed_user_ids): ve ese
+    """
+    if user.user_type.name == UserType.admin.name:
+        return True
+    if mov.user_id == user.id:
+        return True
+    return user.id in (mov.allowed_user_ids or [])
+
+
 @router.get("/movimientos/all", response_model=List[dict])
 def get_form_movimientos_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Retorna una lista básica de movimientos de formularios.
+    Lista los movimientos que el usuario actual puede VER.
 
-    - id
-    - title
-    - description
+    - admin: todos
+    - dueño: los que creó
+    - cualquier usuario asignado como visor: solo esos
     """
+    is_admin = current_user.user_type.name == UserType.admin.name
 
-    # 🔐 Validación de roles permitidos
-    if current_user.user_type.name not in [
-        UserType.creator.name,
-        UserType.admin.name
-    ]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to view movimientos"
+    rows = (
+        db.query(
+            FormMovimientos.id,
+            FormMovimientos.title,
+            FormMovimientos.description,
+            FormMovimientos.user_id,
+            FormMovimientos.allowed_user_ids,
         )
+        .filter(FormMovimientos.is_enabled == True)
+        .order_by(FormMovimientos.created_at.desc())
+        .all()
+    )
 
-    movimientos = get_all_form_movimientos_basic(db)
-
-    if not movimientos:
-        return []  # 👈 mejor que 404 para listas
-
-    return movimientos
+    return [
+        {"id": m.id, "title": m.title, "description": m.description}
+        for m in rows
+        if is_admin
+        or m.user_id == current_user.id
+        or current_user.id in (m.allowed_user_ids or [])
+    ]
 def get_question_labels_from_form_design(form_design: list) -> dict:
     labels = {}
 
@@ -4770,7 +4788,7 @@ def _movimiento_to_number(value):
 
 
 def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
-                                   search, alias, last_only):
+                                   search, alias, last_only, cap=200):
     """Aplana, filtra, totaliza y pagina el consolidado de un movimiento.
 
     `result` es la estructura anidada forms->responses->answers ya construida.
@@ -4913,7 +4931,7 @@ def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
 
     # 5) Paginación
     page = max(1, page or 1)
-    page_size = min(200, max(1, page_size or 50))
+    page_size = min(cap, max(1, page_size or 50))
     total_rows = len(filtered)
     total_pages = (total_rows + page_size - 1) // page_size if total_rows else 1
     start = (page - 1) * page_size
@@ -4960,6 +4978,74 @@ def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
     }
 
 
+def _collect_movimiento_result(db: Session, movimiento):
+    """Arma la estructura anidada forms->responses->answers de un movimiento.
+
+    Aplica el alias por pregunta (alias_groups) y por formato (form_aliases).
+    Reutilizado por la consulta paginada y por la exportación a Excel.
+    """
+    forms = db.query(Form).filter(Form.id.in_(movimiento.form_ids)).all()
+
+    alias_by_question = {}
+    for grupo in (movimiento.alias_groups or []):
+        alias_info = {
+            "id": None,
+            "name": grupo.get("name"),
+            "description": grupo.get("description"),
+        }
+        for qid in (grupo.get("question_ids") or []):
+            alias_by_question[qid] = alias_info
+
+    alias_by_form = {}
+    for fa in (movimiento.form_aliases or []):
+        if fa.get("form_id") is not None and fa.get("alias"):
+            alias_by_form[fa["form_id"]] = fa["alias"]
+
+    result = []
+    for form in forms:
+        question_labels = get_question_labels_from_form_design(form.form_design or [])
+
+        responses = db.query(Response).filter(
+            Response.form_id == form.id,
+            Response.status == ResponseStatus.submitted
+        ).all()
+
+        form_responses = []
+        for response in responses:
+            answers = db.query(Answer).join(Question).filter(
+                Answer.response_id == response.id,
+                Answer.question_id.in_(movimiento.question_ids)
+            ).all()
+            if not answers:
+                continue
+            form_responses.append({
+                "response_id": response.id,
+                "submitted_at": response.submitted_at,
+                "answers": [
+                    {
+                        "question_id": a.question.id,
+                        "question_text": question_labels.get(a.question.id, a.question.question_text),
+                        "question_label": question_labels.get(a.question.id, a.question.question_text),
+                        "question_type": getattr(a.question.question_type, "value", a.question.question_type),
+                        "alias": alias_by_question.get(a.question.id),
+                        "answer_text": a.answer_text,
+                        "file_path": a.file_path,
+                    }
+                    for a in answers
+                ],
+            })
+
+        if form_responses:
+            result.append({
+                "form_id": form.id,
+                "form_title": form.title,
+                "form_alias": alias_by_form.get(form.id),
+                "responses": form_responses,
+            })
+
+    return result
+
+
 @router.get(
     "/movimientos/{movement_id}/answers",
     status_code=status.HTTP_200_OK
@@ -4982,16 +5068,6 @@ def get_answers_by_movement(
     - Con `page`: modo paginado → {columns, rows, totals, aliases, pagination}.
       La consolidación, filtros, totales y paginación se calculan en el servidor.
     """
-    # 🔐 Validar roles
-    if current_user.user_type.name not in [
-        UserType.creator.name,
-        UserType.admin.name
-    ]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to view movement answers"
-        )
-
     movimiento = db.query(FormMovimientos).filter(
         FormMovimientos.id == movement_id,
         FormMovimientos.is_enabled == True
@@ -5001,6 +5077,13 @@ def get_answers_by_movement(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Movimiento no encontrado"
+        )
+
+    # 🔐 Visibilidad por movimiento (admin / dueño / visor autorizado)
+    if not _user_can_view_movimiento(current_user, movimiento):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para ver este movimiento"
         )
 
     paginated = page is not None
@@ -5022,89 +5105,7 @@ def get_answers_by_movement(
             })
         return empty
 
-    forms = db.query(Form).filter(
-        Form.id.in_(movimiento.form_ids)
-    ).all()
-
-    # 🏷️ Alias por movimiento (aislado): mapa question_id -> alias
-    # Se arma desde movimiento.alias_groups, NO desde el alias global de la
-    # pregunta. Movimientos viejos (sin alias_groups) => mapa vacío => alias null.
-    alias_by_question = {}
-    for grupo in (movimiento.alias_groups or []):
-        alias_info = {
-            "id": None,  # alias por movimiento: no hay id de tabla global
-            "name": grupo.get("name"),
-            "description": grupo.get("description"),
-        }
-        for qid in (grupo.get("question_ids") or []):
-            alias_by_question[qid] = alias_info
-
-    # 🏷️ Alias por FORMATO (aislado): mapa form_id -> alias. Se usará como
-    # etiqueta de "Formato origen" en vez del título real del formato.
-    alias_by_form = {}
-    for fa in (movimiento.form_aliases or []):
-        if fa.get("form_id") is not None and fa.get("alias"):
-            alias_by_form[fa["form_id"]] = fa["alias"]
-
-    result = []
-
-    for form in forms:
-        # 🔑 Mapear labels desde el form_design
-        question_labels = get_question_labels_from_form_design(
-            form.form_design or []
-        )
-
-        responses = db.query(Response).filter(
-            Response.form_id == form.id,
-            Response.status == ResponseStatus.submitted
-        ).all()
-
-        form_responses = []
-
-        for response in responses:
-            answers = db.query(Answer).join(Question).filter(
-                Answer.response_id == response.id,
-                Answer.question_id.in_(movimiento.question_ids)
-            ).all()
-
-            if not answers:
-                continue
-
-            form_responses.append({
-                "response_id": response.id,
-                "submitted_at": response.submitted_at,
-                "answers": [
-                    {
-                        "question_id": a.question.id,
-                        "question_text": question_labels.get(
-                            a.question.id,
-                            a.question.question_text
-                        ),
-                        "question_label": question_labels.get(
-                            a.question.id,
-                            a.question.question_text
-                        ),
-                        # 👇 tipo de la pregunta (normalizado a string) para que el
-                        # consolidado sepa qué columnas son numéricas (totalizables)
-                        "question_type": getattr(
-                            a.question.question_type, "value",
-                            a.question.question_type
-                        ),
-                        "alias": alias_by_question.get(a.question.id),  # 👈 alias por movimiento
-                        "answer_text": a.answer_text,
-                        "file_path": a.file_path
-                    }
-                    for a in answers
-                ]
-            })
-
-        if form_responses:
-            result.append({
-                "form_id": form.id,
-                "form_title": form.title,
-                "form_alias": alias_by_form.get(form.id),
-                "responses": form_responses
-            })
+    result = _collect_movimiento_result(db, movimiento)
 
     # Modo legacy: estructura anidada (compatibilidad con MovementDetailView)
     if not paginated:
@@ -5126,6 +5127,110 @@ def get_answers_by_movement(
         **consolidado,
     }
 
+@router.get("/movimientos/{movement_id}/export", status_code=status.HTTP_200_OK)
+def export_movimiento_excel(
+    movement_id: int,
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    alias: Optional[str] = Query(None),
+    last_only: bool = Query(False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Exporta la tabla COMPLETA del movimiento a Excel (todas las filas que
+    pasan los filtros, sin paginar) más una fila de totales."""
+    movimiento = db.query(FormMovimientos).filter(
+        FormMovimientos.id == movement_id,
+        FormMovimientos.is_enabled == True
+    ).first()
+    if not movimiento:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Movimiento no encontrado")
+
+    # 🔐 Visibilidad por movimiento (admin / dueño / visor autorizado)
+    if not _user_can_view_movimiento(current_user, movimiento):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para exportar este movimiento"
+        )
+
+    if movimiento.form_ids and movimiento.question_ids:
+        result = _collect_movimiento_result(db, movimiento)
+    else:
+        result = []
+
+    # Todas las filas filtradas (page_size enorme con cap elevado)
+    consolidado = _build_movimiento_consolidado(
+        result, page=1, page_size=10**9,
+        date_from=date_from, date_to=date_to, search=search,
+        alias=alias, last_only=last_only, cap=10**9,
+    )
+    columns = consolidado["columns"]
+    rows = consolidado["rows"]
+    totals = consolidado["totals"]
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Movimiento"
+
+    headers = ["Fecha y hora", "Formato origen"] + [c["label"] for c in columns]
+    ws.append(headers)
+    header_fill = PatternFill("solid", fgColor="0F8594")
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = header_fill
+        cell.alignment = Alignment(vertical="center", horizontal="left")
+
+    for row in rows:
+        sa = row.get("submitted_at")
+        try:
+            fecha = sa.strftime("%d/%m/%Y %H:%M") if sa else ""
+        except AttributeError:
+            fecha = str(sa) if sa else ""
+        origen = row.get("form_alias") or row.get("form_title") or ""
+        vals = []
+        for c in columns:
+            v = row["values"].get(c["key"])
+            if c["totalize"]:
+                num = _movimiento_to_number(v)
+                vals.append(num if num is not None else ("" if v is None else str(v)))
+            else:
+                vals.append("" if v is None else str(v))
+        ws.append([fecha, origen] + vals)
+
+    # Fila de totales (solo columnas numéricas)
+    if totals:
+        total_row = ["", "TOTAL"]
+        for c in columns:
+            total_row.append(totals.get(c["key"], "") if c["totalize"] else "")
+        ws.append(total_row)
+        for cell in ws[ws.max_row]:
+            cell.font = Font(bold=True)
+
+    # Anchos aproximados de columna
+    widths = [20, 20] + [22 for _ in columns]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    ws.freeze_panes = "A2"
+
+    stream = BytesIO()
+    wb.save(stream)
+    stream.seek(0)
+
+    safe_title = "".join(ch for ch in (movimiento.title or "movimiento") if ch.isalnum() or ch in (" ", "-", "_")).strip() or "movimiento"
+    filename = f"{safe_title}.xlsx"
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/movimientos/response/{response_id}/full", status_code=status.HTTP_200_OK)
 def get_movement_response_full(
     response_id: int,
@@ -5137,17 +5242,9 @@ def get_movement_response_full(
     Devuelve el formato completo (form + form_design) y la respuesta con sus
     answers/approvals, con el MISMO shape que usa "Consultar mis respuestas"
     (`/consultants/me/responses/{id}/full`), para poder reutilizar el mismo
-    componente de detalle. Acceso restringido a creator/admin.
+    componente de detalle. Acceso: admin, o cualquier usuario que pueda VER un
+    movimiento que incluya el formato de esta respuesta (dueño/visor).
     """
-    if current_user.user_type.name not in [
-        UserType.creator.name,
-        UserType.admin.name
-    ]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to view this response"
-        )
-
     r = (
         db.query(Response)
         .options(
@@ -5161,6 +5258,20 @@ def get_movement_response_full(
     )
     if not r:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Respuesta no encontrada")
+
+    # 🔐 Acceso: admin, o el usuario puede ver un movimiento que incluya el
+    # formato de esta respuesta (dueño o visor autorizado de ese movimiento).
+    if current_user.user_type.name != UserType.admin.name:
+        movs = db.query(FormMovimientos).filter(FormMovimientos.is_enabled == True).all()
+        can = any(
+            (r.form_id in (mv.form_ids or [])) and _user_can_view_movimiento(current_user, mv)
+            for mv in movs
+        )
+        if not can:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permiso para ver este registro"
+            )
 
     # Mostrar solo las answers más recientes (descartar las versionadas)
     histories = db.query(AnswerHistory).filter(AnswerHistory.response_id == response_id).all()

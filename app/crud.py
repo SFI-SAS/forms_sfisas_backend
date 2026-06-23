@@ -7794,6 +7794,35 @@ def _build_movimiento_form_aliases(raw_aliases, form_ids):
     return list(by_form.values())
 
 
+def _build_movimiento_allowed_users(raw_ids, db: Session):
+    """Normaliza y valida la lista de visores (user_ids) de un movimiento.
+
+    Quita duplicados, ignora valores no enteros y verifica que cada usuario
+    exista. Devuelve una lista de ints lista para persistir en AutoJSON.
+    """
+    ids = []
+    seen = set()
+    for uid in raw_ids or []:
+        try:
+            uid = int(uid)
+        except (TypeError, ValueError):
+            continue
+        if uid in seen:
+            continue
+        seen.add(uid)
+        ids.append(uid)
+
+    if ids:
+        existing = {u.id for u in db.query(User.id).filter(User.id.in_(ids)).all()}
+        missing = [u for u in ids if u not in existing]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Uno o más usuarios autorizados no existen"
+            )
+    return ids
+
+
 def create_form_movimiento(
     db: Session,
     movimiento: FormMovimientoBase,
@@ -7836,12 +7865,19 @@ def create_form_movimiento(
             movimiento.form_ids or []
         )
 
+        # ✅ Visores autorizados (cualquier usuario existente)
+        allowed_user_ids = _build_movimiento_allowed_users(
+            getattr(movimiento, "allowed_user_ids", None) or [],
+            db
+        )
+
         db_movimiento = FormMovimientos(
             user_id=user_id,
             form_ids=movimiento.form_ids or [],        # ✅ nunca NULL
             question_ids=movimiento.question_ids or [],# ✅ nunca NULL
             alias_groups=alias_groups,                 # ✅ nunca NULL
             form_aliases=form_aliases,                 # ✅ nunca NULL
+            allowed_user_ids=allowed_user_ids,         # ✅ nunca NULL
             title=movimiento.title,
             description=movimiento.description,
             id_category=movimiento.id_category,
@@ -7863,7 +7899,8 @@ def create_form_movimiento(
             "is_enabled": db_movimiento.is_enabled,
             "created_at": db_movimiento.created_at,
             "alias_groups": db_movimiento.alias_groups or [],
-            "form_aliases": db_movimiento.form_aliases or []
+            "form_aliases": db_movimiento.form_aliases or [],
+            "allowed_user_ids": db_movimiento.allowed_user_ids or []
         }
 
     except IntegrityError:
@@ -7942,11 +7979,16 @@ def update_form_movimiento(
             getattr(movimiento, "form_aliases", None) or [],
             movimiento.form_ids or []
         )
+        allowed_user_ids = _build_movimiento_allowed_users(
+            getattr(movimiento, "allowed_user_ids", None) or [],
+            db
+        )
 
         db_movimiento.form_ids = movimiento.form_ids or []
         db_movimiento.question_ids = movimiento.question_ids or []
         db_movimiento.alias_groups = alias_groups
         db_movimiento.form_aliases = form_aliases
+        db_movimiento.allowed_user_ids = allowed_user_ids
         db_movimiento.title = movimiento.title
         db_movimiento.description = movimiento.description
         db_movimiento.id_category = movimiento.id_category
@@ -7965,7 +8007,8 @@ def update_form_movimiento(
             "is_enabled": db_movimiento.is_enabled,
             "created_at": db_movimiento.created_at,
             "alias_groups": db_movimiento.alias_groups or [],
-            "form_aliases": db_movimiento.form_aliases or []
+            "form_aliases": db_movimiento.form_aliases or [],
+            "allowed_user_ids": db_movimiento.allowed_user_ids or []
         }
 
     except HTTPException:

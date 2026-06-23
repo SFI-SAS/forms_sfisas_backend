@@ -656,6 +656,9 @@ class FormMovimientos(Base):
     # solo dentro de este movimiento, para mostrarlo en la columna "Formato
     # origen" en vez del título real. Estructura: [{"form_id": int, "alias": str}]
     form_aliases = Column(AutoJSON, nullable=True, default=list)
+    # Visores autorizados: lista de user_ids que pueden VER este movimiento
+    # (además del dueño y de los admins). Estructura: [int, ...]
+    allowed_user_ids = Column(AutoJSON, nullable=True, default=list)
     title = Column(String(255), nullable=False)
     description = Column(String(255), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)

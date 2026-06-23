@@ -1238,6 +1238,8 @@ class FormMovimientoBase(BaseModel):
     id_category: Optional[int] = None
     alias_groups: List[MovementAliasGroup] = []
     form_aliases: List[MovementFormAlias] = []
+    # Usuarios autorizados a VER el movimiento (además del dueño y los admins)
+    allowed_user_ids: List[int] = []
 
 
 class FormMovimientoResponse(BaseModel):
@@ -1252,6 +1254,7 @@ class FormMovimientoResponse(BaseModel):
     created_at: datetime
     alias_groups: List[MovementAliasGroup] = []
     form_aliases: List[MovementFormAlias] = []
+    allowed_user_ids: List[int] = []
     
 class LastAnswerFilterRequest(BaseModel):
     form_id: int
