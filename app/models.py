@@ -652,6 +652,10 @@ class FormMovimientos(Base):
     # formatos bajo un mismo nombre, solo dentro de este movimiento. No usa la
     # tabla global `alias`. Estructura: [{"name", "description", "question_ids"}]
     alias_groups = Column(AutoJSON, nullable=True, default=list)
+    # Alias por FORMATO (aislado al movimiento): renombra cada formato de origen
+    # solo dentro de este movimiento, para mostrarlo en la columna "Formato
+    # origen" en vez del título real. Estructura: [{"form_id": int, "alias": str}]
+    form_aliases = Column(AutoJSON, nullable=True, default=list)
     title = Column(String(255), nullable=False)
     description = Column(String(255), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
@@ -1076,5 +1080,5 @@ class QuestionRequestField(Base):
     alias_rel = relationship('Alias')
     created_question = relationship('Question', foreign_keys=[created_question_id])
     reviewer = relationship('User', foreign_keys=[reviewed_by])
-    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    
 
