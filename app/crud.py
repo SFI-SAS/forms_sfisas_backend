@@ -7761,6 +7761,40 @@ def _build_movimiento_alias_groups(raw_groups, question_ids):
     return result
 
 
+def _build_movimiento_form_aliases(raw_aliases, form_ids):
+    """
+    Valida y normaliza los alias por FORMATO de un movimiento (aislado).
+
+    Reglas:
+    - Cada form_id del alias debe pertenecer a los form_ids del movimiento.
+    - Un formato solo puede tener un alias (el último gana si se repite).
+    - El alias es obligatorio (no vacío). Se ignoran los que queden vacíos.
+
+    Devuelve una lista de dicts lista para persistir en AutoJSON.
+    """
+    allowed = set(form_ids or [])
+    by_form = {}
+
+    for item in raw_aliases or []:
+        if hasattr(item, "model_dump"):
+            item = item.model_dump()
+        elif hasattr(item, "dict"):
+            item = item.dict()
+
+        form_id = item.get("form_id")
+        alias = (item.get("alias") or "").strip()
+        if not alias:
+            continue
+        if form_id not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Un alias de formato apunta a un formato que no pertenece al movimiento"
+            )
+        by_form[form_id] = {"form_id": form_id, "alias": alias}
+
+    return list(by_form.values())
+
+
 def create_form_movimiento(
     db: Session,
     movimiento: FormMovimientoBase,
@@ -7797,11 +7831,18 @@ def create_form_movimiento(
             movimiento.question_ids or []
         )
 
+        # ✅ Validar y normalizar alias por formato (aislado al movimiento)
+        form_aliases = _build_movimiento_form_aliases(
+            getattr(movimiento, "form_aliases", None) or [],
+            movimiento.form_ids or []
+        )
+
         db_movimiento = FormMovimientos(
             user_id=user_id,
             form_ids=movimiento.form_ids or [],        # ✅ nunca NULL
             question_ids=movimiento.question_ids or [],# ✅ nunca NULL
             alias_groups=alias_groups,                 # ✅ nunca NULL
+            form_aliases=form_aliases,                 # ✅ nunca NULL
             title=movimiento.title,
             description=movimiento.description,
             id_category=movimiento.id_category,
@@ -7822,7 +7863,8 @@ def create_form_movimiento(
             "id_category": db_movimiento.id_category,
             "is_enabled": db_movimiento.is_enabled,
             "created_at": db_movimiento.created_at,
-            "alias_groups": db_movimiento.alias_groups or []
+            "alias_groups": db_movimiento.alias_groups or [],
+            "form_aliases": db_movimiento.form_aliases or []
         }
 
     except IntegrityError:
@@ -7839,6 +7881,109 @@ def create_form_movimiento(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno del servidor: {str(e)}"
         )
+
+def update_form_movimiento(
+    db: Session,
+    movement_id: int,
+    movimiento: FormMovimientoBase,
+    user_id: int,
+    is_admin: bool = False
+):
+    """
+    Edita un movimiento existente: nombre, descripción, categoría, formatos,
+    campos, alias por campo (alias_groups) y alias por formato (form_aliases).
+
+    Permisos: solo el dueño del movimiento o un admin pueden editarlo.
+    """
+    try:
+        db_movimiento = db.query(FormMovimientos).filter(
+            FormMovimientos.id == movement_id
+        ).first()
+
+        if not db_movimiento:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Movimiento no encontrado"
+            )
+
+        if db_movimiento.user_id != user_id and not is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permiso para editar este movimiento"
+            )
+
+        # ✅ Validar formularios SOLO si vienen
+        if movimiento.form_ids:
+            existing_forms = db.query(Form.id).filter(
+                Form.id.in_(movimiento.form_ids)
+            ).all()
+            if len(existing_forms) != len(set(movimiento.form_ids)):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Uno o más formularios no existen"
+                )
+
+        # ✅ Validar preguntas SOLO si vienen
+        if movimiento.question_ids:
+            existing_questions = db.query(Question.id).filter(
+                Question.id.in_(movimiento.question_ids)
+            ).all()
+            if len(existing_questions) != len(set(movimiento.question_ids)):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Una o más preguntas no existen"
+                )
+
+        # ✅ Validar y normalizar alias (por campo y por formato)
+        alias_groups = _build_movimiento_alias_groups(
+            getattr(movimiento, "alias_groups", None) or [],
+            movimiento.question_ids or []
+        )
+        form_aliases = _build_movimiento_form_aliases(
+            getattr(movimiento, "form_aliases", None) or [],
+            movimiento.form_ids or []
+        )
+
+        db_movimiento.form_ids = movimiento.form_ids or []
+        db_movimiento.question_ids = movimiento.question_ids or []
+        db_movimiento.alias_groups = alias_groups
+        db_movimiento.form_aliases = form_aliases
+        db_movimiento.title = movimiento.title
+        db_movimiento.description = movimiento.description
+        db_movimiento.id_category = movimiento.id_category
+
+        db.commit()
+        db.refresh(db_movimiento)
+
+        return {
+            "id": db_movimiento.id,
+            "user_id": db_movimiento.user_id,
+            "form_ids": db_movimiento.form_ids,
+            "question_ids": db_movimiento.question_ids,
+            "title": db_movimiento.title,
+            "description": db_movimiento.description,
+            "id_category": db_movimiento.id_category,
+            "is_enabled": db_movimiento.is_enabled,
+            "created_at": db_movimiento.created_at,
+            "alias_groups": db_movimiento.alias_groups or [],
+            "form_aliases": db_movimiento.form_aliases or []
+        }
+
+    except HTTPException:
+        raise
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Error al actualizar el movimiento"
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error interno del servidor: {str(e)}"
+        )
+
 
 def get_all_form_movimientos_basic(db: Session):
     movimientos = (

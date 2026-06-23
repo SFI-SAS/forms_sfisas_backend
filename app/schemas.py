@@ -1224,6 +1224,16 @@ class MovementAliasGroup(BaseModel):
     question_ids: List[int] = []
 
 
+class MovementFormAlias(BaseModel):
+    """
+    Alias por FORMATO dentro de un movimiento (aislado). Renombra cómo se ve
+    cada formato de origen en la columna "Formato origen" del detalle, sin tocar
+    el título real del formato.
+    """
+    form_id: int
+    alias: str = Field(..., min_length=1, max_length=255)
+
+
 class FormMovimientoBase(BaseModel):
     form_ids: List[int] = []
     question_ids: List[int] = []
@@ -1231,6 +1241,7 @@ class FormMovimientoBase(BaseModel):
     description: Optional[str] = None
     id_category: Optional[int] = None
     alias_groups: List[MovementAliasGroup] = []
+    form_aliases: List[MovementFormAlias] = []
 
 
 class FormMovimientoResponse(BaseModel):
@@ -1244,6 +1255,7 @@ class FormMovimientoResponse(BaseModel):
     is_enabled: bool
     created_at: datetime
     alias_groups: List[MovementAliasGroup] = []
+    form_aliases: List[MovementFormAlias] = []
     
 class LastAnswerFilterRequest(BaseModel):
     form_id: int

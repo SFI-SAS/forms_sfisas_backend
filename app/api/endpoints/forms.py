@@ -16,7 +16,7 @@ from app.api.controllers.mail import send_response_answers_email
 from app.redis_client import redis_client
 from app.database import get_db
 from app.models import Answer, AnswerHistory, ApprovalStatus, CategoryApproval, FormatType, Form, FormAnswer, FormAnswerEditor, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, GenericActivity, GenericActivityForm, PalabrasClave, Profile, ProfileCategory, ProfileForm, ProfileUser, Question, QuestionTableRelation, QuestionType, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
-from app.crud import  _extract_style_config, _serialize_answers, add_category_approver, analyze_form_relations, apply_template_service, bulk_save_category_approvers, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, create_template_service, delete_form, delete_form_category, delete_template_service, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_categories_with_approvers, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_approvals, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_template_detail_service, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, list_templates_service, move_category, process_regisfacial_answer, remove_category_approver, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, sync_form_approvals_from_category, toggle_form_status, update_category_approver, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status, update_template_service
+from app.crud import  _extract_style_config, _serialize_answers, add_category_approver, analyze_form_relations, apply_template_service, bulk_save_category_approvers, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, create_template_service, delete_form, delete_form_category, delete_template_service, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_categories_with_approvers, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_approvals, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_template_detail_service, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, list_templates_service, move_category, process_regisfacial_answer, remove_category_approver, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, sync_form_approvals_from_category, toggle_form_status, update_category_approver, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status, update_template_service, update_form_movimiento
 from app.schemas import AlertMessageRequest, AnswerEditorsConfigOut, AnswerEditorsConfigUpdate, AnswerEditorUserOut, CategoryApprovalBulkSave, CategoryApprovalCreate, CategoryApprovalResponse, CategoryApprovalUpdate, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, FormTemplateCreate, FormTemplateDetail, FormTemplateResponse, FormTemplateUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user, require_roles
 from io import BytesIO
@@ -4741,15 +4741,247 @@ def get_question_labels_from_form_design(form_design: list) -> dict:
 
     extract(form_design)
     return labels
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers para el modo paginado del consolidado de movimientos.
+# La consolidación (filas planas, columnas fusionadas por alias, totales) se
+# arma en el SERVIDOR para que al cliente solo le llegue la página pedida + los
+# totales calculados sobre TODO el conjunto filtrado (no solo la página visible).
+# ─────────────────────────────────────────────────────────────────────────────
+def _movimiento_to_number(value):
+    """Convierte un answer_text a número para totalizar columnas numéricas.
+
+    Tolera símbolos de moneda y separadores de miles/decimales comunes en
+    Colombia. Devuelve None si el valor no es numérico (se ignora en la suma).
+    """
+    if value is None:
+        return None
+    s = str(value).strip().replace("$", "").replace(" ", "")
+    if s == "":
+        return None
+    if "," in s and "." in s:
+        # 1.234,56 -> coma decimal, punto miles
+        s = s.replace(".", "").replace(",", ".")
+    elif "," in s and "." not in s:
+        s = s.replace(",", ".")
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
+                                   search, alias, last_only):
+    """Aplana, filtra, totaliza y pagina el consolidado de un movimiento.
+
+    `result` es la estructura anidada forms->responses->answers ya construida.
+    Devuelve columns (con type/totalize), rows de la página, totals del conjunto
+    filtrado completo, aliases disponibles y metadatos de paginación.
+    """
+    from datetime import datetime
+
+    # 1) Aplanar: una fila por respuesta
+    flat_rows = []
+    alias_names = set()
+    for form in result:
+        for resp in form["responses"]:
+            flat_rows.append({
+                "form_id": form["form_id"],
+                "form_title": form["form_title"],
+                "form_alias": form.get("form_alias"),
+                "response_id": resp["response_id"],
+                "submitted_at": resp["submitted_at"],
+                "answers": resp["answers"],
+            })
+            for a in resp["answers"]:
+                if a.get("alias") and a["alias"].get("name"):
+                    alias_names.add(a["alias"]["name"])
+
+    # 2) Construir columnas (los campos del mismo alias se fusionan en una sola).
+    #    Si hay filtro de alias, solo se muestra esa columna (mismo criterio que
+    #    usaba el cliente).
+    columns = []
+    alias_index = {}
+    seen_question = set()
+    col_types = {}  # key -> set de question_type
+    for row in flat_rows:
+        for a in row["answers"]:
+            alias_name = a["alias"]["name"] if a.get("alias") else None
+            if alias and alias_name != alias:
+                continue
+            qtype = (a.get("question_type") or "text")
+            if alias_name:
+                if alias_name in alias_index:
+                    col = columns[alias_index[alias_name]]
+                    if a["question_id"] not in col["question_ids"]:
+                        col["question_ids"].append(a["question_id"])
+                else:
+                    alias_index[alias_name] = len(columns)
+                    key = f"alias:{alias_name}"
+                    columns.append({
+                        "key": key,
+                        "label": alias_name,
+                        "is_alias": True,
+                        "form_id": None,
+                        "form_title": None,
+                        "question_ids": [a["question_id"]],
+                    })
+                    col_types[key] = set()
+                col_types[f"alias:{alias_name}"].add(qtype)
+            else:
+                if a["question_id"] in seen_question:
+                    continue
+                seen_question.add(a["question_id"])
+                key = f"q:{a['question_id']}"
+                columns.append({
+                    "key": key,
+                    "label": a["question_text"],
+                    "is_alias": False,
+                    "form_id": row["form_id"],
+                    "form_title": row["form_title"],
+                    "question_ids": [a["question_id"]],
+                })
+                col_types[key] = {qtype}
+
+    for col in columns:
+        types = col_types.get(col["key"], set())
+        if types == {"number"}:
+            col["type"] = "number"
+        elif len(types) > 1:
+            col["type"] = "mixed"
+        else:
+            col["type"] = next(iter(types)) if types else "text"
+        col["totalize"] = col["type"] == "number"
+
+    # 3) Filtros sobre las filas
+    def _parse_day(s, end_of_day=False):
+        if not s:
+            return None
+        try:
+            d = datetime.strptime(str(s)[:10], "%Y-%m-%d")
+        except (TypeError, ValueError):
+            return None
+        if end_of_day:
+            return d.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return d
+
+    dt_from = _parse_day(date_from)
+    dt_to = _parse_day(date_to, end_of_day=True)
+    search_lower = search.lower() if search else None
+
+    # "Solo el más reciente" se evalúa sobre el conjunto completo, igual que antes.
+    if last_only and flat_rows:
+        flat_rows = [max(flat_rows, key=lambda r: r["submitted_at"])]
+
+    def _keep(row):
+        sa = row["submitted_at"]
+        if dt_from and sa and sa < dt_from:
+            return False
+        if dt_to and sa and sa > dt_to:
+            return False
+        if search_lower:
+            hit = any(
+                search_lower in str(a.get("answer_text") or "").lower()
+                for a in row["answers"]
+            )
+            if not hit:
+                return False
+        return True
+
+    filtered = [r for r in flat_rows if _keep(r)]
+    filtered.sort(key=lambda r: r["submitted_at"] or datetime.min)
+
+    # 4) Totales sobre TODO el conjunto filtrado (no solo la página)
+    totals = {}
+    for col in columns:
+        if not col["totalize"]:
+            continue
+        acc = 0.0
+        any_num = False
+        for row in filtered:
+            amap = {a["question_id"]: a.get("answer_text") for a in row["answers"]}
+            val = None
+            for qid in col["question_ids"]:
+                if qid in amap:
+                    val = amap[qid]
+                    break
+            num = _movimiento_to_number(val)
+            if num is not None:
+                acc += num
+                any_num = True
+        if any_num:
+            totals[col["key"]] = acc
+
+    # 5) Paginación
+    page = max(1, page or 1)
+    page_size = min(200, max(1, page_size or 50))
+    total_rows = len(filtered)
+    total_pages = (total_rows + page_size - 1) // page_size if total_rows else 1
+    start = (page - 1) * page_size
+    page_rows = filtered[start:start + page_size]
+
+    rows_out = []
+    for row in page_rows:
+        amap = {a["question_id"]: a for a in row["answers"]}
+        values = {}
+        files = {}
+        for col in columns:
+            cell_val = None
+            cell_file = None
+            for qid in col["question_ids"]:
+                if qid in amap:
+                    cell_val = amap[qid].get("answer_text")
+                    cell_file = amap[qid].get("file_path")
+                    break
+            values[col["key"]] = cell_val
+            if cell_file:
+                files[col["key"]] = cell_file
+        rows_out.append({
+            "form_id": row["form_id"],
+            "form_title": row["form_title"],
+            "form_alias": row.get("form_alias"),
+            "response_id": row["response_id"],
+            "submitted_at": row["submitted_at"],
+            "values": values,
+            "files": files,
+        })
+
+    return {
+        "columns": columns,
+        "rows": rows_out,
+        "totals": totals,
+        "aliases": sorted(alias_names),
+        "forms": [{"form_id": f["form_id"], "form_title": f["form_title"], "form_alias": f.get("form_alias")} for f in result],
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total_rows": total_rows,
+            "total_pages": total_pages,
+        },
+    }
+
+
 @router.get(
     "/movimientos/{movement_id}/answers",
     status_code=status.HTTP_200_OK
 )
 def get_answers_by_movement(
     movement_id: int,
+    page: Optional[int] = Query(None, description="Página (1-based). Si se omite, modo legacy anidado."),
+    page_size: int = Query(50, ge=1, le=200),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD inicio del rango"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD fin del rango"),
+    search: Optional[str] = Query(None, description="Texto a buscar en las respuestas"),
+    alias: Optional[str] = Query(None, description="Filtrar por un alias específico"),
+    last_only: bool = Query(False, description="Solo el registro más reciente"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    """Respuestas consolidadas de un movimiento.
+
+    - Sin `page`: modo legacy → estructura anidada {forms:[{responses:[{answers}]}]}.
+    - Con `page`: modo paginado → {columns, rows, totals, aliases, pagination}.
+      La consolidación, filtros, totales y paginación se calculan en el servidor.
+    """
     # 🔐 Validar roles
     if current_user.user_type.name not in [
         UserType.creator.name,
@@ -4771,12 +5003,24 @@ def get_answers_by_movement(
             detail="Movimiento no encontrado"
         )
 
+    paginated = page is not None
+
     if not movimiento.form_ids or not movimiento.question_ids:
-        return {
+        empty = {
             "movement_id": movimiento.id,
             "title": movimiento.title,
-            "forms": []
+            "description": movimiento.description,
+            "forms": [],
         }
+        if paginated:
+            empty.update({
+                "columns": [],
+                "rows": [],
+                "totals": {},
+                "aliases": [],
+                "pagination": {"page": 1, "page_size": page_size, "total_rows": 0, "total_pages": 1},
+            })
+        return empty
 
     forms = db.query(Form).filter(
         Form.id.in_(movimiento.form_ids)
@@ -4794,6 +5038,13 @@ def get_answers_by_movement(
         }
         for qid in (grupo.get("question_ids") or []):
             alias_by_question[qid] = alias_info
+
+    # 🏷️ Alias por FORMATO (aislado): mapa form_id -> alias. Se usará como
+    # etiqueta de "Formato origen" en vez del título real del formato.
+    alias_by_form = {}
+    for fa in (movimiento.form_aliases or []):
+        if fa.get("form_id") is not None and fa.get("alias"):
+            alias_by_form[fa["form_id"]] = fa["alias"]
 
     result = []
 
@@ -4833,6 +5084,12 @@ def get_answers_by_movement(
                             a.question.id,
                             a.question.question_text
                         ),
+                        # 👇 tipo de la pregunta (normalizado a string) para que el
+                        # consolidado sepa qué columnas son numéricas (totalizables)
+                        "question_type": getattr(
+                            a.question.question_type, "value",
+                            a.question.question_type
+                        ),
                         "alias": alias_by_question.get(a.question.id),  # 👈 alias por movimiento
                         "answer_text": a.answer_text,
                         "file_path": a.file_path
@@ -4845,15 +5102,207 @@ def get_answers_by_movement(
             result.append({
                 "form_id": form.id,
                 "form_title": form.title,
+                "form_alias": alias_by_form.get(form.id),
                 "responses": form_responses
             })
 
+    # Modo legacy: estructura anidada (compatibilidad con MovementDetailView)
+    if not paginated:
+        return {
+            "movement_id": movimiento.id,
+            "title": movimiento.title,
+            "description": movimiento.description,
+            "forms": result
+        }
+
+    # Modo paginado: consolidado armado en el servidor
+    consolidado = _build_movimiento_consolidado(
+        result, page, page_size, date_from, date_to, search, alias, last_only
+    )
     return {
         "movement_id": movimiento.id,
         "title": movimiento.title,
         "description": movimiento.description,
-        "forms": result
+        **consolidado,
     }
+
+@router.get("/movimientos/response/{response_id}/full", status_code=status.HTTP_200_OK)
+def get_movement_response_full(
+    response_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Registro original de una fila del movimiento.
+
+    Devuelve el formato completo (form + form_design) y la respuesta con sus
+    answers/approvals, con el MISMO shape que usa "Consultar mis respuestas"
+    (`/consultants/me/responses/{id}/full`), para poder reutilizar el mismo
+    componente de detalle. Acceso restringido a creator/admin.
+    """
+    if current_user.user_type.name not in [
+        UserType.creator.name,
+        UserType.admin.name
+    ]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to view this response"
+        )
+
+    r = (
+        db.query(Response)
+        .options(
+            joinedload(Response.form).joinedload(Form.category),
+            joinedload(Response.user),
+            joinedload(Response.answers).joinedload(Answer.question),
+            joinedload(Response.approvals).joinedload(ResponseApproval.user),
+        )
+        .filter(Response.id == response_id)
+        .first()
+    )
+    if not r:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Respuesta no encontrada")
+
+    # Mostrar solo las answers más recientes (descartar las versionadas)
+    histories = db.query(AnswerHistory).filter(AnswerHistory.response_id == response_id).all()
+    previous_answer_ids = {h.previous_answer_id for h in histories if h.previous_answer_id}
+
+    def _qtype(q):
+        return q.question_type.value if hasattr(q.question_type, "value") else q.question_type
+
+    answers_payload = [
+        {
+            "id_answer": a.id,
+            "response_id": r.id,
+            "repeated_id": getattr(a, "repeated_id", None),
+            "question_id": a.question.id,
+            "question_text": a.question.question_text,
+            "question_type": _qtype(a.question),
+            "answer_text": process_regisfacial_answer(a.answer_text, _qtype(a.question)),
+            "file_path": a.file_path,
+            "form_design_element_id": a.form_design_element_id,
+        }
+        for a in r.answers
+        if a.id not in previous_answer_ids
+    ]
+
+    approval_summary = get_response_approval_status(r.approvals)
+    approvals_payload = [
+        {
+            "approval_id": ap.id,
+            "sequence_number": ap.sequence_number,
+            "is_mandatory": ap.is_mandatory,
+            "reconsideration_requested": ap.reconsideration_requested,
+            "status": ap.status.value if hasattr(ap.status, "value") else ap.status,
+            "reviewed_at": ap.reviewed_at.isoformat() if ap.reviewed_at else None,
+            "message": ap.message,
+            "user": {
+                "id": ap.user.id,
+                "name": ap.user.name,
+                "email": ap.user.email,
+                "nickname": ap.user.nickname,
+                "num_document": ap.user.num_document,
+            } if ap.user else None,
+        }
+        for ap in r.approvals
+    ]
+
+    form = r.form
+    form_payload = {
+        "id": form.id,
+        "title": form.title,
+        "description": form.description,
+        "format_type": form.format_type.value if form.format_type else None,
+        "created_at": form.created_at.isoformat() if form.created_at else None,
+        "category": (
+            {"id": form.category.id, "name": form.category.name, "description": form.category.description}
+            if form.category else None
+        ),
+    }
+
+    return {
+        "form": form_payload,
+        "form_design": form.form_design,
+        "response": {
+            "response_id": r.id,
+            "submitted_at": r.submitted_at.isoformat() if r.submitted_at else None,
+            "status": r.status.value if r.status else None,
+            "approval_status": approval_summary.get("status"),
+            "message": approval_summary.get("message"),
+            "submitted_by": {
+                "id": r.user.id,
+                "name": r.user.name,
+                "email": r.user.email,
+                "nickname": r.user.nickname,
+                "num_document": r.user.num_document,
+            } if r.user else None,
+            "answers": answers_payload,
+            "approvals": approvals_payload,
+        },
+    }
+
+
+@router.get("/movimientos/{movement_id}", status_code=status.HTTP_200_OK)
+def get_movimiento_detail(
+    movement_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Configuración completa de un movimiento (para editarlo en el asistente)."""
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to view this movimiento"
+        )
+
+    mov = db.query(FormMovimientos).filter(
+        FormMovimientos.id == movement_id,
+        FormMovimientos.is_enabled == True
+    ).first()
+
+    if not mov:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Movimiento no encontrado")
+
+    return {
+        "id": mov.id,
+        "user_id": mov.user_id,
+        "title": mov.title,
+        "description": mov.description,
+        "id_category": mov.id_category,
+        "form_ids": mov.form_ids or [],
+        "question_ids": mov.question_ids or [],
+        "alias_groups": mov.alias_groups or [],
+        "form_aliases": mov.form_aliases or [],
+        "is_enabled": mov.is_enabled,
+        "created_at": mov.created_at,
+    }
+
+
+@router.put(
+    "/movimientos/{movement_id}",
+    response_model=FormMovimientoResponse,
+    status_code=status.HTTP_200_OK
+)
+def update_form_movimiento_endpoint(
+    movement_id: int,
+    movimiento: FormMovimientoBase,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Editar un movimiento (nombre, descripción, categoría, formatos, campos y alias)."""
+    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have permission to edit movimientos"
+        )
+
+    return update_form_movimiento(
+        db=db,
+        movement_id=movement_id,
+        movimiento=movimiento,
+        user_id=current_user.id,
+        is_admin=(current_user.user_type.name == UserType.admin.name),
+    )
+
 
 @router.delete("/movimientos/{movement_id}", status_code=status.HTTP_200_OK)
 def delete_movement(
