@@ -1083,5 +1083,5 @@ class QuestionRequestField(Base):
     alias_rel = relationship('Alias')
     created_question = relationship('Question', foreign_keys=[created_question_id])
     reviewer = relationship('User', foreign_keys=[reviewed_by])
-    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    
 
