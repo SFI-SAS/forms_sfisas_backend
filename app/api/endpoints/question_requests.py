@@ -61,7 +61,6 @@ class FieldCreate(BaseModel):
     description: Optional[str] = None
     required: bool = True
     id_category: Optional[int] = None
-    id_alias: Optional[int] = None
 
 
 class BulkQuestionRequestCreate(BaseModel):
@@ -76,7 +75,6 @@ class FieldApproveOverrides(BaseModel):
     description: Optional[str] = None
     required: Optional[bool] = None
     id_category: Optional[int] = None
-    id_alias: Optional[int] = None
 
 
 class FieldReject(BaseModel):
@@ -122,7 +120,6 @@ def create_question_request(
             description=f.description.upper().strip() if f.description else f.description,
             required=f.required,
             id_category=f.id_category,
-            id_alias=f.id_alias,
             status='pending',
         )
         db.add(field)
@@ -209,7 +206,6 @@ def get_pending_requests(
                     "description": f.description,
                     "required": f.required,
                     "id_category": f.id_category,
-                    "id_alias": f.id_alias,
                     "status": f.status,
                     "category": {"id": f.category.id, "name": f.category.name} if f.category else None,
                 }
@@ -294,7 +290,6 @@ def approve_field(
     final_desc = overrides.description if overrides.description is not None else field.description
     final_required = overrides.required if overrides.required is not None else field.required
     final_category = overrides.id_category if overrides.id_category is not None else field.id_category
-    final_alias = overrides.id_alias if overrides.id_alias is not None else field.id_alias
 
     form = db.query(Form).filter(Form.id == field.request.form_id).first()
     if not form:
@@ -316,7 +311,6 @@ def approve_field(
         required=final_required,
         root=False,
         id_category=final_category,
-        id_alias=final_alias,
         id_form=field.request.form_id,
     )
     db.add(new_question)

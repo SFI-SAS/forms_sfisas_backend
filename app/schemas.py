@@ -101,7 +101,6 @@ class QuestionBase(BaseModel):
     unique_answer: bool = Field(False, example=False)
     root:bool =  Field(..., example=True)
     id_category: Optional[int] = None
-    id_alias: Optional[int] = Field(None, example=1)
 
 
 class QuestionBaseAll(BaseModel):
@@ -112,7 +111,6 @@ class QuestionBaseAll(BaseModel):
     unique_answer: bool = Field(False, example=False)
     root:bool =  Field(..., example=True)
     id_category: int | None = None
-    id_alias: Optional[int] = Field(None, example=1)
     
 class QuestionCreate(QuestionBase):
     id_form: Optional[int] = None
@@ -762,8 +760,6 @@ class QuestionWithCategory(BaseModel):
     related_question_id: Optional[int] = None
     related_question: Optional[dict] = None  # ← CAMBIAR A dict, no a objeto
     forms: List[FormBasicInfo] = []
-    id_alias: Optional[int] = None
-    alias: Optional[AliasSchema] = None
     id_form: Optional[int] = None
     class Config:
         from_attributes = True
@@ -1458,7 +1454,6 @@ class QuestionUpdatePayload(BaseModel):
     description: Optional[str] = None
     question_type: Optional[str] = None
     id_category: Optional[int] = None
-    id_alias: Optional[int] = None
     id_form: Optional[int] = None
 
 

@@ -620,8 +620,7 @@ def get_question_by_id_with_category(db: Session, question_id: int):
 def get_questions(db: Session):
     questions = db.query(Question).options(
         joinedload(Question.category),
-        joinedload(Question.alias),
-        joinedload(Question.forms)       # ← LÍNEA NUEVA: carga los formatos vinculados
+        joinedload(Question.forms)       # ← carga los formatos vinculados
     ).all()
 
     for question in questions:
