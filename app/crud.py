@@ -563,6 +563,7 @@ def invalidate_form_cache(form_id: int):
     keys_to_delete = [
         f"form_design:{form_id}",
         f"form_questions:{form_id}",
+        f"form_questions:v2:{form_id}",
     ]
     
     deleted = redis_client.delete(*keys_to_delete)

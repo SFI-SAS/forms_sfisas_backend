@@ -585,7 +585,8 @@ def get_form_questions(
     ensure_access_to_form(db, current_user, _form_for_auth)
 
     # PASO 1: Verificar caché Redis
-    cache_key = f"form_questions:{form_id}"
+    # v2: el payload ahora incluye "label" (etiqueta del campo en el form_design).
+    cache_key = f"form_questions:v2:{form_id}"
     cached = redis_client.get(cache_key)
     
     if cached:
@@ -670,17 +671,23 @@ def get_form_questions(
     option_sets = global_config.get("optionSets", {})
     
     # PASO 4: Preparar respuesta (resolver referencias a optionSets)
+    # Etiquetas del campo según el form_design (la que se pone al asignar la
+    # pregunta al formato). Es por-formato, distinta del question_text original.
+    question_labels = get_question_labels_from_form_design(form.form_design or [])
+
     questions_response = {
         "form_id": form_id,
         "optionSets": option_sets,
         "questions": []
     }
-    
+
     # Procesar cada pregunta
     for question in questions:
         question_data = {
             "id": question.id,
             "question_text": question.question_text,
+            # 👇 etiqueta del campo en este formato (cae al texto original si no hay)
+            "label": question_labels.get(question.id, question.question_text),
             "question_type": question.question_type,
             "required": question.required,
             "unique_answer": getattr(question, "unique_answer", False),
