@@ -5973,6 +5973,325 @@ def update_notification_status(notification_id: int, notify_on: str, db: Session
 
     return notification
 
+
+def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
+    """F2 (SM-F2-02): crea un formato COMPLETO en UNA transacción —
+    form (deshabilitado) -> questions -> options -> form_questions ->
+    form_design -> habilitar AL FINAL. Cualquier fallo => ROLLBACK total.
+    Mata el 'formato fantasma' (questions:[] / is_enabled sin preguntas).
+    Conteos calculados DENTRO de la tx (P1/§6 del plan de remediación).
+
+    payload: {title, description?, format_type, id_category?, assign_user:[ids],
+              fields:[{label, question_type, required?, options?, description?}]}
+    Return: {status:'ok'|'error', form_id, title, questions_persisted,
+             elements_linked, is_enabled, error}. Errores estructurados (SM-F2-04).
+    """
+    import uuid as _uuid
+    from app.models import QuestionType as _QT, FormatType as _FT
+
+    def _err(code, message, offending_param=None, suggested_fix=""):
+        return {"status": "error", "form_id": None, "questions_persisted": 0,
+                "elements_linked": 0, "is_enabled": False,
+                "error": {"code": code, "message": message,
+                          "offending_param": offending_param, "suggested_fix": suggested_fix}}
+
+    title = (payload.get("title") or "").strip()
+    if not title:
+        return _err("SCHEMA_MISMATCH", "Falta el título del formato.", "title", "Definí title.")
+    fields = payload.get("fields") or []
+    if not fields and not (payload.get("elements") or []):
+        return _err("EMPTY_SECTIONS", "No hay campos para crear el formato.",
+                    "fields", "Agregá al menos 1 campo (o un 'elements' con campos).")
+
+    CHOICE = {"one_choice", "multiple_choice"}
+    QTYPE_TO_ITEM = {
+        "text": "input", "number": "input", "date": "date", "time": "input",
+        "file": "file", "one_choice": "select", "multiple_choice": "select",
+        "location": "input", "firm": "firm", "regisfacial": "regisfacial", "table": "select",
+    }
+
+    def _normf(f, path):
+        """Valida y normaliza un campo. Devuelve (normfield, None) o (None, error)."""
+        label = (f.get("label") or f.get("question_text") or "").strip()
+        if not label:
+            return None, _err("SCHEMA_MISMATCH", f"{path} sin label.", f"{path}.label",
+                              "Cada campo necesita label.")
+        qtype = (f.get("question_type") or f.get("type") or "text").strip().lower()
+        try:
+            _QT(qtype)
+        except Exception:
+            return None, _err("SCHEMA_MISMATCH", f"Tipo inválido '{qtype}' en '{label}'.",
+                              f"{path}.question_type", f"Tipos válidos: {[e.value for e in _QT]}")
+        opts = [str(o).strip() for o in (f.get("options") or []) if str(o).strip()]
+        if qtype in CHOICE and len(opts) < 2:
+            return None, _err("INSUFFICIENT_FIELDS", f"'{label}' es {qtype} pero tiene <2 opciones.",
+                              f"{path}.options", "Un campo de lista necesita >=2 opciones.")
+        return {"label": label, "qtype": qtype, "required": bool(f.get("required", True)),
+                "description": f.get("description"), "options": opts}, None
+
+    # Normalizar a GRUPOS. Si viene 'elements' (estructura con filas/repetidores),
+    # se respeta; si no, cada field de 'fields' es su propio grupo "field" (un
+    # campo por línea = comportamiento simple anterior).
+    groups = []
+    _elements = payload.get("elements")
+    if _elements:
+        for gi, el in enumerate(_elements):
+            kind = (el.get("kind") or "field").strip().lower()
+            if kind in ("horizontallayout", "horizontal", "fila", "row"):
+                kind = "row"
+            elif kind in ("repeater", "repetidor"):
+                kind = "repeater"
+            elif kind in ("conditional", "condicional", "condition"):
+                kind = "conditional"
+            else:
+                kind = "field"
+            gfields = []
+            for fi, f in enumerate(el.get("fields") or []):
+                nf, err = _normf(f, f"elements[{gi}].fields[{fi}]")
+                if err:
+                    return err
+                gfields.append(nf)
+            if gfields:
+                groups.append({"kind": kind, "title": (el.get("title") or el.get("label") or "").strip(),
+                               "min_items": el.get("min_items"), "max_items": el.get("max_items"),
+                               "source_label": (el.get("source_label") or "").strip(),
+                               "expected_value": str(el.get("expected_value") or "").strip(),
+                               "operator": (el.get("operator") or "==").strip(),
+                               "fields": gfields})
+    else:
+        for fi, f in enumerate(fields):
+            nf, err = _normf(f, f"fields[{fi}]")
+            if err:
+                return err
+            groups.append({"kind": "field", "title": "", "fields": [nf]})
+
+    all_fields = [nf for g in groups for nf in g["fields"]]
+    if not all_fields:
+        return _err("EMPTY_SECTIONS", "No hay campos para crear el formato.",
+                    "fields", "Agregá al menos 1 campo.")
+
+    # Título único (mismo criterio que create_form).
+    if db.query(Form.id).filter(func.lower(func.trim(Form.title)) == title.lower()).first():
+        return _err("SLUG_COLLISION", f"Ya existe un formato con el título '{title}'.",
+                    "title", "Usá otro título o reutilizá el existente.")
+
+    fmt = payload.get("format_type") or "abierto"
+    assign_user = list(payload.get("assign_user") or ([user_id] if user_id else []))
+
+    def _count_links(items):
+        n = 0
+        for it in items:
+            if isinstance(it, dict):
+                if it.get("linkExternalId"):
+                    n += 1
+                n += _count_links(it.get("children") or [])
+        return n
+
+    try:
+        db_form = Form(
+            user_id=user_id, title=title, description=payload.get("description"),
+            format_type=(fmt if isinstance(fmt, _FT) else _FT(fmt)),
+            id_category=payload.get("id_category"), is_enabled=False,
+            created_at=datetime.utcnow(),
+        )
+        for uid in assign_user:
+            db_form.form_moderators.append(FormModerators(user_id=uid))
+        db.add(db_form)
+        db.flush()  # asigna db_form.id SIN commit
+        form_id = db_form.id
+
+        def _mk_item(nf, qid, space=12):
+            props = {"label": nf["label"], "required": nf["required"], "space": int(space)}
+            if nf["qtype"] in CHOICE:
+                props["options"] = nf["options"]
+            return {"id": str(_uuid.uuid4()),
+                    "type": QTYPE_TO_ITEM.get(nf["qtype"], "input"),
+                    "linkExternalId": int(qid), "props": props}
+
+        label_to_qid = {}
+        pending_conditions = []  # [{source_label, expected_value, operator, filtered_qids}]
+
+        def _persist(nf):
+            q = Question(question_text=nf["label"], question_type=_QT(nf["qtype"]),
+                         required=nf["required"], description=nf.get("description"))
+            db.add(q)
+            db.flush()  # asigna q.id
+            if nf["qtype"] in CHOICE:
+                for ot in nf["options"]:
+                    db.add(Option(question_id=q.id, option_text=ot))
+            db.add(FormQuestion(form_id=form_id, question_id=q.id))
+            label_to_qid.setdefault((nf["label"] or "").strip().lower(), q.id)
+            return q.id
+
+        design = []
+        for g in groups:
+            n = len(g["fields"])
+            if g["kind"] == "row" and n > 1:
+                row_id = str(_uuid.uuid4())
+                sp = max(1, 12 // n)
+                children = []
+                for nf in g["fields"]:
+                    it = _mk_item(nf, _persist(nf), space=sp)
+                    it["parentId"] = row_id
+                    children.append(it)
+                design.append({"id": row_id, "type": "horizontalLayout",
+                               "props": {"spacing": 2}, "children": children})
+            elif g["kind"] == "repeater":
+                rep_id = str(_uuid.uuid4())
+                children = [_mk_item(nf, _persist(nf), space=12) for nf in g["fields"]]
+                _max = int(g.get("max_items") or 0)
+                design.append({"id": rep_id, "type": "repeater",
+                               "props": {"label": g["title"] or "Repetidor",
+                                         "minItems": int(g.get("min_items") or 1),
+                                         "maxItems": _max if _max > 0 else 99,
+                                         "addButtonText": "Agregar", "space": 12},
+                               "children": children})
+            elif g["kind"] == "conditional":
+                # Campos condicionales: van en el diseño como items normales; su
+                # visibilidad la controla question_filter_conditions (mostrar si la
+                # respuesta del campo fuente cumple la condición). El campo fuente
+                # se resuelve por label DESPUÉS (puede haberse creado en otro grupo).
+                _fqids = []
+                for nf in g["fields"]:
+                    qid = _persist(nf)
+                    design.append(_mk_item(nf, qid, space=12))
+                    _fqids.append(qid)
+                pending_conditions.append({
+                    "source_label": (g.get("source_label") or "").strip().lower(),
+                    "expected_value": g.get("expected_value") or "",
+                    "operator": g.get("operator") or "==",
+                    "filtered_qids": _fqids,
+                })
+            else:  # 'field' (o 'row' de 1) → items sueltos a ancho completo
+                for nf in g["fields"]:
+                    design.append(_mk_item(nf, _persist(nf), space=12))
+        db.flush()
+
+        # Crear condiciones (question_filter_conditions) DENTRO de la tx: cada
+        # campo condicional se muestra cuando la respuesta del campo fuente cumple
+        # operator/expected_value. El fuente se resuelve por label en el form.
+        for pc in pending_conditions:
+            if not pc["source_label"] or not pc["expected_value"]:
+                db.rollback()
+                return _err("SCHEMA_MISMATCH",
+                            "Un layout condicional requiere 'source_label' (campo fuente) "
+                            "y 'expected_value' (valor que lo activa).",
+                            "elements[conditional]",
+                            "Definí source_label y expected_value en el elemento conditional.")
+            src_qid = label_to_qid.get(pc["source_label"])
+            if not src_qid:
+                db.rollback()
+                return _err("SCHEMA_MISMATCH",
+                            f"El layout condicional referencia el campo fuente "
+                            f"'{pc['source_label']}' que no existe en el formato.",
+                            "source_label",
+                            "El campo fuente debe ser un campo del mismo formato.")
+            for fq in pc["filtered_qids"]:
+                db.add(QuestionFilterCondition(
+                    form_id=form_id, filtered_question_id=fq,
+                    source_question_id=src_qid, condition_question_id=src_qid,
+                    expected_value=str(pc["expected_value"])[:255],
+                    operator=pc["operator"] or "=="))
+        if pending_conditions:
+            db.flush()
+
+        db_form.form_design = design
+        # habilitar AL FINAL, con preguntas ya vinculadas. activate=False => queda
+        # BORRADOR (deshabilitado PERO con preguntas vinculadas = válido, no
+        # fantasma) para el flujo wizard preview->publicar.
+        _activate = bool(payload.get("activate", True))
+        db_form.is_enabled = _activate
+
+        # Conteos DENTRO de la tx (no segunda lectura). elements_linked cuenta
+        # RECURSIVO (incluye los items dentro de filas/repetidores).
+        questions_persisted = db.query(FormQuestion).filter(FormQuestion.form_id == form_id).count()
+        elements_linked = _count_links(design)
+        _expected = len(all_fields)
+        if questions_persisted != _expected or elements_linked != _expected:
+            db.rollback()
+            return _err("LINK_FAILED",
+                        f"Vinculación inconsistente: persisted={questions_persisted}, "
+                        f"linked={elements_linked}, esperado={_expected}.",
+                        "fields", "Reintentar la creación.")
+
+        db.commit()
+        return {"status": "ok", "form_id": form_id, "title": title,
+                "questions_persisted": questions_persisted,
+                "elements_linked": elements_linked, "is_enabled": _activate, "error": None}
+    except Exception as e:
+        db.rollback()
+        logger.exception("create_form_atomic falló")
+        return _err("TX_ROLLED_BACK", f"{type(e).__name__}: {str(e)[:200]}",
+                    None, "Revisar los datos y reintentar.")
+
+
+def add_field_conditions(db: Session, form_id: int, source_label: str,
+                         expected_value: str, conditional_labels: list,
+                         operator: str = "==") -> dict:
+    """F2: agrega condiciones de visibilidad a un form EXISTENTE por LABEL de
+    campo (resuelve labels -> question_ids dentro del form). Cada campo de
+    conditional_labels se MUESTRA solo si la respuesta del campo source_label
+    cumple operator/expected_value. Crea filas en question_filter_conditions en
+    UNA transacción. Idempotente (no duplica). Devuelve {status, created,
+    unresolved, source_resolved}.
+    """
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        return {"status": "error", "error": {"code": "SCHEMA_MISMATCH",
+                "message": f"Form {form_id} no existe.", "offending_param": "form_id"}}
+
+    # Mapa label-normalizado -> question_id (insensible a acentos/espacios/case:
+    # el LLM o el usuario pueden escribir 'Razon social' vs 'Razón social').
+    import unicodedata as _ud
+
+    def _norm_lbl(s):
+        s = (s or "").strip().lower()
+        s = _ud.normalize("NFD", s)
+        s = "".join(c for c in s if _ud.category(c) != "Mn")  # quita tildes
+        return " ".join(s.split())  # colapsa espacios
+
+    rows = (db.query(Question.id, Question.question_text)
+            .join(FormQuestion, FormQuestion.question_id == Question.id)
+            .filter(FormQuestion.form_id == form_id).all())
+    by_label = {}
+    for qid, qtext in rows:
+        by_label.setdefault(_norm_lbl(qtext), qid)
+
+    src = by_label.get(_norm_lbl(source_label))
+    if not src:
+        return {"status": "error", "error": {"code": "SCHEMA_MISMATCH",
+                "message": f"El campo fuente '{source_label}' no existe en el form {form_id}.",
+                "offending_param": "source_label",
+                "suggested_fix": f"Campos disponibles: {sorted(by_label.keys())[:20]}"}}
+
+    op = (operator or "==").strip() or "=="
+    expv = str(expected_value or "").strip()[:255]
+    created, unresolved = 0, []
+    try:
+        for lbl in (conditional_labels or []):
+            fq = by_label.get(_norm_lbl(lbl))
+            if not fq:
+                unresolved.append(lbl)
+                continue
+            exists = db.query(QuestionFilterCondition).filter_by(
+                form_id=form_id, filtered_question_id=fq, source_question_id=src,
+                condition_question_id=src, expected_value=expv, operator=op).first()
+            if exists:
+                continue
+            db.add(QuestionFilterCondition(
+                form_id=form_id, filtered_question_id=fq, source_question_id=src,
+                condition_question_id=src, expected_value=expv, operator=op))
+            created += 1
+        db.commit()
+        return {"status": "ok", "created": created, "unresolved": unresolved,
+                "source_resolved": True, "form_id": form_id}
+    except Exception as e:
+        db.rollback()
+        logger.exception("add_field_conditions falló")
+        return {"status": "error", "error": {"code": "TX_ROLLED_BACK",
+                "message": f"{type(e).__name__}: {str(e)[:200]}"}}
+
+
 def delete_form(db: Session, form_id: int):
     form = db.query(Form).filter(Form.id == form_id).first()
 
