@@ -4881,8 +4881,16 @@ def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
     def _parse_day(s, end_of_day=False):
         if not s:
             return None
+        raw = str(s).strip()
+        # Intentar formato datetime completo (YYYY-MM-DDTHH:MM o YYYY-MM-DDTHH:MM:SS)
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
+            try:
+                return datetime.strptime(raw, fmt)
+            except (TypeError, ValueError):
+                continue
+        # Fallback: solo fecha (YYYY-MM-DD)
         try:
-            d = datetime.strptime(str(s)[:10], "%Y-%m-%d")
+            d = datetime.strptime(raw[:10], "%Y-%m-%d")
         except (TypeError, ValueError):
             return None
         if end_of_day:
@@ -4891,14 +4899,22 @@ def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
 
     dt_from = _parse_day(date_from)
     dt_to = _parse_day(date_to, end_of_day=True)
+    # Normalizar a naive para evitar "can't compare offset-naive and offset-aware"
+    if dt_from and dt_from.tzinfo is not None:
+        dt_from = dt_from.replace(tzinfo=None)
+    if dt_to and dt_to.tzinfo is not None:
+        dt_to = dt_to.replace(tzinfo=None)
     search_lower = search.lower() if search else None
+
+    def _strip_tz(dt):
+        return dt.replace(tzinfo=None) if dt and hasattr(dt, 'tzinfo') and dt.tzinfo is not None else dt
 
     # "Solo el más reciente" se evalúa sobre el conjunto completo, igual que antes.
     if last_only and flat_rows:
-        flat_rows = [max(flat_rows, key=lambda r: r["submitted_at"])]
+        flat_rows = [max(flat_rows, key=lambda r: _strip_tz(r["submitted_at"]) or datetime.min)]
 
     def _keep(row):
-        sa = row["submitted_at"]
+        sa = _strip_tz(row["submitted_at"])
         if dt_from and sa and sa < dt_from:
             return False
         if dt_to and sa and sa > dt_to:
@@ -4913,7 +4929,7 @@ def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
         return True
 
     filtered = [r for r in flat_rows if _keep(r)]
-    filtered.sort(key=lambda r: r["submitted_at"] or datetime.min)
+    filtered.sort(key=lambda r: _strip_tz(r["submitted_at"]) or datetime.min)
 
     # 4) Totales sobre TODO el conjunto filtrado (no solo la página)
     totals = {}
@@ -5061,8 +5077,8 @@ def get_answers_by_movement(
     movement_id: int,
     page: Optional[int] = Query(None, description="Página (1-based). Si se omite, modo legacy anidado."),
     page_size: int = Query(50, ge=1, le=200),
-    date_from: Optional[str] = Query(None, description="YYYY-MM-DD inicio del rango"),
-    date_to: Optional[str] = Query(None, description="YYYY-MM-DD fin del rango"),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD o YYYY-MM-DDTHH:MM inicio del rango"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD o YYYY-MM-DDTHH:MM fin del rango"),
     search: Optional[str] = Query(None, description="Texto a buscar en las respuestas"),
     alias: Optional[str] = Query(None, description="Filtrar por un alias específico"),
     last_only: bool = Query(False, description="Solo el registro más reciente"),
