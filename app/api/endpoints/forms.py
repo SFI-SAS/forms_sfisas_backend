@@ -4835,7 +4835,14 @@ def get_form_movimientos_endpoint(
     )
 
     return [
-        {"id": m.id, "title": m.title, "description": m.description}
+        {
+            "id": m.id,
+            "title": m.title,
+            "description": m.description,
+            # Solo el creador (dueño) puede editar/eliminar; el frontend usa esto
+            # para mostrar Editar/Eliminar. Los visores solo ven "Visualizar".
+            "is_owner": m.user_id == current_user.id,
+        }
         for m in rows
         if is_admin
         or m.user_id == current_user.id
@@ -5505,6 +5512,7 @@ def get_movimiento_detail(
         "question_ids": mov.question_ids or [],
         "alias_groups": mov.alias_groups or [],
         "form_aliases": mov.form_aliases or [],
+        "allowed_user_ids": mov.allowed_user_ids or [],
         "is_enabled": mov.is_enabled,
         "created_at": mov.created_at,
     }
@@ -6043,7 +6051,26 @@ def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
             ordered.append("")
         distinct[col["key"]] = ordered[:1000]
 
-    # 3.2) Filtro estilo Excel por columna.
+    # Columnas FIJAS también filtrables estilo Excel:
+    #   __form  = "Formato origen" (alias o título del formato)
+    #   __fecha = "Fecha y hora" agrupada por día (YYYY-MM-DD)
+    def _row_day_iso(row):
+        sa = row.get("submitted_at")
+        if sa is None:
+            return ""
+        try:
+            return sa.date().isoformat()
+        except AttributeError:
+            return str(sa)[:10]
+
+    _form_vals, _day_vals = set(), set()
+    for row in base_filtered:
+        _form_vals.add(str(row.get("form_alias") or row.get("form_title") or ""))
+        _day_vals.add(_row_day_iso(row))
+    distinct["__form"] = sorted((x for x in _form_vals if x != ""), key=lambda x: x.lower()) + (["" ] if "" in _form_vals else [])
+    distinct["__fecha"] = sorted(x for x in _day_vals if x != "") + ([""] if "" in _day_vals else [])
+
+    # 3.2) Filtro estilo Excel por columna (incluye __form y __fecha).
     cf = {}
     if column_filters:
         for k, vlist in column_filters.items():
@@ -6052,6 +6079,14 @@ def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
     if cf:
         def _keep_cols(row):
             for ckey, allowed in cf.items():
+                if ckey == "__form":
+                    if str(row.get("form_alias") or row.get("form_title") or "") not in allowed:
+                        return False
+                    continue
+                if ckey == "__fecha":
+                    if _row_day_iso(row) not in allowed:
+                        return False
+                    continue
                 col = col_by_key.get(ckey)
                 if not col:
                     continue
@@ -6547,6 +6582,7 @@ def get_movimiento_detail(
         "question_ids": mov.question_ids or [],
         "alias_groups": mov.alias_groups or [],
         "form_aliases": mov.form_aliases or [],
+        "allowed_user_ids": mov.allowed_user_ids or [],
         "is_enabled": mov.is_enabled,
         "created_at": mov.created_at,
     }
