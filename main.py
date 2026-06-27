@@ -17,6 +17,7 @@ from app.crud import (
 
 from app.database import SessionLocal, engine
 from app.models import Base, EmailConfig
+import app.models_audit  # noqa: F401  — registra NotificationSendLog en Base
 from app.api.endpoints import (
     alias, approvers, consultants, download_template, home_dashboard, integrations, list_form, pdf_router, profiles, projects, responses,
     responsibilitytransfer, users, forms, auth, questions, generic_activities, security, question_requests
@@ -321,12 +322,26 @@ def notification_rules_task():
                     user_telephone=notification['user_telephone']
                 )
                 
+                # --- Log de auditoría ---
+                try:
+                    from app.models_audit import NotificationSendLog
+                    db.add(NotificationSendLog(
+                        form_id=notification.get('form_id'),
+                        response_id=notification.get('response_id'),
+                        event_type="scheduled_reminder",
+                        recipient_email=notification['user_email'],
+                        status="sent" if email_sent else "failed",
+                    ))
+                    db.commit()
+                except Exception:
+                    db.rollback()
+
                 if email_sent:
                     emails_sent += 1
-                    
-                    # ✅ DESHABILITAR LA REGLA DESPUÉS DE ENVIAR EL CORREO
+
+                    # DESHABILITAR LA REGLA DESPUES DE ENVIAR EL CORREO
                     disabled = disable_notification_rule(db, notification['rule_id'])
-                    
+
                     if disabled:
                         logger.info(f"   ✅ Correo enviado y regla ID {notification['rule_id']} deshabilitada")
                     else:

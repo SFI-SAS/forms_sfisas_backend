@@ -4868,16 +4868,31 @@ def send_rejection_email_to_all(response_id: int, db: Session):
             })
 
     # Enviar correo a cada uno
+    response = db.query(Response).filter(Response.id == response_id).first()
+    _form_id = response.form_id if response else None
+
     for destinatario in correos_destino:
-        send_rejection_email(
+        _sent = send_rejection_email(
             to_email=destinatario["email"],
             to_name=destinatario["nombre"],
             formato=formato,
             usuario_respondio=usuario,
             aprobador_rechazo=aprobador_rechazo,
-            todos_los_aprobadores=aprobadores  # Nuevo parámetro
+            todos_los_aprobadores=aprobadores
         )
-
+        # --- Log de auditoría ---
+        try:
+            from app.models_audit import NotificationSendLog
+            db.add(NotificationSendLog(
+                form_id=_form_id,
+                response_id=response_id,
+                event_type="rejection_notice",
+                recipient_email=destinatario["email"],
+                status="sent" if _sent else "failed",
+            ))
+            db.commit()
+        except Exception:
+            db.rollback()
 
     return True
 def get_active_form_actions(form_id: int, db):
@@ -5160,6 +5175,27 @@ async def send_form_action_emails_background(form_id: int, current_user_id: int,
                         custom_email_body=action_meta.get('custom_email_body'),
                     )
 
+                    # --- Log de auditoría (no afecta el envío si falla) ---
+                    try:
+                        from app.models_audit import NotificationSendLog
+                        _evt = {
+                            "send_download_link": "close_download_link",
+                            "send_pdf_attachment": "close_pdf",
+                            "generate_report": "close_report",
+                            "send_custom_template": "close_custom_template",
+                        }
+                        db.add(NotificationSendLog(
+                            form_id=form_id,
+                            response_id=response_id,
+                            event_type=_evt.get(action, action),
+                            recipient_email=recipient,
+                            status="sent" if email_sent else "failed",
+                        ))
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                        logger.debug("No se pudo insertar log de auditoría para close action")
+
                     if email_sent:
                         results["emails_sent"] += 1
                         results["actions_processed"].append({
@@ -5187,9 +5223,9 @@ async def send_form_action_emails_background(form_id: int, current_user_id: int,
                         "error": str(e)
                     })
                     logger.error(f"❌ Error al enviar correo a {recipient}: {str(e)}")
-                        
-    
-        
+
+
+
         logger.info(f"✅ Proceso completado para formulario {form_id}. Resultado: {results}")
         
     except Exception as e:
@@ -5456,13 +5492,27 @@ Mensaje: {response_approval.message or '-'}
                 status = ra.status.value if ra else "pendiente"
                 contenido += f"[{fa.sequence_number}] {fa.user.name} - {status}\n"
 
-            send_email_plain_approval_status(
+            _sent = send_email_plain_approval_status(
                 to_email=to_email,
                 name_form=form.title,
                 to_name=user_notify.name,
                 body_text=contenido,
                 subject=f"Proceso de aprobación - {form.title}"
             )
+            # --- Log de auditoría ---
+            try:
+                from app.models_audit import NotificationSendLog
+                db.add(NotificationSendLog(
+                    form_id=form.id,
+                    response_id=response_id,
+                    event_type="approval_notification",
+                    recipient_email=to_email,
+                    recipient_user_id=user_notify.id,
+                    status="sent" if _sent else "failed",
+                ))
+                db.commit()
+            except Exception:
+                db.rollback()
 
     return response_approval
 
@@ -5519,14 +5569,29 @@ Tu respuesta al formulario "{form.title}" ha sido COMPLETAMENTE APROBADA por tod
         contenido += f"\n🎯 Tu respuesta ha sido procesada exitosamente y está lista para su implementación."
         
         # Enviar el correo usando la función existente
-        return send_email_plain_approval_status(
+        _sent = send_email_plain_approval_status(
             to_email=usuario_original.email,
             name_form=form.title,
             to_name=usuario_original.name,
             body_text=contenido,
             subject=f"✅ Tu formulario '{form.title}' ha sido APROBADO completamente"
         )
-        
+        # --- Log de auditoría ---
+        try:
+            from app.models_audit import NotificationSendLog
+            db.add(NotificationSendLog(
+                form_id=form.id,
+                response_id=response_id,
+                event_type="final_approval_notice",
+                recipient_email=usuario_original.email,
+                recipient_user_id=usuario_original.id,
+                status="sent" if _sent else "failed",
+            ))
+            db.commit()
+        except Exception:
+            db.rollback()
+        return _sent
+
     except Exception as e:
         logger.error(f"❌ Error enviando correo final al usuario original: {str(e)}")
         return False
