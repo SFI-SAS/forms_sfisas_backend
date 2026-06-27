@@ -5192,6 +5192,7 @@ def get_answers_by_movement(
     search: Optional[str] = Query(None, description="Texto a buscar en las respuestas"),
     alias: Optional[str] = Query(None, description="Filtrar por un alias específico"),
     last_only: bool = Query(False, description="Solo el registro más reciente"),
+    column_filters: Optional[str] = Query(None, description="Filtro por columna estilo Excel: JSON {col_key: [valores...]}"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -5251,7 +5252,8 @@ def get_answers_by_movement(
 
     # Modo paginado: consolidado armado en el servidor
     consolidado = _build_movimiento_consolidado(
-        result, page, page_size, date_from, date_to, search, alias, last_only
+        result, page, page_size, date_from, date_to, search, alias, last_only,
+        column_filters=_parse_column_filters(column_filters),
     )
     return {
         "movement_id": movimiento.id,
@@ -5268,6 +5270,7 @@ def export_movimiento_excel(
     search: Optional[str] = Query(None),
     alias: Optional[str] = Query(None),
     last_only: bool = Query(False),
+    column_filters: Optional[str] = Query(None, description="Filtro por columna estilo Excel: JSON {col_key: [valores...]}"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -5297,6 +5300,7 @@ def export_movimiento_excel(
         result, page=1, page_size=10**9,
         date_from=date_from, date_to=date_to, search=search,
         alias=alias, last_only=last_only, cap=10**9,
+        column_filters=_parse_column_filters(column_filters),
     )
     columns = consolidado["columns"]
     rows = consolidado["rows"]
@@ -6040,24 +6044,7 @@ def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
                 return amap[qid].get("answer_text")
         return None
 
-    # 3.1) Valores distintos por columna (para los desplegables tipo Excel).
-    #      Se calculan sobre el conjunto filtrado por fecha/búsqueda, SIN aplicar
-    #      column_filters, para que el desplegable muestre siempre todas las
-    #      opciones. Cadena vacía "" representa celdas sin valor ("(Vacías)").
-    distinct = {}
-    for col in columns:
-        vals = set()
-        for row in base_filtered:
-            v = _row_col_value(row, col)
-            vals.add("" if v is None else str(v).strip())
-        ordered = sorted((x for x in vals if x != ""), key=lambda x: x.lower())
-        if "" in vals:
-            ordered.append("")
-        distinct[col["key"]] = ordered[:1000]
-
-    # Columnas FIJAS también filtrables estilo Excel:
-    #   __form  = "Formato origen" (alias o título del formato)
-    #   __fecha = "Fecha y hora" agrupada por día (YYYY-MM-DD)
+    # Helpers de valor por columna (clave reservada __form/__fecha o columna real)
     def _row_day_iso(row):
         sa = row.get("submitted_at")
         if sa is None:
@@ -6067,41 +6054,69 @@ def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
         except AttributeError:
             return str(sa)[:10]
 
-    _form_vals, _day_vals = set(), set()
-    for row in base_filtered:
-        _form_vals.add(str(row.get("form_alias") or row.get("form_title") or ""))
-        _day_vals.add(_row_day_iso(row))
-    distinct["__form"] = sorted((x for x in _form_vals if x != ""), key=lambda x: x.lower()) + (["" ] if "" in _form_vals else [])
-    distinct["__fecha"] = sorted(x for x in _day_vals if x != "") + ([""] if "" in _day_vals else [])
+    def _row_form_val(row):
+        return str(row.get("form_alias") or row.get("form_title") or "")
 
-    # 3.2) Filtro estilo Excel por columna (incluye __form y __fecha).
+    def _val_for_key(row, ckey):
+        if ckey == "__form":
+            return _row_form_val(row)
+        if ckey == "__fecha":
+            return _row_day_iso(row)
+        col = col_by_key.get(ckey)
+        if not col:
+            return None
+        v = _row_col_value(row, col)
+        return "" if v is None else str(v).strip()
+
+    # 3.1) Filtros de columna (estilo Excel) normalizados a conjuntos.
     cf = {}
     if column_filters:
         for k, vlist in column_filters.items():
             if isinstance(vlist, list) and vlist:
                 cf[k] = {str(x) for x in vlist}
-    if cf:
-        def _keep_cols(row):
-            for ckey, allowed in cf.items():
-                if ckey == "__form":
-                    if str(row.get("form_alias") or row.get("form_title") or "") not in allowed:
-                        return False
-                    continue
-                if ckey == "__fecha":
-                    if _row_day_iso(row) not in allowed:
-                        return False
-                    continue
-                col = col_by_key.get(ckey)
-                if not col:
-                    continue
-                v = _row_col_value(row, col)
-                s = "" if v is None else str(v).strip()
-                if s not in allowed:
-                    return False
-            return True
-        filtered = [r for r in base_filtered if _keep_cols(r)]
-    else:
-        filtered = base_filtered
+
+    def _row_passes(row, exclude_key=None):
+        """¿La fila cumple TODOS los filtros de columna excepto `exclude_key`?"""
+        for ckey, allowed in cf.items():
+            if ckey == exclude_key:
+                continue
+            val = _val_for_key(row, ckey)
+            if val is None:  # columna desconocida → no filtra
+                continue
+            if val not in allowed:
+                return False
+        return True
+
+    # 3.2) Valores distintos EN CASCADA: el desplegable de cada columna muestra
+    #      los valores disponibles según los OTROS filtros activos (se excluye el
+    #      filtro de la propia columna para poder re-marcar valores). "" = vacías.
+    def _ordered_distinct(values):
+        ordered = sorted((x for x in values if x != ""), key=lambda x: x.lower())
+        if "" in values:
+            ordered.append("")
+        return ordered[:1000]
+
+    distinct = {}
+    for col in columns:
+        vals = set()
+        for row in base_filtered:
+            if not _row_passes(row, col["key"]):
+                continue
+            v = _row_col_value(row, col)
+            vals.add("" if v is None else str(v).strip())
+        distinct[col["key"]] = _ordered_distinct(vals)
+
+    _form_vals, _day_vals = set(), set()
+    for row in base_filtered:
+        if _row_passes(row, "__form"):
+            _form_vals.add(_row_form_val(row))
+        if _row_passes(row, "__fecha"):
+            _day_vals.add(_row_day_iso(row))
+    distinct["__form"] = _ordered_distinct(_form_vals)
+    distinct["__fecha"] = _ordered_distinct(_day_vals)
+
+    # 3.3) Conjunto filtrado final (aplica TODOS los filtros de columna).
+    filtered = [r for r in base_filtered if _row_passes(r, None)] if cf else base_filtered
 
     filtered.sort(key=lambda r: r["submitted_at"] or datetime.min)
 
