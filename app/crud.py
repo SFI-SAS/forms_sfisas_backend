@@ -6165,6 +6165,30 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
         db.flush()  # asigna db_form.id SIN commit
         form_id = db_form.id
 
+        # REUSO de preguntas (#4, 2026-07-01): si reuse_existing=True, indexar el pool
+        # UNA vez y reutilizar preguntas por TEXTO NORMALIZADO (sin tildes/mayúsculas) +
+        # TIPO compatible, prefiriendo GENERALES (id_form NULL). Evita duplicar campos
+        # comunes cada vez que se crea un formato. Gated por flag → el frontend (que no
+        # lo manda) NO cambia de comportamiento.
+        import re as _re_reuse, unicodedata as _ud_reuse
+        _reuse = bool(payload.get("reuse_existing", False))
+        _reuse_idx = {}
+
+        def _reuse_key(txt, qt):
+            s = "".join(c for c in _ud_reuse.normalize("NFD", (txt or "").strip().lower())
+                        if _ud_reuse.category(c) != "Mn")
+            s = _re_reuse.sub(r"[^a-z0-9]+", " ", s).strip()
+            _q = getattr(qt, "value", qt)
+            return (s, str(_q).lower())
+
+        if _reuse:
+            for _row in db.query(Question.id, Question.question_text,
+                                 Question.question_type, Question.id_form).all():
+                _k = _reuse_key(_row.question_text, _row.question_type)
+                # preferir general (id_form NULL): no pisar un general ya indexado
+                if _k not in _reuse_idx or (_reuse_idx[_k][1] is not None and _row.id_form is None):
+                    _reuse_idx[_k] = (_row.id, _row.id_form)
+
         def _mk_item(nf, qid, space=12):
             props = {"label": nf["label"], "required": nf["required"], "space": int(space)}
             if nf["qtype"] in CHOICE:
@@ -6177,6 +6201,17 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
         pending_conditions = []  # [{source_label, expected_value, operator, filtered_qids}]
 
         def _persist(nf):
+            # REUSO: si hay una pregunta del pool que coincide (texto normalizado +
+            # tipo), reutilizarla (solo vincular) en vez de crear duplicado.
+            if _reuse:
+                _hit = _reuse_idx.get(_reuse_key(nf["label"], nf["qtype"]))
+                if _hit:
+                    qid = _hit[0]
+                    if not db.query(FormQuestion.form_id).filter_by(
+                            form_id=form_id, question_id=qid).first():
+                        db.add(FormQuestion(form_id=form_id, question_id=qid))
+                    label_to_qid.setdefault((nf["label"] or "").strip().lower(), qid)
+                    return qid
             q = Question(question_text=nf["label"], question_type=_QT(nf["qtype"]),
                          required=nf["required"], description=nf.get("description"))
             db.add(q)
@@ -6186,6 +6221,9 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
                     db.add(Option(question_id=q.id, option_text=ot))
             db.add(FormQuestion(form_id=form_id, question_id=q.id))
             label_to_qid.setdefault((nf["label"] or "").strip().lower(), q.id)
+            # indexar la nueva para que campos repetidos en el MISMO form la reutilicen
+            if _reuse:
+                _reuse_idx[_reuse_key(nf["label"], nf["qtype"])] = (q.id, None)
             return q.id
 
         design = []

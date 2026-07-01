@@ -199,6 +199,7 @@ class AtomicFormCreate(_BaseModel):
     fields: List[AtomicFormField] = _Field(default_factory=list)   # camino simple (1 por línea)
     elements: Optional[List[AtomicFormElement]] = None             # estructura: filas/repetidores
     activate: bool = True  # False => borrador (deshabilitado pero con preguntas vinculadas)
+    reuse_existing: bool = False  # True => reutiliza preguntas del pool (texto norm.+tipo) en vez de duplicar
 
 
 @router.post("/create-atomic")
