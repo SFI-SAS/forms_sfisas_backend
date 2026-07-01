@@ -6182,12 +6182,20 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
             return (s, str(_q).lower())
 
         if _reuse:
-            for _row in db.query(Question.id, Question.question_text,
-                                 Question.question_type, Question.id_form).all():
-                _k = _reuse_key(_row.question_text, _row.question_type)
-                # preferir general (id_form NULL): no pisar un general ya indexado
-                if _k not in _reuse_idx or (_reuse_idx[_k][1] is not None and _row.id_form is None):
-                    _reuse_idx[_k] = (_row.id, _row.id_form)
+            # PERF: NO traer todo el pool (inviable con miles de preguntas → timeouts).
+            # Query TARGETED: solo las preguntas cuyo texto (case-insensitive) coincide
+            # con algún label a crear. _reuse_key hace el match final (accent-normalizado).
+            _wanted_upper = list({(nf["label"] or "").strip().upper()
+                                  for nf in all_fields if nf.get("label")})
+            if _wanted_upper:
+                for _row in (db.query(Question.id, Question.question_text,
+                                      Question.question_type, Question.id_form)
+                             .filter(func.upper(func.trim(Question.question_text)).in_(_wanted_upper))
+                             .all()):
+                    _k = _reuse_key(_row.question_text, _row.question_type)
+                    # preferir general (id_form NULL): no pisar un general ya indexado
+                    if _k not in _reuse_idx or (_reuse_idx[_k][1] is not None and _row.id_form is None):
+                        _reuse_idx[_k] = (_row.id, _row.id_form)
 
         def _mk_item(nf, qid, space=12):
             props = {"label": nf["label"], "required": nf["required"], "space": int(space)}
