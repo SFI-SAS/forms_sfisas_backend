@@ -1059,7 +1059,7 @@ def create_email(email_config: EmailConfigCreate, db: Session = Depends(get_db),
             )
         return create_email_config(db, email_config)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="No se pudo procesar la solicitud")
     
     
 
@@ -1099,7 +1099,7 @@ def get_email_configs(
         email_configs = get_all_email_configs(db)
         return email_configs if email_configs else []
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="No se pudo procesar la solicitud")
     
     
 @router.put("/email-config/{id}")
@@ -1552,7 +1552,7 @@ async def migrate_form_design_elements(
                     "answer_id": answer_id,
                     "question_id": question_id,
                     "form_id": form_id,
-                    "reason": f"Error: {str(e)}"
+                    "reason": "Error"
                 })
                 continue
         
@@ -1576,7 +1576,7 @@ async def migrate_form_design_elements(
         db.rollback()
         raise HTTPException(
             status_code=500, 
-            detail=f"❌ Error en migración: {str(e)}"
+            detail="❌ Error en migración"
         )
 
 

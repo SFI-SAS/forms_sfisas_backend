@@ -383,6 +383,19 @@ class AnswerFileSerial(Base):
     answer_id = Column(BigInteger, ForeignKey('answers.id'), nullable=False)
     answer = relationship('Answer', back_populates='file_serial')
 
+# ── UploadedFile — metadata de archivos subidos via /responses/upload-file/ ────
+# H-BM-002 (IDOR en download-file): permite validar ownership al descargar.
+# Tabla compartida con el backend móvil (mismo modelo). Migración SQL en
+# scripts/db_migrations/2026-05-19_create_uploaded_files.sql
+class UploadedFile(Base):
+    __tablename__ = 'uploaded_files'
+    uuid              = Column(String(64), primary_key=True)
+    owner_user_id     = Column(BigInteger, ForeignKey('users.id'), nullable=False, index=True)
+    original_filename = Column(String(500), nullable=True)
+    mime              = Column(String(120), nullable=True)
+    size_bytes        = Column(BigInteger, nullable=True)
+    uploaded_at       = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
 class FormApproval(Base):
     __tablename__ = 'form_approvals'
     id = Column(BigInteger, primary_key=True, autoincrement=True)

@@ -13,7 +13,7 @@ from app.crud import _extract_style_config, _serialize_answers, crear_palabras_c
 from app.api.controllers.pdf_form_exporter import generate_form_pdf
 from app.database import get_db
 from app.schemas import UpdateMathOperationRequest, AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, GetQuestionTextsRequest, GetQuestionTextsResponse, PalabrasClaveCreate, PalabrasClaveOut, PalabrasClaveUpdate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, QuestionTextValue, RegisfacialAnswerResponse, RelationOperationMathCreate, RelationOperationMathOut, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
-from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, BitacoraLogsSimple, ClasificacionBitacoraRelacion, Form, FormAnswerEditor, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionType, RelationBitacora, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, User, UserType
+from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, BitacoraLogsSimple, ClasificacionBitacoraRelacion, Form, FormAnswerEditor, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionType, RelationBitacora, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, UploadedFile, User, UserType
 from app.core.security import get_current_user, require_roles
 from typing import Dict
 from sqlalchemy import delete, cast, Text as SAText
@@ -285,7 +285,7 @@ async def close_response(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al cerrar la respuesta. Cambios revertidos: {str(e)}"
+            detail="Error al cerrar la respuesta. Cambios revertidos"
         )
 
     # Enviar notificaciones
@@ -302,62 +302,151 @@ UPLOAD_FOLDER = "./documents"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 ALLOWED_UPLOAD_DIR = os.path.realpath(UPLOAD_FOLDER)
 
-@router.post("/upload-file/")
-async def upload_file(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
+# ── Configuración de uploads (endurecimiento H-BM-002) ────────────────────────
+MAX_UPLOAD_SIZE = 25 * 1024 * 1024   # 25 MB
+UPLOAD_CHUNK    = 64 * 1024          # 64 KB
+UPLOAD_HEAD     = 1024               # bytes para magic/text sniffing
+
+# Whitelist por magic bytes binarios → (mime, extensión forzada)
+ALLOWED_MAGIC = [
+    (b"\x89PNG\r\n\x1a\n", "image/png",  ".png"),
+    (b"\xff\xd8\xff",      "image/jpeg", ".jpg"),
+    (b"GIF87a",            "image/gif",  ".gif"),
+    (b"GIF89a",            "image/gif",  ".gif"),
+    (b"%PDF-",             "application/pdf", ".pdf"),
+    (b"PK\x03\x04",        "application/zip", ".zip"),  # Office (DOCX/XLSX/PPTX)
+]
+ALLOWED_OFFICE_EXTS = {".docx", ".xlsx", ".pptx"}
+ALLOWED_TEXT_EXTS   = {".txt", ".csv"}
+
+
+def _detect_upload_type(head: bytes, original_name: str) -> Optional[tuple]:
     """
-    Sube un archivo al servidor, generando un nombre único.
+    Devuelve (mime, extensión) si el archivo es de un tipo permitido, o None.
+    - Binarios: matcheo de magic bytes.
+    - PK\\x03\\x04 (ZIP): solo se acepta si la extensión original es Office.
+    - WebP: RIFF....WEBP (offset 8).
+    - Texto (.txt/.csv): el contenido inicial debe ser UTF-8 imprimible.
+    """
+    # WebP: RIFF<4 bytes>WEBP
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp", ".webp"
 
-    Este endpoint permite a un usuario autenticado subir un archivo (por ejemplo, PDF, imagen, etc.)
-    al servidor. El archivo se guarda en la carpeta predefinida `UPLOAD_FOLDER` con un nombre
-    único generado con `uuid`.
+    for magic, mime, ext in ALLOWED_MAGIC:
+        if head.startswith(magic):
+            if magic == b"PK\x03\x04":
+                orig_ext = os.path.splitext(original_name or "")[1].lower()
+                if orig_ext in ALLOWED_OFFICE_EXTS:
+                    return mime, orig_ext
+                return None
+            return mime, ext
 
-    Requisitos:
-    -----------
-    - El usuario debe estar autenticado.
-    - El archivo debe ser enviado como `form-data` con la clave `file`.
+    # Texto: ext .txt/.csv + decodificable UTF-8 sin bytes de control raros
+    orig_ext = os.path.splitext(original_name or "")[1].lower()
+    if orig_ext in ALLOWED_TEXT_EXTS:
+        sample = head.lstrip(b"\xef\xbb\xbf")  # quitar BOM UTF-8 si existe
+        try:
+            decoded = sample.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            return None
+        # bytes de control prohibidos (excepto TAB, LF, CR)
+        if any(ord(c) < 0x09 or ord(c) in (0x0B, 0x0C) or (0x0E <= ord(c) < 0x20)
+               for c in decoded):
+            return None
+        mime = "text/csv" if orig_ext == ".csv" else "text/plain"
+        return mime, orig_ext
 
-    Parámetros:
-    -----------
-    file : UploadFile (obligatorio)
-        Archivo a subir (formato `multipart/form-data`).
-    
-    current_user : User
-        Usuario autenticado extraído del token JWT.
+    return None
 
-    Retorna:
-    --------
-    JSON con:
-    - `message`: confirmación del éxito.
-    - `file_name`: nombre único generado del archivo guardado.
+
+@router.post("/upload-file/")
+async def upload_file(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Sube un archivo al servidor con un nombre único (UUID) y registra su metadata
+    en `uploaded_files` para poder validar la propiedad al descargar (H-BM-002).
+
+    Endurecimiento respecto a la versión anterior:
+    - Valida el tipo real por magic bytes / sniffing (415 si no permitido).
+    - Límite de tamaño de 25 MB con streaming por chunks (413 si excede).
+    - El nombre en disco es solo UUID + extensión validada (no usa el filename
+      del cliente, evitando path/inyección de nombre).
+    - Registra owner, mime y tamaño en `uploaded_files` (rollback consistente).
 
     Errores:
     --------
-    - 403: Si el usuario no está autenticado.
-    - 500: Si ocurre un error al guardar el archivo.
+    - 413: archivo excede 25 MB.
+    - 415: tipo de archivo no permitido.
+    - 500: error al guardar o registrar el archivo.
     """
+    # 1. Leer cabecera y validar tipo
+    head = await file.read(UPLOAD_HEAD)
+    detected = _detect_upload_type(head, file.filename or "")
+    if detected is None:
+        raise HTTPException(status_code=415, detail="Tipo de archivo no permitido")
+    mime, ext = detected
+
+    if len(head) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="Archivo excede 25 MB")
+
+    # 2. Nombre nuevo (UUID + extensión validada — sin filename del cliente)
+    unique_filename = f"{uuid.uuid4().hex}{ext}"
+    file_path = os.path.join(UPLOAD_FOLDER, unique_filename)
+
+    # 3. Stream a disco con cap de tamaño
+    size = len(head)
     try:
-        if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User does not have permission to get all questions"
-            )
-        else: 
-        # Generar un nombre único para el archivo usando uuid
-            unique_filename = f"{uuid.uuid4()}_{file.filename}"
-            file_path = os.path.join(UPLOAD_FOLDER, unique_filename)
-            
-            # Guardar el archivo en la carpeta "documents"
-            with open(file_path, "wb") as f:
-                content = await file.read()
-                f.write(content)
+        with open(file_path, "wb") as out:
+            out.write(head)
+            while True:
+                chunk = await file.read(UPLOAD_CHUNK)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_UPLOAD_SIZE:
+                    out.close()
+                    if os.path.exists(file_path):
+                        os.unlink(file_path)
+                    raise HTTPException(status_code=413, detail="Archivo excede 25 MB")
+                out.write(chunk)
+    except HTTPException:
+        raise
+    except Exception:
+        if os.path.exists(file_path):
+            try:
+                os.unlink(file_path)
+            except OSError:
+                pass
+        raise HTTPException(status_code=500, detail="Error al guardar el archivo")
 
-            return JSONResponse(content={
-                "message": "File uploaded successfully",
-                "file_name": unique_filename
-            })
+    # 4. Registrar metadata en uploaded_files (H-BM-002: ownership tracking)
+    try:
+        db.add(UploadedFile(
+            uuid              = unique_filename,
+            owner_user_id     = current_user.id,
+            original_filename = (file.filename or "")[:500] or None,
+            mime              = mime,
+            size_bytes        = size,
+        ))
+        db.commit()
+    except Exception:
+        # Rollback DB + borrar archivo en disco (deja todo consistente)
+        db.rollback()
+        if os.path.exists(file_path):
+            try:
+                os.unlink(file_path)
+            except OSError:
+                pass
+        raise HTTPException(status_code=500, detail="Error al registrar el archivo")
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+    return JSONResponse(content={
+        "message":   "File uploaded successfully",
+        "file_name": unique_filename,
+        "mime":      mime,
+    })
 
 
 @router.get("/download-file/{file_name}")
@@ -403,14 +492,23 @@ async def download_file(
         .all()
     )
 
-    if not answers_with_file and not bitacora_events_with_file:
+    # Fuente 3 (H-BM-002): owner directo registrado en uploaded_files. Cubre
+    # archivos recién subidos que todavía no están referenciados por una answer.
+    file_owner_id = (
+        db.query(UploadedFile.owner_user_id)
+        .filter(UploadedFile.uuid == file_name)
+        .scalar()
+    )
+
+    if not answers_with_file and not bitacora_events_with_file and file_owner_id is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Archivo no encontrado",
         )
 
-    # Acceso vía respuesta de formulario (modelo de permisos existente).
-    user_can_access = any(
+    # Acceso vía ownership directo (uploaded_files) o vía respuesta de formulario
+    # (modelo de permisos existente).
+    user_can_access = (file_owner_id is not None and file_owner_id == current_user.id) or any(
         can_user_view_response(current_user, ans.response_id, db)
         for ans in answers_with_file
     )
@@ -931,7 +1029,7 @@ def get_forms_questions_answers_by_question(question_id: int, db: Session = Depe
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="No se pudo procesar la solicitud")
 
 
 @router.put("/set_reconsideration/{response_id}")
@@ -962,7 +1060,20 @@ def set_reconsideration_true(
         response = db.query(Response).filter(Response.id == response_id).first()
         if not response:
             raise HTTPException(status_code=404, detail="Respuesta no encontrada")
-        
+
+        # IDOR: solo el dueño de la respuesta (o admin/creator) puede solicitar
+        # reconsideración (esto notifica por correo a los aprobadores). Sin esto,
+        # cualquier autenticado podía reconsiderar respuestas ajenas con un mensaje
+        # arbitrario, abusando del servidor de correo.
+        if not (
+            response.user_id == current_user.id
+            or current_user.user_type.name in ("admin", "creator")
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permiso para solicitar reconsideración de esta respuesta"
+            )
+
         # Obtener información del usuario que solicita reconsideración
         usuario_solicita = db.query(User).filter(User.id == response.user_id).first()
         if not usuario_solicita:
@@ -1075,7 +1186,7 @@ def set_reconsideration_true(
         
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error al procesar la reconsideración: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error al procesar la reconsideración")
     
     
 @router.post("/answer-history", status_code=201)
@@ -1151,7 +1262,19 @@ async def create_answers(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Response with id {response_id} not found"
         )
-    
+
+    # IDOR: solo el dueño de la respuesta (o admin/creator) puede agregarle
+    # answers. Sin esto, cualquier autenticado podía inyectar/alterar respuestas
+    # ajenas conociendo el response_id. Mismo criterio que delete/update answer.
+    if not (
+        response.user_id == current_user.id
+        or current_user.user_type.name in ("admin", "creator")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para modificar esta respuesta"
+        )
+
     # Validar que existe el question_id
     if not db.query(Question).filter(Question.id == question_id).first():
         raise HTTPException(
@@ -1195,7 +1318,7 @@ async def create_answers(
         logger.error(f"❌ Error creando respuesta: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error creating answer: {str(e)}"
+            detail="Error creating answer"
         )
         
         
@@ -1741,7 +1864,7 @@ async def delete_response(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error deleting response: {str(e)}"
+            detail="Error deleting response"
         )
 
         
@@ -1773,18 +1896,22 @@ def reset_reconsideration_requested(
 
 
 @router.get("/answers/regisfacial", response_model=List[RegisfacialAnswerResponse])
-async def get_regisfacial_answers(db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
+async def get_regisfacial_answers(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Obtiene todas las respuestas de preguntas tipo 'regisfacial' sin duplicar person_id
-    y genera un hash encriptado con la información específica
+    y genera un hash encriptado con la información específica.
+
+    NOTA DE SEGURIDAD (revertido 1-jul): este endpoint expone el DIRECTORIO de
+    firmantes registrados (person_id + nombre) a cualquier autenticado. Se intentó
+    restringir a admin/creator, pero eso ROMPE un flujo de negocio legítimo: un
+    usuario normal, al diligenciar un formato, puede registrar/firmar facialmente
+    a OTRO trabajador (firma delegada), y para elegirlo necesita este directorio
+    (lo consumen ListForms.tsx y FormPreviewRenderer.tsx durante el llenado).
+    Por eso vuelve a `get_current_user`. Acotar el directorio (por categoría/org)
+    o reducir la PII del payload queda como decisión de producto pendiente.
     """
     try:
         # Obtener todas las respuestas de preguntas tipo regisfacial
-        if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User does not have permission to get categories"
-            )
         results = (
             db.query(
                 Answer.id,
@@ -1842,7 +1969,7 @@ async def get_regisfacial_answers(db: Session = Depends(get_db),current_user: Us
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error al obtener las respuestas: {str(e)}"
+            detail="Error al obtener las respuestas"
         )
 
 
@@ -2686,7 +2813,7 @@ async def update_answer(
         logger.error(f"❌ Error actualizando respuesta {answer_id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error updating answer: {str(e)}"
+            detail="Error updating answer"
         )
         
     

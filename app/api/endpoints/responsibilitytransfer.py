@@ -47,7 +47,7 @@ async def transfer_responsibilities(
         )
         return result
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="No se pudo procesar la solicitud")
 
 @router.post("/transfer-specific-responsibilities")
 async def transfer_specific_responsibilities(
@@ -78,7 +78,7 @@ async def transfer_specific_responsibilities(
         )
         return result
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="No se pudo procesar la solicitud")
 
 @router.get("/user-responsibilities/{user_id}")
 async def get_user_responsibilities(
@@ -100,5 +100,5 @@ async def get_user_responsibilities(
         result = service.get_user_responsibilities(user_id)
         return result
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="No se pudo procesar la solicitud")
 

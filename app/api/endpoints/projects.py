@@ -113,13 +113,11 @@ def get_forms_by_project_endpoint(
 def get_responses_by_project_endpoint(
     project_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    # SECURITY (IDOR H): agrega las respuestas de TODOS los formatos de un
+    # proyecto (dataset cross-usuario). Antes solo autenticaba; ahora requiere
+    # rol admin/creator, como el endpoint hermano de gestión de proyectos.
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator]))
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     """
     Obtiene las respuestas de formularios asociadas a un proyecto específico.
 

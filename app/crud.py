@@ -4073,16 +4073,22 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
 
             sequence = response_approval.sequence_number
 
-            # Verificar si todos los aprobadores anteriores obligatorios ya aprobaron
-            prev_approvers = [
-                ra for ra in all_ra_sorted
-                if ra.sequence_number < sequence and ra.is_mandatory
-            ]
+            # En modo SECUENCIAL, ocultar el pendiente hasta que sea el turno de
+            # este aprobador (todos los aprobadores obligatorios anteriores ya
+            # aprobaron). En modo PARALELO no hay turno: todos los aprobadores
+            # deben ver su pendiente desde el inicio, así que se omite este filtro.
+            approval_mode = getattr(form, "approval_mode", "sequential")
+            if approval_mode != "parallel":
+                # Verificar si todos los aprobadores anteriores obligatorios ya aprobaron
+                prev_approvers = [
+                    ra for ra in all_ra_sorted
+                    if ra.sequence_number < sequence and ra.is_mandatory
+                ]
 
-            all_prev_approved = all(pa.status == ApprovalStatus.aprobado for pa in prev_approvers)
+                all_prev_approved = all(pa.status == ApprovalStatus.aprobado for pa in prev_approvers)
 
-            if not all_prev_approved:
-                continue  # Todavía no es el turno de este aprobador
+                if not all_prev_approved:
+                    continue  # Todavía no es el turno de este aprobador
 
             # 🔥 NUEVA VALIDACIÓN: Verificar requisitos de aprobadores anteriores
             validation_result = validate_approver_requirements_with_approval_line(

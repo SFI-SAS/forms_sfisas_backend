@@ -20,11 +20,50 @@ from app.models import (
     ConsultantAssignment,
     ConsultantScope,
     Form,
+    FormModerators,
     Response,
     ResponseApproval,
     User,
     UserType,
 )
+
+
+def can_user_manage_form(user: User, form_id: int, db: Session) -> bool:
+    """True si el usuario puede gestionar (ver todo / editar) un formato.
+
+    Reglas:
+      - admin / creator → siempre (rol de gestión, igual que los endpoints
+        protegidos con require_roles([admin, creator]))
+      - dueño del formato (Form.user_id) → sí
+      - moderador asignado (FormModerators) → sí
+      - cualquier otro (incluido rol `user`) → no
+
+    Centraliza el control de acceso a nivel de formato para no reimplementar la
+    regla en cada endpoint (IDOR).
+    """
+    if user is None:
+        return False
+
+    if user.user_type in (UserType.admin, UserType.creator):
+        return True
+
+    form = db.query(Form.user_id).filter(Form.id == form_id).first()
+    if form is None:
+        return False
+
+    if form.user_id == user.id:
+        return True
+
+    is_moderator = (
+        db.query(FormModerators.id)
+        .filter(
+            FormModerators.form_id == form_id,
+            FormModerators.user_id == user.id,
+        )
+        .first()
+        is not None
+    )
+    return is_moderator
 
 
 def _consultant_visibility_conditions(consultant_id: int, db: Session) -> List:

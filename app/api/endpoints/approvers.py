@@ -34,7 +34,10 @@ class ResponseApprovalRequirementsCreateSchema(BaseModel):
 def create_form_approvals(
     data: FormApprovalCreateSchema,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    # SECURITY (IDOR C-3): configurar el flujo de aprobación es una acción
+    # administrativa. Antes solo exigía autenticación; ahora requiere rol
+    # admin/creator, igual que los endpoints hermanos de gestión.
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator]))
 ):
     """
     Crea aprobaciones para un formulario específico.
@@ -89,7 +92,7 @@ def create_form_approvals(
         # Manejo de errores inesperados
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error interno del servidor: {str(e)}"
+            detail="Error interno del servidor"
         )
         
 
@@ -240,7 +243,7 @@ async def update_response_approval(
                 except Exception as e:
                     raise HTTPException(
                         status_code=500,
-                        detail=f"Error uploading file {safe_name}: {str(e)}"
+                        detail=f"Error uploading file {safe_name}"
                     )
 
         # SECURITY (ID-043): print de update_data eliminado por filtración de PII
@@ -285,11 +288,11 @@ async def update_response_approval(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error: {str(e)}"
+            detail="Unexpected error"
         )
 
 @router.put("/form-approvals/{id}/set-not-is_active")
-def set_is_active_false(id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def set_is_active_false(id: int, db: Session = Depends(get_db), current_user: User = Depends(require_roles([UserType.admin, UserType.creator]))):
     # Buscar el FormApproval por ID
     """
     Desactiva un aprobador (`FormApproval`) estableciendo `is_active = False`.
@@ -314,23 +317,18 @@ def set_is_active_false(id: int, db: Session = Depends(get_db), current_user: Us
     - 403 FORBIDDEN: Si el usuario no está autenticado.
     - 404 NOT FOUND: Si el `FormApproval` no existe.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
-            )
-    else: 
-        form_approval = db.query(FormApproval).filter(FormApproval.id == id).first()
-        
-        if not form_approval:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="FormApproval no encontrado")
-        
+    # SECURITY (IDOR C-3): desactivar un aprobador es administrativo; el gating
+    # de rol lo aplica require_roles en la firma. Se elimina el check muerto.
+    form_approval = db.query(FormApproval).filter(FormApproval.id == id).first()
 
-        form_approval.is_active = False
-        db.commit()  # Confirmar la transacción
-        db.refresh(form_approval)  # Refrescar el objeto para obtener los datos actualizados
-        
-        return {"message": "is_mandatory actualizado a False", "form_approval": form_approval}
+    if not form_approval:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="FormApproval no encontrado")
+
+    form_approval.is_active = False
+    db.commit()  # Confirmar la transacción
+    db.refresh(form_approval)  # Refrescar el objeto para obtener los datos actualizados
+
+    return {"message": "is_mandatory actualizado a False", "form_approval": form_approval}
 
 
 
@@ -338,7 +336,8 @@ def set_is_active_false(id: int, db: Session = Depends(get_db), current_user: Us
 def create_approval_requirements(
     data: ApprovalRequirementsCreateSchema,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    # SECURITY (IDOR C-3): definir requisitos de aprobación es administrativo.
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator]))
 ):
     """
     Crea requisitos de aprobación para formularios específicos.
@@ -394,7 +393,7 @@ def create_approval_requirements(
         # Manejo de errores inesperados
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error interno del servidor: {str(e)}"
+            detail="Error interno del servidor"
         )
 
 
@@ -403,13 +402,11 @@ def create_approval_requirements(
 def bulk_update_form_approvals(
     data: BulkUpdateFormApprovals,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    # SECURITY (IDOR C-2): este endpoint reasigna aprobaciones a un user_id
+    # arbitrario (podía secuestrarse el flujo hacia el propio ID). Antes solo
+    # exigía autenticación; ahora requiere rol admin/creator.
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator]))
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     """
     Actualiza masivamente registros de aprobación (`FormApproval`) asociados a formularios.
 
@@ -646,7 +643,7 @@ def get_user_forms_by_approver(
         return forms_approval_info
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="No se pudo procesar la solicitud")
 
 def save_approval_requirements(data: ApprovalRequirementsCreateSchema, db: Session):
     """
@@ -813,7 +810,7 @@ def save_response_approval_requirements(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error saving response approval requirements: {str(e)}"
+            detail="Error saving response approval requirements"
         )
 
 def auto_approve_response_approvals(
@@ -927,7 +924,7 @@ def create_response_approval_requirements(
         # Manejo de errores inesperados
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error interno del servidor: {str(e)}"
+            detail="Error interno del servidor"
         )
 # Endpoint adicional para actualizar el estado de cumplimiento
 @router.put("/response-approval-requirements/{requirement_id}/fulfill")
@@ -997,7 +994,7 @@ def fulfill_response_approval_requirement(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error interno del servidor: {str(e)}"
+            detail="Error interno del servidor"
         )
         
 
@@ -1070,7 +1067,16 @@ async def get_response_approval_details(
     Obtiene información completa de aprobación para una respuesta específica,
     incluyendo estado de aprobadores, requisitos y archivos adjuntos.
     """
-    
+    # SECURITY (IDOR H): expone datos del dueño (nombre, email, num_document) y
+    # el flujo de aprobación de cualquier respuesta. Se restringe a quien puede
+    # ver la respuesta (admin/creator/dueño/aprobador/consultor asignado).
+    from app.core.permissions import can_user_view_response
+    if not can_user_view_response(current_user, response_id, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No autorizado para ver los detalles de aprobación de esta respuesta"
+        )
+
     current_user_id = current_user.id  # Extraer ID del usuario autenticado
     
     # Consulta principal para obtener la respuesta con toda la información relacionada
@@ -1243,10 +1249,18 @@ async def get_response_approver_required_forms(
     approver = db.query(User).filter(User.id == approver_user_id).first()
     if not approver:
         raise HTTPException(status_code=404, detail="Approver user not found")
-    
-    # Opcional: Verificar permisos (por ejemplo, que el current_user puede ver esta información)
-    # Puedes agregar lógica de autorización aquí según tus necesidades
-    
+
+    # SECURITY (IDOR H): antes la autorización estaba marcada como "opcional" y
+    # sin implementar → cualquiera leía las respuestas de otro aprobador. Se
+    # restringe a quien puede ver la respuesta principal (admin/creator/dueño/
+    # aprobador/consultor asignado).
+    from app.core.permissions import can_user_view_response
+    if not can_user_view_response(current_user, response_id, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No autorizado para ver los formatos requeridos de esta respuesta"
+        )
+
     required_forms_data = get_approver_required_forms_responses(
         response_id=response_id,
         approver_user_id=approver_user_id,
@@ -1680,7 +1694,7 @@ async def get_approval_requirements_by_approver(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al obtener requisitos de aprobación: {str(e)}"
+            detail="Error al obtener requisitos de aprobación"
         )
 
 
@@ -1724,7 +1738,7 @@ async def get_all_approval_requirements_by_form(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al obtener requisitos de aprobación: {str(e)}"
+            detail="Error al obtener requisitos de aprobación"
         )
 
 
@@ -1732,7 +1746,8 @@ async def get_all_approval_requirements_by_form(
 @router.delete("/approval-requirements/{requirement_id}")
 async def delete_approval_requirement(
     requirement_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     """
     Elimina un requisito de aprobación específico
@@ -1762,7 +1777,7 @@ async def delete_approval_requirement(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al eliminar requisito de aprobación: {str(e)}"
+            detail="Error al eliminar requisito de aprobación"
         )
 
 
@@ -1771,7 +1786,8 @@ async def delete_approval_requirement(
 async def delete_all_requirements_by_approver(
     form_id: int,
     approver_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     """
     Elimina todos los requisitos de aprobación de un aprobador específico
@@ -1794,7 +1810,7 @@ async def delete_all_requirements_by_approver(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al eliminar requisitos de aprobación: {str(e)}"
+            detail="Error al eliminar requisitos de aprobación"
         )
 
 
@@ -1803,7 +1819,8 @@ async def delete_all_requirements_by_approver(
 async def update_approval_requirement(
     requirement_id: int,
     linea_aprobacion: bool,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     """
     Actualiza si un requisito sigue o no la línea de aprobación
@@ -1835,7 +1852,7 @@ async def update_approval_requirement(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al actualizar requisito de aprobación: {str(e)}"
+            detail="Error al actualizar requisito de aprobación"
         )
 
 
