@@ -608,7 +608,8 @@ class RelationOperationMath(Base):
     id_form = Column(BigInteger, ForeignKey("forms.id"), nullable=False)
     id_questions = Column(AutoJSON, nullable=False)  # Almacena lista de IDs de preguntas
     operations = Column(String(500), nullable=False)  # Fórmula u operación matemática
-    
+    color_rules = Column(AutoJSON, nullable=True)  # Reglas de color condicional sobre el resultado
+
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 

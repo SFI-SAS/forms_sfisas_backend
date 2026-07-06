@@ -2715,9 +2715,10 @@ def crear_operacion_matematica(
     nueva_operacion = RelationOperationMath(
         id_form=form_id,
         id_questions=data.id_questions,
-        operations=data.operations.strip()
+        operations=data.operations.strip(),
+        color_rules=data.color_rules
     )
-    
+
     db.add(nueva_operacion)
     db.commit()
     db.refresh(nueva_operacion)
@@ -2903,6 +2904,7 @@ def verificar_operaciones_matematicas(
             "id": op.id,
             "id_questions": op.id_questions,
             "operations": op.operations,
+            "color_rules": op.color_rules,
             "created_at": op.created_at.isoformat() if op.created_at else None
         }
         for op in operaciones
@@ -2974,6 +2976,7 @@ def obtener_operaciones_por_preguntas(
                 "id": op.id,
                 "id_questions": op.id_questions,
                 "operations": op.operations,
+                "color_rules": op.color_rules,
                 "created_at": op.created_at.isoformat() if op.created_at else None,
                 "updated_at": op.updated_at.isoformat() if op.updated_at else None
             })
@@ -3037,14 +3040,18 @@ def editar_operacion_matematica(
  
     # Actualizar la fórmula
     operacion.operations = body.operations
+    # Solo tocar color_rules si el cliente lo envió (None = no provisto; [] = limpiar)
+    if body.color_rules is not None:
+        operacion.color_rules = body.color_rules
     db.commit()
     db.refresh(operacion)
- 
+
     return {
         "id": operacion.id,
         "id_form": operacion.id_form,
         "id_questions": operacion.id_questions,
         "operations": operacion.operations,
+        "color_rules": operacion.color_rules,
         "updated_at": operacion.updated_at.isoformat() if operacion.updated_at else None,
     }
 

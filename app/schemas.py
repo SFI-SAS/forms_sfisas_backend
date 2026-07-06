@@ -1058,6 +1058,7 @@ class RelationOperationMathCreate(BaseModel):
     id_form: int = Field(..., gt=0, description="ID del formulario")
     id_questions: List[int] = Field(..., min_items=1, description="Lista de IDs de preguntas")
     operations: str = Field(..., min_length=1, max_length=500, description="Fórmula u operación matemática")
+    color_rules: Optional[list] = Field(None, description="Reglas de color condicional sobre el resultado")
 
     class Config:
         example = {
@@ -1072,6 +1073,7 @@ class RelationOperationMathOut(BaseModel):
     id_form: int
     id_questions: List[int]
     operations: str
+    color_rules: Optional[list] = None
     created_at: datetime
     updated_at: datetime
 
@@ -1093,12 +1095,14 @@ class RelationOperationMathCreate(BaseModel):
     id_form: int = Field(..., description="ID del formulario")
     id_questions: List[int] = Field(..., description="Lista de IDs de preguntas")
     operations: str = Field(..., description="Fórmula matemática")
+    color_rules: Optional[list] = Field(None, description="Reglas de color condicional sobre el resultado")
 
 class RelationOperationMathOut(BaseModel):
     id: int
     id_form: int
     id_questions: List[int]
     operations: str
+    color_rules: Optional[list] = None
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
 
@@ -1450,6 +1454,7 @@ class UpdateFormCategory(BaseModel):
 
 class UpdateMathOperationRequest(BaseModel):
     operations: str
+    color_rules: Optional[list] = None
 
 
 class QuestionUpdatePayload(BaseModel):
