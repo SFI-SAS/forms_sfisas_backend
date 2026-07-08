@@ -1976,6 +1976,62 @@ def download_questions_answers_excel(
     )
 
 
+@router.get("/export/list-excel")
+def download_forms_list_excel(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """
+    Listado en Excel de TODOS los formatos creados. Solo administradores.
+
+    Columnas: serial (id del formato), nombre, quién lo creó, fecha de creación
+    y si está activo o no.
+    """
+    rows = (
+        db.query(
+            Form.id,
+            Form.title,
+            User.name,
+            Form.created_at,
+            Form.is_enabled,
+        )
+        .outerjoin(User, Form.user_id == User.id)
+        .order_by(Form.id.asc())
+        .all()
+    )
+
+    data = [
+        {
+            "Serial": fid,
+            "Nombre del formato": title,
+            "Creado por": uname or "—",
+            "Fecha de creación": created.strftime("%Y-%m-%d %H:%M") if created else "",
+            "Estado": "Activo" if enabled else "Inactivo",
+        }
+        for fid, title, uname, created, enabled in rows
+    ]
+
+    df = pd.DataFrame(
+        data,
+        columns=[
+            "Serial",
+            "Nombre del formato",
+            "Creado por",
+            "Fecha de creación",
+            "Estado",
+        ],
+    )
+    output = BytesIO()
+    df.to_excel(output, index=False, sheet_name="Formatos")
+    output.seek(0)
+
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=listado_formatos.xlsx"},
+    )
+
+
 @router.get("/{form_id}/answers/excel/all-users")
 def download_questions_answers_excel_all_users(
     form_id: int,

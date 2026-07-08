@@ -303,7 +303,13 @@ class Answer(Base):
     answer_text = Column(String(255), nullable=True)
     file_path = Column(Text, nullable=True)
     form_design_element_id = Column(String(100), nullable=True)
-    
+    # Columnas físicas ya presentes en la tabla (las escribe el backend móvil;
+    # ambos backends comparten BD). Se declaran para poder leerlas al reconstruir
+    # filas de repetidor en el autocompletado.
+    repeated_id = Column(String(80), nullable=True)
+    repeater_row_index = Column(Integer, nullable=True)
+    parent_repeated_id = Column(String(80), nullable=True)
+
     response = relationship('Response', back_populates='answers')
     question = relationship('Question', back_populates='answers')
     file_serial = relationship('AnswerFileSerial', back_populates='answer', uselist=False, cascade='all, delete-orphan')
