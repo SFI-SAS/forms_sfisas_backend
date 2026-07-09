@@ -281,6 +281,34 @@ def get_user_by_email(db: Session, email: str):
 def get_users(db: Session, skip: int = 0, limit: int = 10):
     return db.query(User).offset(skip).limit(limit).all()
 
+
+def _integrity_detail(e, default="Datos inválidos: el registro viola una restricción de la base de datos.") -> str:
+    """Traduce un IntegrityError de Postgres a un detalle ÚTIL y SEGURO para el cliente
+    (QUÉ restricción falló) sin volcar SQL crudo. Antes se devolvía un 400 genérico
+    ('Error al crear el formulario') que hacía imposible diagnosticar (2026-07-09)."""
+    orig = getattr(e, "orig", None)
+    diag = getattr(orig, "diag", None)
+    code = getattr(orig, "pgcode", None)
+    col = (getattr(diag, "column_name", None) or "")
+    constraint = (getattr(diag, "constraint_name", None) or "").lower()
+    txt = (str(orig) if orig is not None else str(e)).lower()
+    if code == "23503" or "foreign key" in txt:            # FK violation
+        if "id_category" in constraint or "categor" in (constraint + txt):
+            return "La categoría indicada (id_category) no existe."
+        if "project" in (constraint + txt):
+            return "El proyecto indicado (project_id) no existe."
+        return "Un ID referenciado no existe (violación de clave foránea)."
+    if code == "23505" or "unique" in txt or "duplicate key" in txt:  # unique violation
+        if "title" in (constraint + txt):
+            return "Ya existe un formulario con ese título."
+        return "Valor duplicado que viola una restricción de unicidad."
+    if code == "23502" or "not-null" in txt or "null value" in txt:   # not null
+        return f"Falta un campo obligatorio{(': ' + col) if col else ''}."
+    if code == "22P02" or "invalid input syntax" in txt:             # bad type/format
+        return f"Un valor tiene formato/tipo inválido{(' en ' + col) if col else ''}."
+    return default
+
+
 def create_form(db: Session, form: FormBaseUser, user_id: int):
     # Nombre único: no se permiten títulos de formato repetidos
     # (comparación sin distinguir mayúsculas ni espacios sobrantes).
@@ -345,7 +373,7 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
         raise
     except IntegrityError as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Error al crear el formulario")
+        raise HTTPException(status_code=400, detail=_integrity_detail(e, "Error al crear el formulario"))
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
