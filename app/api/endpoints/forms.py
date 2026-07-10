@@ -1161,7 +1161,7 @@ async def update_form_questions(
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="No se pudo procesar la solicitud")
     
     
 @router.get("/emails/all-emails")
@@ -1567,7 +1567,7 @@ def get_forms_endpoint(
             raise HTTPException(status_code=404, detail="No se encontraron formularios")
         return forms
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="No se pudo procesar la solicitud")
     
 @router.get("/all/list/paginated")
 def get_forms_paginated_endpoint(
@@ -1607,7 +1607,7 @@ def get_forms_paginated_endpoint(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="No se pudo procesar la solicitud")
 
 @router.get("/users/form_by_user")
 def get_user_forms(
@@ -1657,7 +1657,7 @@ def get_user_forms(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="No se pudo procesar la solicitud")
 
 @router.get("/users/form_by_user/summary")
 def get_user_forms_summary(
@@ -1693,7 +1693,7 @@ def get_user_forms_summary(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="No se pudo procesar la solicitud")
 
 
 @router.get("/users/completed_forms")
@@ -1952,10 +1952,14 @@ def download_questions_answers_excel(
     """
     Genera un archivo Excel con las preguntas y respuestas de un formulario específico.
     """
-    if current_user is None:
+    # SECURITY (IDOR H): exporta TODAS las respuestas del formato. Antes solo
+    # exigía autenticación → cualquiera exportaba datos ajenos. Ahora se exige
+    # gestión del formato (admin/creator/dueño/moderador).
+    from app.core.permissions import can_user_manage_form
+    if not can_user_manage_form(current_user, form_id, db):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
+            detail="No autorizado para exportar las respuestas de este formato"
         )
     data = get_questions_and_answers_by_form_id(db, form_id)
     if not data:
@@ -1970,6 +1974,62 @@ def download_questions_answers_excel(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=Formulario_{form_id}_respuestas.xlsx"}
+    )
+
+
+@router.get("/export/list-excel")
+def download_forms_list_excel(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """
+    Listado en Excel de TODOS los formatos creados. Solo administradores.
+
+    Columnas: serial (id del formato), nombre, quién lo creó, fecha de creación
+    y si está activo o no.
+    """
+    rows = (
+        db.query(
+            Form.id,
+            Form.title,
+            User.name,
+            Form.created_at,
+            Form.is_enabled,
+        )
+        .outerjoin(User, Form.user_id == User.id)
+        .order_by(Form.id.asc())
+        .all()
+    )
+
+    data = [
+        {
+            "Serial": fid,
+            "Nombre del formato": title,
+            "Creado por": uname or "—",
+            "Fecha de creación": created.strftime("%Y-%m-%d %H:%M") if created else "",
+            "Estado": "Activo" if enabled else "Inactivo",
+        }
+        for fid, title, uname, created, enabled in rows
+    ]
+
+    df = pd.DataFrame(
+        data,
+        columns=[
+            "Serial",
+            "Nombre del formato",
+            "Creado por",
+            "Fecha de creación",
+            "Estado",
+        ],
+    )
+    output = BytesIO()
+    df.to_excel(output, index=False, sheet_name="Formatos")
+    output.seek(0)
+
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=listado_formatos.xlsx"},
     )
 
 
@@ -2583,7 +2643,7 @@ def get_unanswered_forms(
         return forms
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="No se pudo procesar la solicitud")
 
 @router.get("/responses/by-user/")
 def get_responses_by_user_and_form(
@@ -2596,12 +2656,19 @@ def get_responses_by_user_and_form(
     Obtiene todas las Responses junto con sus Answers basado en form_id y user_id específicos.
     Requiere permisos de administrador o autorización adecuada.
     """
-    # Verifica permisos si es necesario, por ejemplo, que sea admin
-    if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User does not have permission to get forms"
-            )
+    # SECURITY (IDOR C-1): antes solo exigía autenticación (`if current_user is
+    # None` es código muerto: get_current_user ya lanza 401), por lo que
+    # cualquiera podía leer las respuestas de OTRO usuario pasando su user_id.
+    # Ahora: admin/creator pueden consultar a cualquiera; un usuario normal solo
+    # puede leer sus propias respuestas.
+    if (
+        current_user.user_type not in {UserType.admin, UserType.creator}
+        and user_id != current_user.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No autorizado para consultar respuestas de otro usuario",
+        )
 
 
     stmt = (
@@ -2658,7 +2725,7 @@ def create_response_approval_endpoint(
         return create_response_approval(db, data)
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="No se pudo procesar la solicitud")
     
 
 @router.get("/user/assigned-forms-with-responses")
@@ -2790,18 +2857,22 @@ def get_form_details(form_id: int, db: Session = Depends(get_db), current_user: 
     - 404 NOT FOUND: Si el formulario no existe.
     """
     
-    if current_user is None:
+    # SECURITY (IDOR H): devuelve respuestas completas de TODOS los usuarios del
+    # formato (nombre, email, num_document, historial). Antes solo autenticaba.
+    # Ahora se exige gestión del formato (admin/creator/dueño/moderador).
+    from app.core.permissions import can_user_manage_form
+    if not can_user_manage_form(current_user, form_id, db):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
-            )
-    else: 
-        result = get_form_with_full_responses(form_id, db)
+            detail="No autorizado para ver los detalles de este formato"
+        )
 
-        if not result:
-            raise HTTPException(status_code=404, detail="Formulario no encontrado")
+    result = get_form_with_full_responses(form_id, db)
 
-        return result
+    if not result:
+        raise HTTPException(status_code=404, detail="Formulario no encontrado")
+
+    return result
     
     
 @router.put("/{form_id}/design", status_code=200)
@@ -2850,10 +2921,14 @@ def update_form_design(
     - 403 FORBIDDEN: Si el usuario no está autenticado.
     - 404 NOT FOUND: Si el formulario no existe.
     """
-    if current_user is None:
+    # SECURITY (IDOR H): antes solo exigía autenticación (`current_user is None`
+    # es código muerto) → cualquiera podía sobrescribir el diseño de cualquier
+    # formato. Ahora se exige gestión del formato (admin/creator/dueño/moderador).
+    from app.core.permissions import can_user_manage_form
+    if not can_user_manage_form(current_user, form_id, db):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to update form design"
+            detail="No autorizado para modificar este formato"
         )
 
     updated_form = update_form_design_service(db, form_id, payload.form_design)
@@ -3230,7 +3305,8 @@ def delete_form_close_config(
 def set_custom_template_id(
     form_id: int,
     body: dict,  # { "custom_template_id": int }
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     """Vincula o actualiza solo el custom_template_id sin tocar el resto de la config"""
     config = db.query(FormCloseConfig).filter(FormCloseConfig.form_id == form_id).first()
@@ -4041,7 +4117,11 @@ def update_form_basic_info(
     Actualiza el título, descripción y/o tipo de formato de un formulario.
     Solo el propietario del formulario puede realizar esta acción.
     """
-    if current_user is None:
+    # SECURITY (IDOR H): el docstring decía "Solo el propietario" pero el código
+    # nunca lo comprobaba (`current_user is None` es código muerto). Ahora se
+    # exige gestión del formato (admin/creator/dueño/moderador).
+    from app.core.permissions import can_user_manage_form
+    if not can_user_manage_form(current_user, form_id, db):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="No tienes permiso para actualizar este formulario"
@@ -4296,7 +4376,7 @@ async def upload_form_instructivos(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error: {str(e)}"
+            detail="Unexpected error"
         )
 
 # ==================== OBTENER INSTRUCTIVOS ====================
@@ -4342,7 +4422,7 @@ async def get_form_instructivos(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error: {str(e)}"
+            detail="Unexpected error"
         )
 
 
@@ -4410,7 +4490,7 @@ async def update_form_alert_message(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error: {str(e)}"
+            detail="Unexpected error"
         )
 
 @router.get("/files/download-instructivo")
@@ -4549,7 +4629,7 @@ async def get_form_alert_message(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error: {str(e)}"
+            detail="Unexpected error"
         )
         
 # ==================== OBTENER UN FORMULARIO (para ver detalles) ====================
@@ -4606,7 +4686,7 @@ async def get_form_details(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error: {str(e)}"
+            detail="Unexpected error"
         )
 
 
@@ -4702,7 +4782,7 @@ async def delete_instructivo(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error: {str(e)}"
+            detail="Unexpected error"
         )
 
 
@@ -4768,7 +4848,7 @@ async def delete_alert_message(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error: {str(e)}"
+            detail="Unexpected error"
         )
         
 @router.post(

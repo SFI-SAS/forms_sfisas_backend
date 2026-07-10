@@ -17,7 +17,7 @@ from app.core.security import (
 )
 from app.crud import get_user_by_email
 from fastapi.security import OAuth2PasswordRequestForm
-from app.models import User
+from app.models import User, AuthEvent
 
 
 def _client_ip(request: Request) -> str:

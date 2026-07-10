@@ -2900,8 +2900,46 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
 
 
 
+def _reconstruct_answer_rows(answers):
+    """
+    Reconstruye las FILAS de una respuesta a partir de sus answers, para que el
+    autocompletado empareje los campos de UNA MISMA fila de repetidor
+    (ej. cédula ↔ nombre ↔ apellido de la fila i) y no mezcle filas.
+
+    - Si los answers traen `repeater_row_index`, ordena/empareja por él.
+    - Si no, reconstruye por POSICIÓN dentro de cada columna (mismo criterio que
+      los exportadores PDF/Excel).
+    - Un campo con un solo valor (top-level, fuera del repetidor) se comparte en
+      todas las filas.
+
+    Devuelve una lista de dicts { question_id: answer_text }, una por fila.
+    """
+    from collections import defaultdict
+    cols = defaultdict(list)
+    for a in answers:
+        if a.answer_text is None or a.answer_text == '':
+            continue
+        order = a.repeater_row_index if a.repeater_row_index is not None else (a.id or 0)
+        cols[a.question_id].append((order, a.answer_text))
+    for qid in cols:
+        cols[qid].sort(key=lambda t: t[0])
+        cols[qid] = [t[1] for t in cols[qid]]
+
+    n_rows = max((len(v) for v in cols.values()), default=0)
+    rows = []
+    for i in range(n_rows):
+        row = {}
+        for qid, vals in cols.items():
+            if i < len(vals):
+                row[qid] = vals[i]
+            elif len(vals) == 1:
+                row[qid] = vals[0]  # campo compartido por todas las filas
+        rows.append(row)
+    return rows
+
+
 def get_related_or_filtered_answers_optimized(
-    db: Session, 
+    db: Session,
     question_id: int,
     include_forms: bool = False,
     page: int = 1,
@@ -2923,25 +2961,16 @@ def get_related_or_filtered_answers_optimized(
 
         for response in responses:
             answers = db.query(Answer).filter_by(response_id=response.id).all()
-            
-            condition_values = []
-            source_values = []
-            response_answers_map = {}
-            
-            for answer in answers:
-                if answer.question_id == condition.condition_question_id and answer.answer_text:
-                    condition_values.append(answer.answer_text)
-                if answer.question_id == condition.source_question_id and answer.answer_text:
-                    source_values.append(answer.answer_text)
-                
-                if answer.answer_text:
-                    response_answers_map[answer.question_id] = answer.answer_text
-            
-            if not condition_values or not source_values:
-                continue
-            
+
             response_matched = False
-            for condition_val in condition_values:
+            # Reconstruir por fila: cada fila del repetidor empareja su condición,
+            # su valor fuente y sus correlaciones sin mezclarse con otras filas.
+            for row in _reconstruct_answer_rows(answers):
+                condition_val = row.get(condition.condition_question_id)
+                source_val = row.get(condition.source_question_id)
+                if not condition_val or not source_val:
+                    continue
+
                 try:
                     condition_val_converted = float(condition_val)
                     expected_val = float(condition.expected_value)
@@ -2963,21 +2992,20 @@ def get_related_or_filtered_answers_optimized(
                 elif condition.operator == '<=':
                     condition_met = condition_val_converted <= expected_val
 
-                if condition_met:
-                    response_matched = True
-                    for source_val in source_values:
-                        valid_answers.append(source_val)  # ✅ Mantiene duplicados
-                        
-                        if source_val not in correlations_map:
-                            correlations_map[source_val] = {}
-                        
-                        for q_id, answer_text in response_answers_map.items():
-                            if q_id != condition.source_question_id:
-                                if q_id not in correlations_map[source_val]:
-                                    correlations_map[source_val][q_id] = answer_text
-                    
-                    break
-            
+                if not condition_met:
+                    continue
+
+                response_matched = True
+                valid_answers.append(source_val)  # ✅ Mantiene duplicados
+
+                if source_val not in correlations_map:
+                    correlations_map[source_val] = {}
+
+                for q_id, answer_text in row.items():
+                    if q_id != condition.source_question_id:
+                        if q_id not in correlations_map[source_val]:
+                            correlations_map[source_val][q_id] = answer_text
+
             if response_matched:
                 response_ids_matched.add(response.id)
 
@@ -3033,23 +3061,19 @@ def get_related_or_filtered_answers_optimized(
             answers_by_response[answer.response_id].append(answer)
 
         for response_id, answers in answers_by_response.items():
-            related_answer_texts = []
-            response_answers_map = {}
-            
-            for answer in answers:
-                if answer.question_id == relation.related_question_id and answer.answer_text:
-                    related_answer_texts.append(answer.answer_text)
-                
-                if answer.answer_text:
-                    response_answers_map[answer.question_id] = answer.answer_text
+            # Reconstruir por fila para emparejar los campos de la misma fila del
+            # repetidor (evita que todas las opciones traigan el valor de la última fila).
+            for row in _reconstruct_answer_rows(answers):
+                related_answer_text = row.get(relation.related_question_id)
+                if not related_answer_text:
+                    continue
 
-            for related_answer_text in related_answer_texts:
                 all_unique_answers.append(related_answer_text)  # ✅ Agrega TODO
-                
+
                 if related_answer_text not in correlations_map:
                     correlations_map[related_answer_text] = {}
-                
-                for q_id, answer_text in response_answers_map.items():
+
+                for q_id, answer_text in row.items():
                     if q_id != relation.related_question_id:
                         if q_id not in correlations_map[related_answer_text]:
                             correlations_map[related_answer_text][q_id] = answer_text
@@ -4101,16 +4125,22 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
 
             sequence = response_approval.sequence_number
 
-            # Verificar si todos los aprobadores anteriores obligatorios ya aprobaron
-            prev_approvers = [
-                ra for ra in all_ra_sorted
-                if ra.sequence_number < sequence and ra.is_mandatory
-            ]
+            # En modo SECUENCIAL, ocultar el pendiente hasta que sea el turno de
+            # este aprobador (todos los aprobadores obligatorios anteriores ya
+            # aprobaron). En modo PARALELO no hay turno: todos los aprobadores
+            # deben ver su pendiente desde el inicio, así que se omite este filtro.
+            approval_mode = getattr(form, "approval_mode", "sequential")
+            if approval_mode != "parallel":
+                # Verificar si todos los aprobadores anteriores obligatorios ya aprobaron
+                prev_approvers = [
+                    ra for ra in all_ra_sorted
+                    if ra.sequence_number < sequence and ra.is_mandatory
+                ]
 
-            all_prev_approved = all(pa.status == ApprovalStatus.aprobado for pa in prev_approvers)
+                all_prev_approved = all(pa.status == ApprovalStatus.aprobado for pa in prev_approvers)
 
-            if not all_prev_approved:
-                continue  # Todavía no es el turno de este aprobador
+                if not all_prev_approved:
+                    continue  # Todavía no es el turno de este aprobador
 
             # 🔥 NUEVA VALIDACIÓN: Verificar requisitos de aprobadores anteriores
             validation_result = validate_approver_requirements_with_approval_line(

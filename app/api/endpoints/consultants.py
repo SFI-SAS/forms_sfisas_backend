@@ -257,7 +257,7 @@ def bulk_create_assignments(
         db.commit()
     except Exception as e:
         db.rollback()
-        raise HTTPException(500, f"Error al crear asignaciones: {str(e)}")
+        raise HTTPException(500, "Error al crear asignaciones")
 
     # Recargar con relaciones para serializar
     ids = [r.id for r in new_records]

@@ -303,7 +303,13 @@ class Answer(Base):
     answer_text = Column(String(255), nullable=True)
     file_path = Column(Text, nullable=True)
     form_design_element_id = Column(String(100), nullable=True)
-    
+    # Columnas físicas ya presentes en la tabla (las escribe el backend móvil;
+    # ambos backends comparten BD). Se declaran para poder leerlas al reconstruir
+    # filas de repetidor en el autocompletado.
+    repeated_id = Column(String(80), nullable=True)
+    repeater_row_index = Column(Integer, nullable=True)
+    parent_repeated_id = Column(String(80), nullable=True)
+
     response = relationship('Response', back_populates='answers')
     question = relationship('Question', back_populates='answers')
     file_serial = relationship('AnswerFileSerial', back_populates='answer', uselist=False, cascade='all, delete-orphan')
@@ -382,6 +388,19 @@ class AnswerFileSerial(Base):
     serial = Column(String(100), nullable=False)
     answer_id = Column(BigInteger, ForeignKey('answers.id'), nullable=False)
     answer = relationship('Answer', back_populates='file_serial')
+
+# ── UploadedFile — metadata de archivos subidos via /responses/upload-file/ ────
+# H-BM-002 (IDOR en download-file): permite validar ownership al descargar.
+# Tabla compartida con el backend móvil (mismo modelo). Migración SQL en
+# scripts/db_migrations/2026-05-19_create_uploaded_files.sql
+class UploadedFile(Base):
+    __tablename__ = 'uploaded_files'
+    uuid              = Column(String(64), primary_key=True)
+    owner_user_id     = Column(BigInteger, ForeignKey('users.id'), nullable=False, index=True)
+    original_filename = Column(String(500), nullable=True)
+    mime              = Column(String(120), nullable=True)
+    size_bytes        = Column(BigInteger, nullable=True)
+    uploaded_at       = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
 class FormApproval(Base):
     __tablename__ = 'form_approvals'
@@ -595,7 +614,8 @@ class RelationOperationMath(Base):
     id_form = Column(BigInteger, ForeignKey("forms.id"), nullable=False)
     id_questions = Column(AutoJSON, nullable=False)  # Almacena lista de IDs de preguntas
     operations = Column(String(500), nullable=False)  # Fórmula u operación matemática
-    
+    color_rules = Column(AutoJSON, nullable=True)  # Reglas de color condicional sobre el resultado
+
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 

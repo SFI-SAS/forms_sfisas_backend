@@ -509,7 +509,7 @@ def read_options_by_question(question_id: int, db: Session = Depends(get_db), cu
         return get_options_by_question_id(db=db, question_id=question_id)
 
 @router.delete("/delete/{question_id}")
-def delete_question(question_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def delete_question(question_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_roles([UserType.admin, UserType.creator]))):
     """
     Elimina una pregunta y todas sus relaciones en cascada.
 
@@ -537,13 +537,11 @@ def delete_question(question_id: int, db: Session = Depends(get_db), current_use
     HTTPException:
         - 403: Si el usuario no está autenticado.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
-        )
-    else: 
-        return delete_question_from_db(db, question_id)
+    # SECURITY (IDOR H): gestionar preguntas es administrativo; el gating de rol
+    # lo aplica require_roles en la firma (admin/creator). Se elimina el check
+    # muerto. Los consumidores (Welcome.tsx, CreateQuestion.tsx) son flujos de
+    # gestión de preguntas usados por admin/creator.
+    return delete_question_from_db(db, question_id)
 
 
 @router.get("/{question_id}/answers", response_model=List[AnswerSchema])
@@ -1115,7 +1113,8 @@ def generate_deterministic_color(source_id: int) -> str:
 @router.post("/detect-select-relations")
 def detect_select_relations(
     payload: DetectSelectRelationsRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     question_ids = payload.question_ids
     
@@ -1233,7 +1232,8 @@ def get_answers_by_question(
 )
 def create_relation_question_rule(
     payload: RelationQuestionRuleCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
 
     # 🔥 VALIDACIÓN PRO (evita basura en DB)
@@ -1316,7 +1316,8 @@ class BulkEmailNotificationRulesCreate(BaseModel):
 @router.post("/relation-question-rule/bulk-email-notifications")
 def create_bulk_email_notification_rules(
     payload: BulkEmailNotificationRulesCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Crea en una sola transacción múltiples reglas de recordatorio por email,
@@ -1396,7 +1397,7 @@ def create_bulk_email_notification_rules(
         db.rollback()
         raise HTTPException(
             status_code=500,
-            detail=f"Error guardando reglas: {str(e)}"
+            detail="Error guardando reglas"
         )
 
     # Refrescar para obtener IDs
