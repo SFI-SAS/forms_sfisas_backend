@@ -199,6 +199,7 @@ class AtomicFormCreate(_BaseModel):
     fields: List[AtomicFormField] = _Field(default_factory=list)   # camino simple (1 por línea)
     elements: Optional[List[AtomicFormElement]] = None             # estructura: filas/repetidores
     activate: bool = True  # False => borrador (deshabilitado pero con preguntas vinculadas)
+    reuse_existing: bool = False  # True => reutiliza preguntas del pool (texto norm.+tipo) en vez de duplicar
 
 
 @router.post("/create-atomic")
@@ -1973,6 +1974,62 @@ def download_questions_answers_excel(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=Formulario_{form_id}_respuestas.xlsx"}
+    )
+
+
+@router.get("/export/list-excel")
+def download_forms_list_excel(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """
+    Listado en Excel de TODOS los formatos creados. Solo administradores.
+
+    Columnas: serial (id del formato), nombre, quién lo creó, fecha de creación
+    y si está activo o no.
+    """
+    rows = (
+        db.query(
+            Form.id,
+            Form.title,
+            User.name,
+            Form.created_at,
+            Form.is_enabled,
+        )
+        .outerjoin(User, Form.user_id == User.id)
+        .order_by(Form.id.asc())
+        .all()
+    )
+
+    data = [
+        {
+            "Serial": fid,
+            "Nombre del formato": title,
+            "Creado por": uname or "—",
+            "Fecha de creación": created.strftime("%Y-%m-%d %H:%M") if created else "",
+            "Estado": "Activo" if enabled else "Inactivo",
+        }
+        for fid, title, uname, created, enabled in rows
+    ]
+
+    df = pd.DataFrame(
+        data,
+        columns=[
+            "Serial",
+            "Nombre del formato",
+            "Creado por",
+            "Fecha de creación",
+            "Estado",
+        ],
+    )
+    output = BytesIO()
+    df.to_excel(output, index=False, sheet_name="Formatos")
+    output.seek(0)
+
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=listado_formatos.xlsx"},
     )
 
 

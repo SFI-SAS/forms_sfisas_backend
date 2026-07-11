@@ -810,6 +810,14 @@ async def send_action_notification_email(
             desc = custom_email_body
         subject_line = custom_email_subject if custom_email_subject else f"{title} — {form.title}"
 
+        # Código de asunto (config de cierre): texto fijo que el admin define y que
+        # SIEMPRE se antepone al asunto de TODO correo del cierre, tanto si hay
+        # asunto personalizado como si se usa el asunto por defecto. Aditivo/opcional;
+        # quien diligencia no lo modifica (viene de la config del formato).
+        email_subject_code = (action_meta or {}).get('email_subject_code')
+        if email_subject_code:
+            subject_line = f"{email_subject_code} {subject_line}"
+
         # ── Info del formulario ──
         body = _p(desc)
         body += _info_block("Formulario",
