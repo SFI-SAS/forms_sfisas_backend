@@ -281,6 +281,34 @@ def get_user_by_email(db: Session, email: str):
 def get_users(db: Session, skip: int = 0, limit: int = 10):
     return db.query(User).offset(skip).limit(limit).all()
 
+
+def _integrity_detail(e, default="Datos inválidos: el registro viola una restricción de la base de datos.") -> str:
+    """Traduce un IntegrityError de Postgres a un detalle ÚTIL y SEGURO para el cliente
+    (QUÉ restricción falló) sin volcar SQL crudo. Antes se devolvía un 400 genérico
+    ('Error al crear el formulario') que hacía imposible diagnosticar (2026-07-09)."""
+    orig = getattr(e, "orig", None)
+    diag = getattr(orig, "diag", None)
+    code = getattr(orig, "pgcode", None)
+    col = (getattr(diag, "column_name", None) or "")
+    constraint = (getattr(diag, "constraint_name", None) or "").lower()
+    txt = (str(orig) if orig is not None else str(e)).lower()
+    if code == "23503" or "foreign key" in txt:            # FK violation
+        if "id_category" in constraint or "categor" in (constraint + txt):
+            return "La categoría indicada (id_category) no existe."
+        if "project" in (constraint + txt):
+            return "El proyecto indicado (project_id) no existe."
+        return "Un ID referenciado no existe (violación de clave foránea)."
+    if code == "23505" or "unique" in txt or "duplicate key" in txt:  # unique violation
+        if "title" in (constraint + txt):
+            return "Ya existe un formulario con ese título."
+        return "Valor duplicado que viola una restricción de unicidad."
+    if code == "23502" or "not-null" in txt or "null value" in txt:   # not null
+        return f"Falta un campo obligatorio{(': ' + col) if col else ''}."
+    if code == "22P02" or "invalid input syntax" in txt:             # bad type/format
+        return f"Un valor tiene formato/tipo inválido{(' en ' + col) if col else ''}."
+    return default
+
+
 def create_form(db: Session, form: FormBaseUser, user_id: int):
     # Nombre único: no se permiten títulos de formato repetidos
     # (comparación sin distinguir mayúsculas ni espacios sobrantes).
@@ -345,7 +373,7 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
         raise
     except IntegrityError as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Error al crear el formulario")
+        raise HTTPException(status_code=400, detail=_integrity_detail(e, "Error al crear el formulario"))
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
@@ -6197,6 +6225,38 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
         db.flush()  # asigna db_form.id SIN commit
         form_id = db_form.id
 
+        # REUSO de preguntas (#4, 2026-07-01): si reuse_existing=True, indexar el pool
+        # UNA vez y reutilizar preguntas por TEXTO NORMALIZADO (sin tildes/mayúsculas) +
+        # TIPO compatible, prefiriendo GENERALES (id_form NULL). Evita duplicar campos
+        # comunes cada vez que se crea un formato. Gated por flag → el frontend (que no
+        # lo manda) NO cambia de comportamiento.
+        import re as _re_reuse, unicodedata as _ud_reuse
+        _reuse = bool(payload.get("reuse_existing", False))
+        _reuse_idx = {}
+
+        def _reuse_key(txt, qt):
+            s = "".join(c for c in _ud_reuse.normalize("NFD", (txt or "").strip().lower())
+                        if _ud_reuse.category(c) != "Mn")
+            s = _re_reuse.sub(r"[^a-z0-9]+", " ", s).strip()
+            _q = getattr(qt, "value", qt)
+            return (s, str(_q).lower())
+
+        if _reuse:
+            # PERF: NO traer todo el pool (inviable con miles de preguntas → timeouts).
+            # Query TARGETED: solo las preguntas cuyo texto (case-insensitive) coincide
+            # con algún label a crear. _reuse_key hace el match final (accent-normalizado).
+            _wanted_upper = list({(nf["label"] or "").strip().upper()
+                                  for nf in all_fields if nf.get("label")})
+            if _wanted_upper:
+                for _row in (db.query(Question.id, Question.question_text,
+                                      Question.question_type, Question.id_form)
+                             .filter(func.upper(func.trim(Question.question_text)).in_(_wanted_upper))
+                             .all()):
+                    _k = _reuse_key(_row.question_text, _row.question_type)
+                    # preferir general (id_form NULL): no pisar un general ya indexado
+                    if _k not in _reuse_idx or (_reuse_idx[_k][1] is not None and _row.id_form is None):
+                        _reuse_idx[_k] = (_row.id, _row.id_form)
+
         def _mk_item(nf, qid, space=12):
             props = {"label": nf["label"], "required": nf["required"], "space": int(space)}
             if nf["qtype"] in CHOICE:
@@ -6209,6 +6269,17 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
         pending_conditions = []  # [{source_label, expected_value, operator, filtered_qids}]
 
         def _persist(nf):
+            # REUSO: si hay una pregunta del pool que coincide (texto normalizado +
+            # tipo), reutilizarla (solo vincular) en vez de crear duplicado.
+            if _reuse:
+                _hit = _reuse_idx.get(_reuse_key(nf["label"], nf["qtype"]))
+                if _hit:
+                    qid = _hit[0]
+                    if not db.query(FormQuestion.form_id).filter_by(
+                            form_id=form_id, question_id=qid).first():
+                        db.add(FormQuestion(form_id=form_id, question_id=qid))
+                    label_to_qid.setdefault((nf["label"] or "").strip().lower(), qid)
+                    return qid
             q = Question(question_text=nf["label"], question_type=_QT(nf["qtype"]),
                          required=nf["required"], description=nf.get("description"))
             db.add(q)
@@ -6218,6 +6289,9 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
                     db.add(Option(question_id=q.id, option_text=ot))
             db.add(FormQuestion(form_id=form_id, question_id=q.id))
             label_to_qid.setdefault((nf["label"] or "").strip().lower(), q.id)
+            # indexar la nueva para que campos repetidos en el MISMO form la reutilicen
+            if _reuse:
+                _reuse_idx[_reuse_key(nf["label"], nf["qtype"])] = (q.id, None)
             return q.id
 
         design = []
