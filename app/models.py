@@ -517,6 +517,10 @@ class FormCloseConfig(Base):
     custom_template_id = Column(BigInteger, ForeignKey('download_templates.id'), nullable=True)
     custom_email_subject = Column(String(255), nullable=True)
     custom_email_body = Column(Text, nullable=True)
+    # Código fijo que el admin define en la config de cierre y que SIEMPRE se
+    # antepone al asunto de todo correo del cierre (sobre el asunto personalizado
+    # o el por defecto). No lo modifica quien diligencia. Aditivo, opcional.
+    email_subject_code = Column(String(50), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     

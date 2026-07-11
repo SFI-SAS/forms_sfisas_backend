@@ -640,6 +640,7 @@ class FormCloseConfigCreate(BaseModel):
     custom_template_id: Optional[int] = None
     custom_email_subject: Optional[str] = None
     custom_email_body: Optional[str] = None
+    email_subject_code: Optional[str] = None
 
     @validator('download_link_recipients', 'email_recipients', 'report_recipients', 'custom_template_recipients', pre=True)
     def validate_emails(cls, v):
@@ -669,6 +670,7 @@ class FormCloseConfigOut(BaseModel):
     custom_template_id: Optional[int] = None
     custom_email_subject: Optional[str] = None
     custom_email_body: Optional[str] = None
+    email_subject_code: Optional[str] = None
 
     class Config:
         orm_mode = True

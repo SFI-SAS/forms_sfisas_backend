@@ -4936,7 +4936,8 @@ def get_active_form_actions(form_id: int, db):
         
         custom_subject = getattr(config, 'custom_email_subject', None)
         custom_body    = getattr(config, 'custom_email_body', None)
-        base_meta      = {'custom_email_subject': custom_subject, 'custom_email_body': custom_body}
+        subject_code   = getattr(config, 'email_subject_code', None)
+        base_meta      = {'custom_email_subject': custom_subject, 'custom_email_body': custom_body, 'email_subject_code': subject_code}
         
         active_actions = []
         
@@ -4976,6 +4977,7 @@ def get_active_form_actions(form_id: int, db):
                             'include_pdf': config.custom_template_include_pdf or False,
                             'custom_email_subject': custom_subject,
                             'custom_email_body': custom_body,
+                            'email_subject_code': subject_code,
                         }
                     ))
             except Exception as e:
