@@ -1720,6 +1720,11 @@ def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int =
                     Form.id.in_(profile_form_ids),
                     Form.id_category.in_(profile_category_ids),
                     Form.id.in_(activity_form_ids),
+                    # El dueño SIEMPRE ve los formatos que creó (consistente con
+                    # user_has_access_to_form). Cubre el caso de un formato creado
+                    # sin auto-asignarse como moderador, que antes quedaba invisible
+                    # en su propio listado.
+                    Form.user_id == user_id,
                 )
             )
             .distinct()
