@@ -387,6 +387,39 @@ def set_profile_forms(
     return _serialize_profile(profile, members, forms, categories)
 
 
+@router.post("/{profile_id}/forms/{form_id}", response_model=ProfileOut)
+def add_profile_form(
+    profile_id: int,
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """Agrega UN formato al perfil SIN borrar los existentes (aditivo, idempotente).
+
+    A diferencia de PUT /{profile_id}/forms (que reemplaza todo el conjunto), este
+    solo añade el formato indicado. Pensado para que ArIA meta un formato recién
+    creado en el perfil del creador sin riesgo de wipear los demás formatos del
+    perfil (el PUT haría read-modify-write y una lectura errónea borraría todo)."""
+    profile = db.query(Profile).filter(Profile.id == profile_id).first()
+    if not profile:
+        raise HTTPException(404, "Perfil no encontrado")
+    if not db.query(Form.id).filter(Form.id == form_id).first():
+        raise HTTPException(404, f"Formato {form_id} no encontrado")
+
+    exists = (
+        db.query(ProfileForm.id)
+        .filter(ProfileForm.profile_id == profile.id, ProfileForm.form_id == form_id)
+        .first()
+    )
+    if not exists:
+        db.add(ProfileForm(profile_id=profile.id, form_id=form_id))
+        db.commit()
+
+    profile = _load_profile_full(db, profile.id)
+    members, forms, categories = _members_forms_categories(profile)
+    return _serialize_profile(profile, members, forms, categories)
+
+
 @router.put("/{profile_id}/categories", response_model=ProfileOut)
 def set_profile_categories(
     profile_id: int,
