@@ -731,6 +731,8 @@ def update_question(db: Session, question_id: int, question: QuestionUpdate) -> 
             return None
         
         for key, value in question.model_dump(exclude_unset=True).items():
+            if key in ("question_text", "description") and isinstance(value, str):
+                value = value.strip().upper()
             setattr(db_question, key, value)
         
         db.commit()
