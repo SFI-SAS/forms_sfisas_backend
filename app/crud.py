@@ -4856,7 +4856,7 @@ def build_email_html_approvers(aprobacion_info: dict) -> str:
                     </table>
 
                     <div style="text-align: center; margin: 30px 0;">
-                        <a href="https://forms.sfisas.com.co/" style="display: inline-block; padding: 14px 28px; background-color: #002f6c; color: white; text-decoration: none; border-radius: 5px; font-size: 15px;">
+                        <a href="https://safemetrics-sfi-dev.service.saferut.com/" style="display: inline-block; padding: 14px 28px; background-color: #002f6c; color: white; text-decoration: none; border-radius: 5px; font-size: 15px;">
                             Ingresar al Portal de Aprobaciones
                         </a>
                     </div>

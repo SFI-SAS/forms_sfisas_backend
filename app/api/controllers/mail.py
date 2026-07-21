@@ -153,7 +153,7 @@ def _btn(url: str, label: str = "Ir a SafeMetrics") -> str:
         <a href="{url}" style="display:inline-block;padding:10px 26px;background-color:{_C['brand']};color:#fff;text-decoration:none;border-radius:4px;font-size:13px;font-weight:600;">{label}</a>
     </div>"""
 
-_APP_URL = "https://forms.sfisas.com.co/"
+_APP_URL = "https://safemetrics-sfi-dev.service.saferut.com/"
 _API_URL = "https://api-forms-sfi.service.saferut.com"
 
 
