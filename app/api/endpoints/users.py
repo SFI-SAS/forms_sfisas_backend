@@ -1,6 +1,6 @@
 import io
 import json
-from fastapi import APIRouter, Depends, File, Form as FastAPIForm, HTTPException, UploadFile, status, Query
+from fastapi import APIRouter, Body, Depends, File, Form as FastAPIForm, HTTPException, UploadFile, status, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr, ValidationError
 from sqlalchemy import text
@@ -784,6 +784,26 @@ def get_users_selectable(
     """
     include_pii = current_user.user_type in (UserType.admin, UserType.creator)
     return fetch_users_selectable(db, include_pii=include_pii)
+
+
+@router.post("/{user_id}/set-password")
+def admin_set_user_password(
+    user_id: int,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """Setea una contraseña CONOCIDA a un usuario (solo admin). Para provisioning/pruebas
+    (a diferencia de reset-password, que genera una random y la emailea)."""
+    pwd = (body.get("password") or "").strip()
+    if len(pwd) < 6:
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 6 caracteres")
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    user.password = hash_password(pwd)
+    db.commit()
+    return {"ok": True, "user_id": user_id, "email": user.email}
 
 
 @router.post("/{user_id}/reset-password")
