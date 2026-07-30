@@ -29,6 +29,10 @@ router = APIRouter()
 from app.api.endpoints._audit_trail_endpoint import register_audit_trail_route
 register_audit_trail_route(router)
 
+# Registrar endpoint de exportar respuestas como plantilla reimportable
+from app.api.endpoints._export_template_endpoint import register_export_template_route
+register_export_template_route(router)
+
 MAX_APPROVALS_PER_FORM = 15
 
 
