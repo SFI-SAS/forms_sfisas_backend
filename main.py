@@ -64,7 +64,7 @@ async def _sanitized_http_exception_handler(request: _Request, exc: _StarletteHT
 
 # 1. CORS debe ir primero
 import os
-_default_origins = "https://forms.sfisas.com.co,http://localhost:4321"
+_default_origins = "https://safemetrics-sfi-dev.service.saferut.com,https://forms.sfisas.com.co,http://localhost:4321"
 _origins_env = os.getenv("CORS_ORIGINS", _default_origins)
 origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
 
