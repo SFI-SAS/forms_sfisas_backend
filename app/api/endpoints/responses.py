@@ -1866,7 +1866,7 @@ async def get_regisfacial_answers(db: Session = Depends(get_db), current_user: U
                 
                 if person_id and person_id not in seen_person_ids:
                     seen_person_ids.add(person_id)
-                    
+
                     # Crear el objeto con los datos específicos para encriptar
                     data_to_encrypt = {
                         "id": result.id,
@@ -1875,10 +1875,10 @@ async def get_regisfacial_answers(db: Session = Depends(get_db), current_user: U
                         "user_email": result.user_email,
                         "submitted_at": result.submitted_at.isoformat() if result.submitted_at else ""
                     }
-                    
+
                     # Encriptar los datos
                     encrypted_hash = encrypt_object(data_to_encrypt)
-                    
+
                     unique_results.append(RegisfacialAnswerResponse(
                         answer_text=result.answer_text,
                         encrypted_hash=encrypted_hash
