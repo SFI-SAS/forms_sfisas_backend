@@ -281,7 +281,10 @@ class QuestionTableRelationCreate(BaseModel):
     name_table: str
     related_question_id: Optional[int] = None
     related_form_id: Optional[int] = None
-    field_name: Optional[str] = None 
+    field_name: Optional[str] = None
+    # Campo lista alimentado por el USUARIO LOGUEADO (solo con name_table='users').
+    # NULL = comportamiento de siempre (lista a todos los usuarios).
+    logged_user_part: Optional[str] = None
     
     
 class UserBaseCreate(BaseModel):

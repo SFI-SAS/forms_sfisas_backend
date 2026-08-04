@@ -151,11 +151,6 @@ async def update_response_approval(
     Ahora con soporte para archivos adjuntos opcionales.
     """
     try:
-        if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User does not have permission to update approvals"
-            )
 
         # 1. Parsear los datos JSON para crear el objeto UpdateResponseApprovalRequest
         try:
@@ -626,11 +621,6 @@ def get_user_forms_by_approver(
     - **Código 500**: Error interno del servidor.
     """
     try:
-        if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User does not have permission to get approval forms"
-            )
         
         forms_approval_info = get_forms_by_approver(db, current_user.id)
         
@@ -871,11 +861,6 @@ def create_response_approval_requirements(
     Crea requisitos de aprobación específicos para respuestas de formularios.
     Automáticamente aprueba ResponseApproval existentes cuando coincide el usuario.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission"
-        )
          
     try:
         created_ids = save_response_approval_requirements(data, db)
@@ -946,11 +931,6 @@ def fulfill_response_approval_requirement(
     Returns:
         dict: Resultado de la operación
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission"
-        )
     
     try:
         # Buscar el requisito

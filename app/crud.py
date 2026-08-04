@@ -2578,7 +2578,8 @@ def create_question_table_relation_logic(
     name_table: str,
     related_question_id: Optional[int] = None,
     related_form_id: Optional[int] = None,
-    field_name: Optional[str] = None  # <-- NUEVO
+    field_name: Optional[str] = None,  # <-- NUEVO
+    logged_user_part: Optional[str] = None
 ) -> QuestionTableRelation:
     """
     Lógica para crear una relación entre una pregunta y una tabla externa.
@@ -2643,13 +2644,33 @@ def create_question_table_relation_logic(
             detail=f"Campo '{field_name}' no se puede usar en QuestionTableRelation por motivos de seguridad",
         )
 
+    # Solo tiene sentido rellenar con el usuario logueado si la tabla es `users`.
+    # Se valida contra una lista cerrada para que no entre cualquier cosa.
+    _PARTES_USUARIO_LOGUEADO = {
+        "full_name", "first_names", "first_name", "second_name",
+        "first_surname", "second_surname",
+        "num_document", "email",
+    }
+    if logged_user_part:
+        if name_table != "users":
+            raise HTTPException(
+                status_code=400,
+                detail="logged_user_part solo aplica cuando name_table es 'users'",
+            )
+        if logged_user_part not in _PARTES_USUARIO_LOGUEADO:
+            raise HTTPException(
+                status_code=400,
+                detail=f"logged_user_part '{logged_user_part}' no es válido",
+            )
+
     # Crear relación con field_name incluido
     new_relation = QuestionTableRelation(
         question_id=question_id,
         name_table=name_table,
         related_question_id=related_question_id,
         related_form_id=related_form_id,
-        field_name=field_name  # <-- INCLUIDO
+        field_name=field_name,  # <-- INCLUIDO
+        logged_user_part=logged_user_part
     )
 
     db.add(new_relation)
@@ -2719,6 +2740,17 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
     relation = db.query(QuestionTableRelation).filter_by(question_id=question_id).first()
     if not relation:
         raise HTTPException(status_code=404, detail="No se encontró relación para esta pregunta")
+
+    # Campo alimentado por el USUARIO LOGUEADO — ver nota en
+    # get_related_or_filtered_answers_optimized.
+    if relation.logged_user_part:
+        return {
+            "source": "usuario_logueado",
+            "logged_user_part": relation.logged_user_part,
+            "data": [],
+            "forms": [],
+            "correlations": {},
+        }
 
     if relation.related_question_id:
         # Obtener la pregunta relacionada
@@ -3030,6 +3062,19 @@ def get_related_or_filtered_answers_optimized(
     relation = db.query(QuestionTableRelation).filter_by(question_id=question_id).first()
     if not relation:
         raise HTTPException(status_code=404, detail="No se encontró relación para esta pregunta")
+
+    # Campo alimentado por el USUARIO LOGUEADO: no se devuelve ninguna opción.
+    # No hay nada que elegir —el valor lo pone el frontend con los datos de quien
+    # está diligenciando— y listar a todos los usuarios sería exponer datos de
+    # terceros sin necesidad. El frontend se entera por `logged_user_part`.
+    if relation.logged_user_part:
+        return {
+            "source": "usuario_logueado",
+            "logged_user_part": relation.logged_user_part,
+            "data": [],
+            "forms": [],
+            "correlations": {},
+        }
 
     if relation.related_question_id:
         # Obtener la pregunta relacionada

@@ -378,6 +378,11 @@ class QuestionTableRelation(Base):
     related_form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=True)
     name_table = Column(String(255), nullable=False)
     field_name = Column(String(255), nullable=True)
+    # Si no es NULL, el campo NO lista a todos los usuarios: se rellena con este
+    # dato del usuario que está diligenciando. Valores: full_name, first_names,
+    # first_surname, second_surname, num_document, email.
+    # Migración: scripts/db_migrations/2026-08-04_add_logged_user_part_to_question_table_relations.sql
+    logged_user_part = Column(String(30), nullable=True)
     question = relationship('Question', foreign_keys=[question_id], backref='table_relation', uselist=False)
     related_question = relationship('Question', foreign_keys=[related_question_id], backref='related_table_relations', uselist=False)
     related_form = relationship('Form', foreign_keys=[related_form_id], backref='related_form_serial', uselist=False)

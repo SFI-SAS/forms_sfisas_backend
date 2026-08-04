@@ -116,11 +116,6 @@ def get_available_forms(
     Retorna la lista de formatos disponibles para asignar a una pregunta.
     Usado en el modal de selección de formato al crear una pregunta.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No autenticado",
-        )
 
     forms = (
         db.query(Form.id, Form.title, Form.description, Form.format_type)
@@ -150,11 +145,6 @@ def get_questions_by_form(
     Retorna todas las preguntas que tienen id_form igual al form_id recibido.
     Permite saber qué preguntas pertenecen originalmente a un formato.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No autenticado",
-        )
 
     questions = (
         db.query(Question)
@@ -350,11 +340,6 @@ def list_regisfacial_questions(
     Retorna:
         [{ id, question_text, form_id, form_name }, ...]
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No autenticado",
-        )
 
     rows = (
         db.query(
@@ -414,11 +399,6 @@ def get_question_by_id_endpoint(
         - 403: Si el usuario no está autenticado.
         - 404: Si la pregunta no existe.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get this question"
-        )
 
     
     question = get_question_by_id_with_category(db, question_id)
@@ -717,7 +697,8 @@ def create_question_table_relation(
         name_table=relation_data.name_table,
         related_question_id=relation_data.related_question_id,
         related_form_id=relation_data.related_form_id,
-        field_name=relation_data.field_name  # <-- NUEVO
+        field_name=relation_data.field_name,  # <-- NUEVO
+        logged_user_part=relation_data.logged_user_part
     )
 
     return {
@@ -728,7 +709,8 @@ def create_question_table_relation(
             "related_question_id": relation.related_question_id,
             "related_form_id": relation.related_form_id,
             "name_table": relation.name_table,
-            "field_name": relation.field_name  # <-- NUEVO
+            "field_name": relation.field_name,  # <-- NUEVO
+            "logged_user_part": relation.logged_user_part
         }
     }
 
@@ -755,11 +737,6 @@ def get_all_related_answers(
             - `related_question` (dict): información de la pregunta relacionada (si aplica)
             - `correlations` (dict): mapa de correlaciones entre respuestas
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get all questions"
-        )
     
     # Obtener todas las preguntas que tienen relaciones o condiciones
     relations = db.query(QuestionTableRelation).all()
@@ -821,11 +798,6 @@ def get_related_answers(
         - `data`: lista de respuestas únicas con el campo `name`
         - `correlations`: mapeo de correlaciones entre respuestas
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get all questions"
-        )
     
     return get_related_or_filtered_answers_optimized(db, question_id)
 
@@ -930,11 +902,6 @@ def create_question_category(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to create categories"
-        )
 
     existing = db.query(QuestionCategory).filter(QuestionCategory.name == category.name).first()
     if existing:
@@ -953,11 +920,6 @@ def get_all_categories(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get categories"
-        )
 
     # Solo las categorías raíz (padre None)
     root_categories = db.query(QuestionCategory).filter(QuestionCategory.parent_id == None).all()
@@ -967,11 +929,6 @@ def get_all_categories(
 
 @router.delete("/categories/{category_id}", status_code=204)
 def delete_category(category_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
-            )
     category = db.query(QuestionCategory).filter(QuestionCategory.id == category_id).first()
     
     if not category:
@@ -993,11 +950,6 @@ def get_all_categories_including_subcategories(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get categories"
-        )
     
     # Obtener todas las categorías (incluyendo subcategorías)
     all_categories = db.query(QuestionCategory).all()
@@ -1009,11 +961,6 @@ def update_question_category(
     category_data: UpdateQuestionCategory,
     db: Session = Depends(get_db),current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
-            )
     question = db.query(Question).filter(Question.id == question_id).first()
     if not question:
         raise HTTPException(status_code=404, detail="Pregunta no encontrada")
@@ -1067,11 +1014,6 @@ def get_questions_by_category(
     HTTPException:
         - 403: Si el usuario no está autenticado.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get questions"
-        )
     
     # Traer preguntas filtradas por categoría
     questions = get_questions_by_category_id(db, category_id)
@@ -1216,11 +1158,6 @@ def get_answers_by_question(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to view answers"
-        )
 
     answers = get_answers_by_question_id(db, question_id)
 
@@ -1426,8 +1363,6 @@ def get_serials_for_field(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="No autorizado")
 
     relation = (
         db.query(QuestionTableRelation)
@@ -1487,8 +1422,6 @@ def get_answers_map_for_serial(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="No autorizado")
 
     answers = (
         db.query(Answer)
@@ -1618,11 +1551,6 @@ def update_question_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission"
-        )
 
     # 1. Verificar que la pregunta existe
     question = db.query(Question).filter(Question.id == question_id).first()

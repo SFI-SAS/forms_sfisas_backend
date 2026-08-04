@@ -50,8 +50,6 @@ async def save_response(  # 🆕 Ahora es async
         - action="send": guarda como borrador (sin aprobación)
         - action="send_and_close": envía para aprobación o cierra directamente
     """
-    if current_user is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No permission")
 
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
@@ -157,8 +155,6 @@ async def create_answer(
     - action="send_and_close": Guarda respuestas Y envía emails si corresponde
     - Para formato cerrado: IGNORA action, siempre envía emails
     """
-    if current_user is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No permission")
 
     # ✅ CAMBIO 2: Convertir a lista si es objeto individual
     answers_list = payload if isinstance(payload, list) else [payload]
@@ -222,8 +218,6 @@ async def close_response(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No permission")
 
     # Verificar que la respuesta existe, es del usuario Y está en draft
     response = db.query(Response).filter(
@@ -455,11 +449,6 @@ async def download_file(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission"
-        )
 
     # ═══════════════════════════════════════════════════════════════════════════
     # 🔒 VALIDACIÓN DE PROPIEDAD: el archivo debe estar referenciado por alguna
@@ -729,11 +718,6 @@ def create_file_serial(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     """
     Crea un nuevo serial asociado a una respuesta (`Answer`) existente.
 
@@ -782,11 +766,6 @@ def generate_serial(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     """
     Genera un serial aleatorio único que no exista previamente en la base de datos.
 
@@ -847,11 +826,6 @@ def create_question_filter_condition(
     --------
     - 400: Si ya existe una condición con los mismos campos.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     # Verificar si ya existe una condición igual
     existing = db.query(QuestionFilterCondition).filter_by(
         form_id=condition_data.form_id,
@@ -898,11 +872,6 @@ def get_filtered_answers_endpoint(
     - **Returns**: Lista de objetos con respuestas únicas válidas (sin nulos).
     - **Raises**: HTTP 404 si no existe la condición.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     condition = db.query(QuestionFilterCondition).filter_by(filtered_question_id=filtered_question_id).first()
     
     if not condition:
@@ -959,11 +928,6 @@ def get_forms_questions_answers_by_question(question_id: int, db: Session = Depe
     - Lista de formularios con sus preguntas y respuestas correspondientes.
     """
     try:
-        if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User not authenticated"
-            )
         # Buscar los IDs únicos de formularios que contienen la pregunta
         form_ids = (
             db.query(FormQuestion.form_id)
@@ -1039,11 +1003,6 @@ def set_reconsideration_true(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     """
     Marca una respuesta como reconsiderada, notifica a todos los aprobadores
     y envía un correo con los detalles de la solicitud.
@@ -1249,11 +1208,6 @@ async def create_answers(
     Retorna:
     - Un diccionario con mensaje de éxito e ID del nuevo registro de respuesta.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to create answers"
-        )
     
     # Validar que existe el response_id
     response = db.query(Response).filter(Response.id == response_id).first()
@@ -1339,11 +1293,6 @@ def update_answer_text(data: UpdateAnswertHistory, db: Session = Depends(get_db)
     - 403: Si el usuario no está autenticado.
     - 404: Si no se encuentra la respuesta con el ID especificado.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
-        )
     answer = db.query(Answer).filter(Answer.id == data.id_answer).first()
 
     if not answer:
@@ -1382,11 +1331,6 @@ async def delete_answer(
     Solo el dueño de la Response puede eliminar sus answers.
     Usado por EditResponseComponent cuando el usuario elimina filas de un repeater.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission"
-        )
  
     answer = db.query(Answer).filter(Answer.id == answer_id).first()
     if not answer:
@@ -1561,8 +1505,6 @@ def download_response_pdf(
       - admin o creator
       - aprobador asignado a este response (tiene fila en response_approvals)
     """
-    if current_user is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No autenticado")
 
     response = db.query(Response).filter(Response.id == response_id).first()
     if not response:
@@ -1663,11 +1605,6 @@ def get_all_user_responses(
         HTTPException: 403 si no hay un usuario autenticado.
         HTTPException: 404 si no se encuentran respuestas.
     """
-    if not current_user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to access completed forms",
-        )
 
     # Obtener todas las respuestas del usuario con sus formularios
     stmt = (
@@ -1753,11 +1690,6 @@ def get_responses_with_answers(
         HTTPException: 403 si no hay un usuario autenticado.
         HTTPException: 404 si no se encuentran respuestas.
     """
-    if not current_user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to access completed forms",
-        )
 
     # Obtener respuestas principales
     stmt = (
@@ -1788,11 +1720,6 @@ async def delete_response(
     Elimina una respuesta y todas sus relaciones asociadas.
     """
     try:
-        if not current_user:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User does not have permission to access completed forms",
-            )
 
         # Verificar que la respuesta existe
         response = db.query(Response).filter(Response.id == response_id).first()
@@ -1876,11 +1803,6 @@ def reset_reconsideration_requested(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if not current_user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to access completed forms",
-        )
     # Buscar la aprobación por response_id
     approval = db.query(ResponseApproval).filter(
         ResponseApproval.response_id == response_id
@@ -1995,8 +1917,6 @@ def get_my_regisfacial_registration(
       400    → la pregunta no es regisfacial
       404    → el usuario aún no tiene registro en esa pregunta
     """
-    if current_user is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No autenticado")
 
     # Validar que la pregunta exista y sea regisfacial.
     source_question = (
@@ -2182,11 +2102,6 @@ def obtener_conversacion(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     conversacion = obtener_conversacion_completa(db, evento_id)
     if not conversacion:
         raise HTTPException(status_code=404, detail="Evento no encontrado")
@@ -2749,11 +2664,6 @@ async def update_answer(
     - Respuesta actualizada con mensaje de éxito
     """
     
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to update answers"
-        )
     
     try:
         # 1️⃣ Buscar la respuesta

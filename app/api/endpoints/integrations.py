@@ -271,8 +271,6 @@ def verify_integrator_access(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> User:
-    if current_user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No autenticado")
 
     access = (
         db.query(IntegratorFormatAccess)

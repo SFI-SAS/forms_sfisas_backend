@@ -94,8 +94,6 @@ def create_question_request(
     current_user: User = Depends(get_current_user),
 ):
     """Crea solicitud con uno o mas campos."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="No autenticado")
 
     form = db.query(Form).filter(Form.id == payload.form_id).first()
     if not form:
@@ -141,8 +139,6 @@ def get_pending_count(
     current_user: User = Depends(get_current_user),
 ):
     """Cantidad de solicitudes con campos pendientes (para la campana)."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="No autenticado")
 
     count = (
         db.query(QuestionRequest.id)
@@ -160,8 +156,6 @@ def get_pending_requests(
     current_user: User = Depends(get_current_user),
 ):
     """Lista de solicitudes con campos pendientes."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="No autenticado")
     if current_user.user_type not in (UserType.admin,):
         raise HTTPException(status_code=403, detail="Solo administradores")
 
@@ -223,8 +217,6 @@ def get_my_requests(
     current_user: User = Depends(get_current_user),
 ):
     """Solicitudes del usuario con campos y estados."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="No autenticado")
 
     q = (
         db.query(QuestionRequest)
@@ -269,8 +261,6 @@ def approve_field(
     current_user: User = Depends(get_current_user),
 ):
     """Admin aprueba un campo individual y crea la Question."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="No autenticado")
     if current_user.user_type not in (UserType.admin,):
         raise HTTPException(status_code=403, detail="Solo administradores")
 
@@ -344,8 +334,6 @@ def reject_field(
     current_user: User = Depends(get_current_user),
 ):
     """Admin rechaza un campo individual."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="No autenticado")
     if current_user.user_type not in (UserType.admin,):
         raise HTTPException(status_code=403, detail="Solo administradores")
 
@@ -377,8 +365,6 @@ def mark_field_as_approved(
     current_user: User = Depends(get_current_user),
 ):
     """Marca un campo como aprobado despues de que el admin creo la pregunta manualmente."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="No autenticado")
 
     field = db.query(QuestionRequestField).filter(QuestionRequestField.id == field_id).first()
     if not field:
