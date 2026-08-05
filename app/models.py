@@ -240,7 +240,10 @@ class Question(Base):
     unique_answer = Column(Boolean, nullable=False, default=False, server_default='false')
     root = Column(Boolean, nullable=False, default=False)
     id_category = Column(BigInteger, ForeignKey('question_categories.id'), nullable=True)
-    id_alias = Column(Integer, ForeignKey("alias.id"), nullable=True, index=True)
+    # ondelete='SET NULL': borrar un alias no debe impedir borrarlo ni romper la
+    # pregunta que lo usaba. Ya era así en prod; se declaró aquí el 2026-08-04 al
+    # alinear los dos esquemas.
+    id_alias = Column(Integer, ForeignKey("alias.id", ondelete="SET NULL"), nullable=True, index=True)
     id_form = Column(BigInteger, ForeignKey('forms.id', ondelete='SET NULL'), nullable=True, index=True)
 
     category = relationship('QuestionCategory', back_populates='questions')
@@ -375,7 +378,9 @@ class QuestionTableRelation(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=False, unique=True)
     related_question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=True)
-    related_form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=True)
+    # ondelete='SET NULL': ya era así en prod; declarado el 2026-08-04 al alinear
+    # los dos esquemas. Borrar un formato no debe bloquearse por esta relación.
+    related_form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='SET NULL'), nullable=True)
     name_table = Column(String(255), nullable=False)
     field_name = Column(String(255), nullable=True)
     # Si no es NULL, el campo NO lista a todos los usuarios: se rellena con este
