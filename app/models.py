@@ -1,6 +1,6 @@
 from datetime import datetime
 from sqlalchemy import (
-    Boolean, Column, BigInteger, DateTime, Integer, String, Text, 
+    Boolean, Column, BigInteger, DateTime, Integer, SmallInteger, String, Text,
     ForeignKey, TIMESTAMP, Enum, UniqueConstraint, func, text
 )
 from sqlalchemy.orm import relationship
@@ -1148,3 +1148,42 @@ class RutSubmission(Base):
     user = relationship('User')
     
 
+
+
+# ── Tokens (fase de medición) ────────────────────────────────────────────────
+# Los tokens son CAPACIDAD OCUPADA, no consumo: lo que existe ocupa, lo que se
+# borra libera. Ver DISENO_tokens_licenciamiento.md en la raíz del proyecto.
+# Migración: scripts/db_migrations/2026-08-05_tokens_fase_medicion.sql
+
+class TokenAccount(Base):
+    """Saldo de la instalación. Una sola fila (id=1)."""
+    __tablename__ = 'token_account'
+
+    id                  = Column(SmallInteger, primary_key=True, default=1)
+    tokens_totales      = Column(BigInteger, nullable=False, default=0)
+    licencia_firma      = Column(Text, nullable=True)
+    licencia_emitida_en = Column(TIMESTAMP(timezone=True), nullable=True)
+    licencia_expira_en  = Column(TIMESTAMP(timezone=True), nullable=True)
+    verificado_en       = Column(TIMESTAMP(timezone=True), nullable=True)
+    # Interruptor de la fase 2. En FALSE no se bloquea nada: solo se mide.
+    bloqueo_activo      = Column(Boolean, nullable=False, default=False)
+    actualizado_en      = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TokenEvent(Base):
+    """Registro de altas y bajas de capacidad. Alimenta la detección de fraude
+    y permite justificar un cobro ante un reclamo del cliente."""
+    __tablename__ = 'token_events'
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    ocurrido_en     = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    actor_user_id   = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    entidad_tipo    = Column(String(20), nullable=False)   # usuario|formato|movimiento|vinculo
+    entidad_id      = Column(BigInteger, nullable=True)
+    accion          = Column(String(10), nullable=False)   # ocupa|libera
+    tokens          = Column(Integer, nullable=False)
+    ocupado_despues = Column(BigInteger, nullable=True)
+    origen          = Column(String(20), nullable=True)    # ui|api|importacion|migracion
+    detalle         = Column(Text, nullable=True)
+
+    actor = relationship('User', foreign_keys=[actor_user_id])
