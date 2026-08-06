@@ -1103,6 +1103,7 @@ class RelationOperationMathCreate(BaseModel):
     id_questions: List[int] = Field(..., description="Lista de IDs de preguntas")
     operations: str = Field(..., description="Fórmula matemática")
     color_rules: Optional[list] = Field(None, description="Reglas de color condicional sobre el resultado")
+    clamp_negativos: Optional[bool] = Field(None, description="Si el resultado es negativo, mostrarlo como 0")
 
 class RelationOperationMathOut(BaseModel):
     id: int
@@ -1110,6 +1111,7 @@ class RelationOperationMathOut(BaseModel):
     id_questions: List[int]
     operations: str
     color_rules: Optional[list] = None
+    clamp_negativos: bool = False
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
 

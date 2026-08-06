@@ -1,5 +1,7 @@
--- ⚠️  ESTE SCRIPT ES PARA PRODUCCIÓN (forms_sfisas_dev). NO SE HA EJECUTADO.
---     Requiere autorización explícita. Hacer respaldo antes.
+-- ✅ EJECUTADO EN PRODUCCIÓN (forms_sfisas_dev) el 2026-08-06, con autorización.
+--    Respaldo previo: _db_backups/prod_forms_sfisas_dev_ESQUEMA_2026-08-06_antes_fks_firma.sql
+--    Las 4 columnas estaban 100% en NULL, así que el cambio fue puramente estructural.
+--    Es idempotente: volver a correrlo no hace daño.
 --
 -- QUÉ ARREGLA
 -- El modelo (app/models.py) declara ON DELETE SET NULL en las cuatro claves

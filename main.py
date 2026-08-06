@@ -69,10 +69,19 @@ _default_origins = "https://safemetrics-sfi-dev.service.saferut.com,https://form
 _origins_env = os.getenv("CORS_ORIGINS", _default_origins)
 origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
 
+# En DESARROLLO, aceptar cualquier puerto de localhost. Astro cambia de puerto
+# solo cuando el 4321 está ocupado (4322, 4323...), y entonces el navegador
+# bloqueaba TODAS las llamadas por CORS. Peor aún: el error que se ve en consola
+# dice "CORS" aunque el fallo real sea otro, porque una respuesta 500 sin las
+# cabeceras permitidas se reporta igual. En producción no aplica: allí la lista
+# blanca sigue siendo estricta.
+_origin_regex = r"http://(localhost|127\.0\.0\.1):\d+" if os.getenv("ENV") == "development" else None
+
 # 1. CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,                     # NUNCA "*" con credentials
+    allow_origin_regex=_origin_regex,          # solo en desarrollo (localhost:*)
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "User-Agent"],
