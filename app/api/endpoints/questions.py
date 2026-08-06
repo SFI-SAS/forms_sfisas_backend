@@ -779,9 +779,87 @@ def get_all_related_answers(
     }
 
 # Endpoint actualizado
+@router.get("/question-table-relation/files/{question_id}")
+def get_file_answers(
+    question_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Devuelve los archivos subidos como respuesta a una pregunta tipo file.
+    Sigue la relacion question_table_relations para buscar archivos en la
+    pregunta relacionada si la pregunta directa no tiene archivos.
+    """
+    from app.models import Answer, Response, User as UserModel, QuestionTableRelation
+
+    # Buscar la pregunta donde estan los archivos:
+    # 1. Directamente en esta pregunta
+    # 2. En la pregunta relacionada (question_table_relations.related_question_id)
+    # 3. En preguntas que apuntan a esta (relacion inversa)
+    target_ids = [question_id]
+
+    relation = db.query(QuestionTableRelation).filter(
+        QuestionTableRelation.question_id == question_id
+    ).first()
+    if relation and relation.related_question_id:
+        target_ids.append(relation.related_question_id)
+
+    # Relacion inversa: si otra pregunta apunta a esta
+    inverse_rels = db.query(QuestionTableRelation).filter(
+        QuestionTableRelation.related_question_id == question_id
+    ).all()
+    for inv in inverse_rels:
+        target_ids.append(inv.question_id)
+
+    target_ids = list(set(target_ids))
+
+    rows = (
+        db.query(
+            Answer.id,
+            Answer.answer_text,
+            Answer.file_path,
+            Answer.response_id,
+            Response.submitted_at,
+            UserModel.name.label("user_name"),
+        )
+        .join(Response, Response.id == Answer.response_id)
+        .join(UserModel, UserModel.id == Response.user_id)
+        .filter(Answer.question_id.in_(target_ids))
+        .filter(Answer.file_path.isnot(None))
+        .filter(Answer.file_path != "")
+        .order_by(Response.submitted_at.desc())
+        .all()
+    )
+
+    files = []
+    seen = set()
+    for row in rows:
+        if row.file_path in seen:
+            continue
+        seen.add(row.file_path)
+        # Nombre legible: usar answer_text si existe, sino el nombre del archivo
+        file_name = row.file_path.split("/")[-1].split("\\")[-1] if row.file_path else ""
+        display_name = row.answer_text or file_name
+        files.append({
+            "id": row.id,
+            "name": display_name,
+            "file_path": row.file_path,
+            "file_name": file_name,
+            "response_id": row.response_id,
+            "user_name": row.user_name,
+            "submitted_at": row.submitted_at.isoformat() if row.submitted_at else None,
+        })
+
+    return {
+        "source": "file_answers",
+        "data": files,
+        "total": len(files),
+    }
+
+
 @router.get("/question-table-relation/answers/{question_id}")
 def get_related_answers(
-    question_id: int, 
+    question_id: int,
     db: Session = Depends(get_db), 
     current_user: User = Depends(get_current_user)
 ):
