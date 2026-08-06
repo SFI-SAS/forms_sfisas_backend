@@ -1064,6 +1064,7 @@ class RelationOperationMathCreate(BaseModel):
     id_questions: List[int] = Field(..., min_items=1, description="Lista de IDs de preguntas")
     operations: str = Field(..., min_length=1, max_length=500, description="Fórmula u operación matemática")
     color_rules: Optional[list] = Field(None, description="Reglas de color condicional sobre el resultado")
+    clamp_negativos: Optional[bool] = Field(None, description="Si el resultado es negativo, mostrarlo como 0")
 
     class Config:
         example = {
@@ -1079,6 +1080,7 @@ class RelationOperationMathOut(BaseModel):
     id_questions: List[int]
     operations: str
     color_rules: Optional[list] = None
+    clamp_negativos: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -1460,6 +1462,9 @@ class UpdateFormCategory(BaseModel):
 class UpdateMathOperationRequest(BaseModel):
     operations: str
     color_rules: Optional[list] = None
+    # None = el cliente no lo envió (no tocar); True/False = fijar el valor.
+    # Mismo criterio que color_rules.
+    clamp_negativos: Optional[bool] = None
 
 
 class QuestionUpdatePayload(BaseModel):

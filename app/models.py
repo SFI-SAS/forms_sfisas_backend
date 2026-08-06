@@ -629,6 +629,9 @@ class RelationOperationMath(Base):
     id_questions = Column(AutoJSON, nullable=False)  # Almacena lista de IDs de preguntas
     operations = Column(String(500), nullable=False)  # Fórmula u operación matemática
     color_rules = Column(AutoJSON, nullable=True)  # Reglas de color condicional sobre el resultado
+    # Si es True, un resultado negativo se presenta y se guarda como 0.
+    # Migración: scripts/db_migrations/2026-08-06_add_clamp_negativos_a_math.sql
+    clamp_negativos = Column(Boolean, nullable=False, default=False)
 
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

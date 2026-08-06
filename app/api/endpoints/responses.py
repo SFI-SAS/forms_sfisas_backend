@@ -2631,7 +2631,8 @@ def crear_operacion_matematica(
         id_form=form_id,
         id_questions=data.id_questions,
         operations=data.operations.strip(),
-        color_rules=data.color_rules
+        color_rules=data.color_rules,
+        clamp_negativos=bool(data.clamp_negativos) if data.clamp_negativos is not None else False
     )
 
     db.add(nueva_operacion)
@@ -2815,6 +2816,8 @@ def verificar_operaciones_matematicas(
             "id_questions": op.id_questions,
             "operations": op.operations,
             "color_rules": op.color_rules,
+        "clamp_negativos": bool(op.clamp_negativos),
+            "clamp_negativos": bool(op.clamp_negativos),
             "created_at": op.created_at.isoformat() if op.created_at else None
         }
         for op in operaciones
@@ -2887,6 +2890,8 @@ def obtener_operaciones_por_preguntas(
                 "id_questions": op.id_questions,
                 "operations": op.operations,
                 "color_rules": op.color_rules,
+        "clamp_negativos": bool(op.clamp_negativos),
+            "clamp_negativos": bool(op.clamp_negativos),
                 "created_at": op.created_at.isoformat() if op.created_at else None,
                 "updated_at": op.updated_at.isoformat() if op.updated_at else None
             })
@@ -2953,6 +2958,9 @@ def editar_operacion_matematica(
     # Solo tocar color_rules si el cliente lo envió (None = no provisto; [] = limpiar)
     if body.color_rules is not None:
         operacion.color_rules = body.color_rules
+    # Igual que color_rules: None = no provisto (no tocar); True/False = fijar.
+    if body.clamp_negativos is not None:
+        operacion.clamp_negativos = bool(body.clamp_negativos)
     db.commit()
     db.refresh(operacion)
 
@@ -2962,6 +2970,7 @@ def editar_operacion_matematica(
         "id_questions": operacion.id_questions,
         "operations": operacion.operations,
         "color_rules": operacion.color_rules,
+        "clamp_negativos": bool(operacion.clamp_negativos),
         "updated_at": operacion.updated_at.isoformat() if operacion.updated_at else None,
     }
 
