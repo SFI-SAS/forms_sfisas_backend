@@ -14,7 +14,7 @@ from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 # from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, CategoryApproval, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, FormTemplate, GenericActivity, GenericActivityForm, PalabrasClave, Profile, ProfileCategory, ProfileForm, ProfileUser, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, TemplateScope, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, CategoryApproval, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, FormTemplate, GenericActivity, GenericActivityForm, PalabrasClave, Profile, ProfileCategory, ProfileForm, ProfileUser, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, TemplateScope, User, UserType, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
 from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormMovimientoBase, NotificationResponse, PalabrasClaveCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, OptionCreate, ResponseCreate, AnswerCreate, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
@@ -1611,6 +1611,41 @@ def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int =
     """
     # Calcular offset
     offset = (page - 1) * page_size
+
+    # Admin ve TODOS los formatos habilitados
+    user = db.get(User, user_id)
+    if user and user.user_type == UserType.admin and profile_id is None and activity_id is None:
+        base_query = (
+            db.query(Form)
+            .options(defer(Form.form_design), joinedload(Form.category))
+            .filter(Form.is_enabled.is_(True))
+            .distinct()
+        )
+        total_count = base_query.count()
+        forms = base_query.offset(offset).limit(page_size).all()
+        result = []
+        for form in forms:
+            try:
+                result.append({
+                    "id": form.id,
+                    "title": form.title,
+                    "description": form.description,
+                    "format_type": form.format_type.value if hasattr(form.format_type, 'value') else str(form.format_type),
+                    "is_enabled": form.is_enabled,
+                    "user_id": form.user_id,
+                    "created_at": form.created_at.isoformat() if form.created_at else None,
+                    "id_category": form.id_category,
+                    "category": {"id": form.category.id, "name": form.category.name} if form.category else None,
+                })
+            except Exception:
+                continue
+        return {
+            "items": result,
+            "total": total_count,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": (total_count + page_size - 1) // page_size,
+        }
 
     if profile_id is not None:
         # Validar que el usuario es miembro de ese perfil activo
@@ -9450,7 +9485,13 @@ def search_forms_by_user(
     )
     
     # ── 2. Filtro por tipo de asignación ──
-    if filter_type == "user":
+    # Admin ve TODOS los formatos habilitados
+    current_user = db.get(User, user_id)
+    is_admin = current_user and current_user.user_type == UserType.admin
+
+    if is_admin:
+        pass  # Sin filtro de asignacion, ve todos
+    elif filter_type == "user":
         # Solo formularios asignados al usuario (como moderador/llenador)
         assigned_form_ids = (
             db.query(FormModerators.form_id)
