@@ -1511,9 +1511,6 @@ def get_answers_map_for_serial(
         raise HTTPException(status_code=404, detail=f"No hay respuestas para el serial {response_id}")
 
     def is_useful(a) -> bool:
-        fp = getattr(a, 'file_path', None)
-        if fp and str(fp).strip():
-            return False
         txt = getattr(a, 'answer_text', None)
         if not txt or not str(txt).strip():
             return False
