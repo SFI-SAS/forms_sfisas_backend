@@ -1978,7 +1978,7 @@ def get_unrelated_questions(db: Session, form_id: int):
     return unrelated_questions
 
 
-def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int = 30, activity_id: int = None):
+def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int = 30, activity_id: int = None, date_from: str = None, date_to: str = None):
     """
     Recupera los formularios que el usuario ha completado con paginación.
 
@@ -1988,8 +1988,12 @@ def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page
     :param page_size: Cantidad de registros por página.
     :param activity_id: Si se indica, limita a los formatos asignados al usuario
         en esa actividad genérica (mismo criterio que el filtro de diligenciar).
+    :param date_from: Fecha/hora inicio para filtrar respuestas (ISO 8601).
+    :param date_to: Fecha/hora fin para filtrar respuestas (ISO 8601).
     :return: Diccionario con items paginados y metadata.
     """
+    from datetime import datetime
+
     # Calcular offset
     offset = (page - 1) * page_size
 
@@ -1999,6 +2003,21 @@ def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page
         .join(Response)  # Unión entre formularios y respuestas
         .filter(Response.user_id == user_id)  # Filtrar por el usuario
     )
+
+    # Filtro por rango de fechas sobre Response.submitted_at
+    if date_from:
+        try:
+            dt_from = datetime.fromisoformat(date_from)
+            base_query = base_query.filter(Response.submitted_at >= dt_from)
+        except ValueError:
+            pass
+
+    if date_to:
+        try:
+            dt_to = datetime.fromisoformat(date_to)
+            base_query = base_query.filter(Response.submitted_at <= dt_to)
+        except ValueError:
+            pass
 
     # Filtro opcional por actividad genérica: solo formatos asignados a ESTE
     # usuario dentro de la actividad.
