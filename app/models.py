@@ -1120,6 +1120,35 @@ class QuestionRequestField(Base):
     alias_rel = relationship('Alias')
     created_question = relationship('Question', foreign_keys=[created_question_id])
     reviewer = relationship('User', foreign_keys=[reviewed_by])
+
+
+# ═══════════════════════════════════════════════════════════════
+# Configuracion de solicitud de RUT por formato
+# ═══════════════════════════════════════════════════════════════
+class FormRutConfig(Base):
+    __tablename__ = 'form_rut_configs'
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False, unique=True)
+    email = Column(String(255), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    form = relationship('Form')
+
+
+class RutSubmission(Base):
+    __tablename__ = 'rut_submissions'
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    file_path = Column(String(500), nullable=False)
+    original_filename = Column(String(500), nullable=True)
+    email_sent_to = Column(String(255), nullable=True)
+    email_sent = Column(Boolean, default=False, nullable=False)
+    submitted_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    form = relationship('Form')
+    user = relationship('User')
     
 
 

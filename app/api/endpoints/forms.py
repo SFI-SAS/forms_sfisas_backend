@@ -1609,6 +1609,8 @@ def get_completed_forms_for_user(
     page: int = 1,
     page_size: int = 30,
     activity_id: int = None,
+    date_from: str = None,
+    date_to: str = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -1617,6 +1619,8 @@ def get_completed_forms_for_user(
 
     - **page**: Número de página (por defecto 1)
     - **page_size**: Cantidad de registros por página (por defecto 30, máximo 100)
+    - **date_from**: Fecha/hora inicio (ISO 8601, ej: 2026-01-01T00:00:00)
+    - **date_to**: Fecha/hora fin (ISO 8601, ej: 2026-12-31T23:59:59)
     - **Autenticación requerida**
     - **Código 200**: Lista paginada de formularios completados
     - **Código 403**: Usuario no autenticado o sin permisos
@@ -1626,12 +1630,12 @@ def get_completed_forms_for_user(
     # Validar page_size máximo
     if page_size > 100:
         page_size = 100
-    
+
     # Validar que page sea mayor a 0
     if page < 1:
         page = 1
 
-    completed_forms_data = fetch_completed_forms_by_user(db, current_user.id, page, page_size, activity_id)
+    completed_forms_data = fetch_completed_forms_by_user(db, current_user.id, page, page_size, activity_id, date_from, date_to)
 
     if not completed_forms_data["items"]:
         raise HTTPException(status_code=404, detail="No completed forms found for this user")
