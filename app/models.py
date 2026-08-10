@@ -1,6 +1,6 @@
 from datetime import datetime
 from sqlalchemy import (
-    Boolean, Column, BigInteger, DateTime, Integer, String, Text, 
+    Boolean, Column, BigInteger, DateTime, Integer, SmallInteger, String, Text,
     ForeignKey, TIMESTAMP, Enum, UniqueConstraint, func, text
 )
 from sqlalchemy.orm import relationship
@@ -240,7 +240,10 @@ class Question(Base):
     unique_answer = Column(Boolean, nullable=False, default=False, server_default='false')
     root = Column(Boolean, nullable=False, default=False)
     id_category = Column(BigInteger, ForeignKey('question_categories.id'), nullable=True)
-    id_alias = Column(Integer, ForeignKey("alias.id"), nullable=True, index=True)
+    # ondelete='SET NULL': borrar un alias no debe impedir borrarlo ni romper la
+    # pregunta que lo usaba. Ya era así en prod; se declaró aquí el 2026-08-04 al
+    # alinear los dos esquemas.
+    id_alias = Column(Integer, ForeignKey("alias.id", ondelete="SET NULL"), nullable=True, index=True)
     id_form = Column(BigInteger, ForeignKey('forms.id', ondelete='SET NULL'), nullable=True, index=True)
 
     category = relationship('QuestionCategory', back_populates='questions')
@@ -375,9 +378,16 @@ class QuestionTableRelation(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=False, unique=True)
     related_question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=True)
-    related_form_id = Column(BigInteger, ForeignKey('forms.id'), nullable=True)
+    # ondelete='SET NULL': ya era así en prod; declarado el 2026-08-04 al alinear
+    # los dos esquemas. Borrar un formato no debe bloquearse por esta relación.
+    related_form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='SET NULL'), nullable=True)
     name_table = Column(String(255), nullable=False)
     field_name = Column(String(255), nullable=True)
+    # Si no es NULL, el campo NO lista a todos los usuarios: se rellena con este
+    # dato del usuario que está diligenciando. Valores: full_name, first_names,
+    # first_surname, second_surname, num_document, email.
+    # Migración: scripts/db_migrations/2026-08-04_add_logged_user_part_to_question_table_relations.sql
+    logged_user_part = Column(String(30), nullable=True)
     question = relationship('Question', foreign_keys=[question_id], backref='table_relation', uselist=False)
     related_question = relationship('Question', foreign_keys=[related_question_id], backref='related_table_relations', uselist=False)
     related_form = relationship('Form', foreign_keys=[related_form_id], backref='related_form_serial', uselist=False)
@@ -619,6 +629,9 @@ class RelationOperationMath(Base):
     id_questions = Column(AutoJSON, nullable=False)  # Almacena lista de IDs de preguntas
     operations = Column(String(500), nullable=False)  # Fórmula u operación matemática
     color_rules = Column(AutoJSON, nullable=True)  # Reglas de color condicional sobre el resultado
+    # Si es True, un resultado negativo se presenta y se guarda como 0.
+    # Migración: scripts/db_migrations/2026-08-06_add_clamp_negativos_a_math.sql
+    clamp_negativos = Column(Boolean, nullable=False, default=False)
 
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -1107,5 +1120,73 @@ class QuestionRequestField(Base):
     alias_rel = relationship('Alias')
     created_question = relationship('Question', foreign_keys=[created_question_id])
     reviewer = relationship('User', foreign_keys=[reviewed_by])
+
+
+# ═══════════════════════════════════════════════════════════════
+# Configuracion de solicitud de RUT por formato
+# ═══════════════════════════════════════════════════════════════
+class FormRutConfig(Base):
+    __tablename__ = 'form_rut_configs'
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False, unique=True)
+    email = Column(String(255), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    form = relationship('Form')
+
+
+class RutSubmission(Base):
+    __tablename__ = 'rut_submissions'
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    file_path = Column(String(500), nullable=False)
+    original_filename = Column(String(500), nullable=True)
+    email_sent_to = Column(String(255), nullable=True)
+    email_sent = Column(Boolean, default=False, nullable=False)
+    submitted_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    form = relationship('Form')
+    user = relationship('User')
     
 
+
+
+# ── Tokens (fase de medición) ────────────────────────────────────────────────
+# Los tokens son CAPACIDAD OCUPADA, no consumo: lo que existe ocupa, lo que se
+# borra libera. Ver DISENO_tokens_licenciamiento.md en la raíz del proyecto.
+# Migración: scripts/db_migrations/2026-08-05_tokens_fase_medicion.sql
+
+class TokenAccount(Base):
+    """Saldo de la instalación. Una sola fila (id=1)."""
+    __tablename__ = 'token_account'
+
+    id                  = Column(SmallInteger, primary_key=True, default=1)
+    tokens_totales      = Column(BigInteger, nullable=False, default=0)
+    licencia_firma      = Column(Text, nullable=True)
+    licencia_emitida_en = Column(TIMESTAMP(timezone=True), nullable=True)
+    licencia_expira_en  = Column(TIMESTAMP(timezone=True), nullable=True)
+    verificado_en       = Column(TIMESTAMP(timezone=True), nullable=True)
+    # Interruptor de la fase 2. En FALSE no se bloquea nada: solo se mide.
+    bloqueo_activo      = Column(Boolean, nullable=False, default=False)
+    actualizado_en      = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TokenEvent(Base):
+    """Registro de altas y bajas de capacidad. Alimenta la detección de fraude
+    y permite justificar un cobro ante un reclamo del cliente."""
+    __tablename__ = 'token_events'
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    ocurrido_en     = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    actor_user_id   = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    entidad_tipo    = Column(String(20), nullable=False)   # usuario|formato|movimiento|vinculo
+    entidad_id      = Column(BigInteger, nullable=True)
+    accion          = Column(String(10), nullable=False)   # ocupa|libera
+    tokens          = Column(Integer, nullable=False)
+    ocupado_despues = Column(BigInteger, nullable=True)
+    origen          = Column(String(20), nullable=True)    # ui|api|importacion|migracion
+    detalle         = Column(Text, nullable=True)
+
+    actor = relationship('User', foreign_keys=[actor_user_id])

@@ -277,11 +277,6 @@ def get_user_pending_forms(
 
     `urgency` ∈ {"vencido", "hoy", "esta_semana", "proximo", "indefinido", "hecha"}.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated",
-        )
 
     today = date.today()
     schedules = (
@@ -391,11 +386,6 @@ def get_user_upcoming_events(
     `completed` es true si el usuario envió respuesta dentro del período del
     evento (definido por _event_period según frequency_type).
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated",
-        )
     if end_date < start_date:
         raise HTTPException(
             status_code=400, detail="end_date debe ser >= start_date"
@@ -507,11 +497,6 @@ def delete_form_schedule_by_form_user(
 
     Idempotente: si no existe schedule para esa combinación retorna 204 igual.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated",
-        )
 
     if not _user_can_manage_schedules(current_user) and user_id != current_user.id:
         raise HTTPException(
@@ -548,11 +533,6 @@ def delete_form_schedule(
       - admin/creator: pueden borrar cualquier schedule.
       - resto de usuarios: solo pueden borrar schedules cuyo `user_id` es el suyo.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated",
-        )
 
     sch = db.query(FormSchedule).filter(FormSchedule.id == schedule_id).first()
     if sch is None:

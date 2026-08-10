@@ -14,7 +14,7 @@ from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 # from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
-from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, CategoryApproval, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, FormTemplate, GenericActivity, GenericActivityForm, PalabrasClave, Profile, ProfileCategory, ProfileForm, ProfileUser, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, TemplateScope, User, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
+from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, CategoryApproval, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, FormTemplate, GenericActivity, GenericActivityForm, PalabrasClave, Profile, ProfileCategory, ProfileForm, ProfileUser, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, TemplateScope, User, UserType, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
 from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormMovimientoBase, NotificationResponse, PalabrasClaveCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, OptionCreate, ResponseCreate, AnswerCreate, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
@@ -731,6 +731,8 @@ def update_question(db: Session, question_id: int, question: QuestionUpdate) -> 
             return None
         
         for key, value in question.model_dump(exclude_unset=True).items():
+            if key in ("question_text", "description") and isinstance(value, str):
+                value = value.strip().upper()
             setattr(db_question, key, value)
         
         db.commit()
@@ -1610,6 +1612,41 @@ def get_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int =
     # Calcular offset
     offset = (page - 1) * page_size
 
+    # Admin ve TODOS los formatos habilitados
+    user = db.get(User, user_id)
+    if user and user.user_type == UserType.admin and profile_id is None and activity_id is None:
+        base_query = (
+            db.query(Form)
+            .options(defer(Form.form_design), joinedload(Form.category))
+            .filter(Form.is_enabled.is_(True))
+            .distinct()
+        )
+        total_count = base_query.count()
+        forms = base_query.offset(offset).limit(page_size).all()
+        result = []
+        for form in forms:
+            try:
+                result.append({
+                    "id": form.id,
+                    "title": form.title,
+                    "description": form.description,
+                    "format_type": form.format_type.value if hasattr(form.format_type, 'value') else str(form.format_type),
+                    "is_enabled": form.is_enabled,
+                    "user_id": form.user_id,
+                    "created_at": form.created_at.isoformat() if form.created_at else None,
+                    "id_category": form.id_category,
+                    "category": {"id": form.category.id, "name": form.category.name} if form.category else None,
+                })
+            except Exception:
+                continue
+        return {
+            "items": result,
+            "total": total_count,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": (total_count + page_size - 1) // page_size,
+        }
+
     if profile_id is not None:
         # Validar que el usuario es miembro de ese perfil activo
         is_member = (
@@ -1976,7 +2013,7 @@ def get_unrelated_questions(db: Session, form_id: int):
     return unrelated_questions
 
 
-def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int = 30, activity_id: int = None):
+def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page_size: int = 30, activity_id: int = None, date_from: str = None, date_to: str = None):
     """
     Recupera los formularios que el usuario ha completado con paginación.
 
@@ -1986,8 +2023,12 @@ def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page
     :param page_size: Cantidad de registros por página.
     :param activity_id: Si se indica, limita a los formatos asignados al usuario
         en esa actividad genérica (mismo criterio que el filtro de diligenciar).
+    :param date_from: Fecha/hora inicio para filtrar respuestas (ISO 8601).
+    :param date_to: Fecha/hora fin para filtrar respuestas (ISO 8601).
     :return: Diccionario con items paginados y metadata.
     """
+    from datetime import datetime
+
     # Calcular offset
     offset = (page - 1) * page_size
 
@@ -1997,6 +2038,21 @@ def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page
         .join(Response)  # Unión entre formularios y respuestas
         .filter(Response.user_id == user_id)  # Filtrar por el usuario
     )
+
+    # Filtro por rango de fechas sobre Response.submitted_at
+    if date_from:
+        try:
+            dt_from = datetime.fromisoformat(date_from)
+            base_query = base_query.filter(Response.submitted_at >= dt_from)
+        except ValueError:
+            pass
+
+    if date_to:
+        try:
+            dt_to = datetime.fromisoformat(date_to)
+            base_query = base_query.filter(Response.submitted_at <= dt_to)
+        except ValueError:
+            pass
 
     # Filtro opcional por actividad genérica: solo formatos asignados a ESTE
     # usuario dentro de la actividad.
@@ -2576,7 +2632,8 @@ def create_question_table_relation_logic(
     name_table: str,
     related_question_id: Optional[int] = None,
     related_form_id: Optional[int] = None,
-    field_name: Optional[str] = None  # <-- NUEVO
+    field_name: Optional[str] = None,  # <-- NUEVO
+    logged_user_part: Optional[str] = None
 ) -> QuestionTableRelation:
     """
     Lógica para crear una relación entre una pregunta y una tabla externa.
@@ -2641,13 +2698,33 @@ def create_question_table_relation_logic(
             detail=f"Campo '{field_name}' no se puede usar en QuestionTableRelation por motivos de seguridad",
         )
 
+    # Solo tiene sentido rellenar con el usuario logueado si la tabla es `users`.
+    # Se valida contra una lista cerrada para que no entre cualquier cosa.
+    _PARTES_USUARIO_LOGUEADO = {
+        "full_name", "first_names", "first_name", "second_name",
+        "first_surname", "second_surname",
+        "num_document", "email",
+    }
+    if logged_user_part:
+        if name_table != "users":
+            raise HTTPException(
+                status_code=400,
+                detail="logged_user_part solo aplica cuando name_table es 'users'",
+            )
+        if logged_user_part not in _PARTES_USUARIO_LOGUEADO:
+            raise HTTPException(
+                status_code=400,
+                detail=f"logged_user_part '{logged_user_part}' no es válido",
+            )
+
     # Crear relación con field_name incluido
     new_relation = QuestionTableRelation(
         question_id=question_id,
         name_table=name_table,
         related_question_id=related_question_id,
         related_form_id=related_form_id,
-        field_name=field_name  # <-- INCLUIDO
+        field_name=field_name,  # <-- INCLUIDO
+        logged_user_part=logged_user_part
     )
 
     db.add(new_relation)
@@ -2717,6 +2794,17 @@ def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
     relation = db.query(QuestionTableRelation).filter_by(question_id=question_id).first()
     if not relation:
         raise HTTPException(status_code=404, detail="No se encontró relación para esta pregunta")
+
+    # Campo alimentado por el USUARIO LOGUEADO — ver nota en
+    # get_related_or_filtered_answers_optimized.
+    if relation.logged_user_part:
+        return {
+            "source": "usuario_logueado",
+            "logged_user_part": relation.logged_user_part,
+            "data": [],
+            "forms": [],
+            "correlations": {},
+        }
 
     if relation.related_question_id:
         # Obtener la pregunta relacionada
@@ -3028,6 +3116,19 @@ def get_related_or_filtered_answers_optimized(
     relation = db.query(QuestionTableRelation).filter_by(question_id=question_id).first()
     if not relation:
         raise HTTPException(status_code=404, detail="No se encontró relación para esta pregunta")
+
+    # Campo alimentado por el USUARIO LOGUEADO: no se devuelve ninguna opción.
+    # No hay nada que elegir —el valor lo pone el frontend con los datos de quien
+    # está diligenciando— y listar a todos los usuarios sería exponer datos de
+    # terceros sin necesidad. El frontend se entera por `logged_user_part`.
+    if relation.logged_user_part:
+        return {
+            "source": "usuario_logueado",
+            "logged_user_part": relation.logged_user_part,
+            "data": [],
+            "forms": [],
+            "correlations": {},
+        }
 
     if relation.related_question_id:
         # Obtener la pregunta relacionada
@@ -4854,7 +4955,7 @@ def build_email_html_approvers(aprobacion_info: dict) -> str:
                     </table>
 
                     <div style="text-align: center; margin: 30px 0;">
-                        <a href="https://forms.sfisas.com.co/" style="display: inline-block; padding: 14px 28px; background-color: #002f6c; color: white; text-decoration: none; border-radius: 5px; font-size: 15px;">
+                        <a href="https://safemetrics-sfi-dev.service.saferut.com/" style="display: inline-block; padding: 14px 28px; background-color: #002f6c; color: white; text-decoration: none; border-radius: 5px; font-size: 15px;">
                             Ingresar al Portal de Aprobaciones
                         </a>
                     </div>
@@ -9384,7 +9485,13 @@ def search_forms_by_user(
     )
     
     # ── 2. Filtro por tipo de asignación ──
-    if filter_type == "user":
+    # Admin ve TODOS los formatos habilitados
+    current_user = db.get(User, user_id)
+    is_admin = current_user and current_user.user_type == UserType.admin
+
+    if is_admin:
+        pass  # Sin filtro de asignacion, ve todos
+    elif filter_type == "user":
         # Solo formularios asignados al usuario (como moderador/llenador)
         assigned_form_ids = (
             db.query(FormModerators.form_id)

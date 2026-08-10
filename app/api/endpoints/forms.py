@@ -29,6 +29,10 @@ router = APIRouter()
 from app.api.endpoints._audit_trail_endpoint import register_audit_trail_route
 register_audit_trail_route(router)
 
+# Registrar endpoint de exportar respuestas como plantilla reimportable
+from app.api.endpoints._export_template_endpoint import register_export_template_route
+register_export_template_route(router)
+
 MAX_APPROVALS_PER_FORM = 15
 
 
@@ -268,8 +272,6 @@ def list_all_categories_with_approvers(
     current_user: User = Depends(get_current_user)
 ):
     """Devuelve todas las categorías con sus aprobadores asignados."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="Authentication required")
     return get_all_categories_with_approvers(db)
 
 
@@ -281,8 +283,6 @@ def update_approver(
     current_user: User = Depends(get_current_user)
 ):
     """Actualiza un aprobador (secuencia, obligatoriedad, plazo)."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="Authentication required")
     return update_category_approver(db, approval_id, payload)
 
 
@@ -293,8 +293,6 @@ def delete_approver(
     current_user: User = Depends(get_current_user)
 ):
     """Elimina un aprobador de una categoría."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="Authentication required")
     remove_category_approver(db, approval_id)
     return {"message": "Aprobador eliminado correctamente"}
 
@@ -308,8 +306,6 @@ def get_approvers_by_category(
     current_user: User = Depends(get_current_user)
 ):
     """Obtiene los aprobadores activos de una categoría específica."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="Authentication required")
     return get_category_approvals(db, category_id)
 
 @router.get("/categories/{category_id}/has-approvers")
@@ -348,8 +344,6 @@ def add_approver_to_category(
     current_user: User = Depends(get_current_user)
 ):
     """Agrega un aprobador a una categoría."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="Authentication required")
     return add_category_approver(db, category_id, payload)
 
 
@@ -361,8 +355,6 @@ def bulk_save_approvers(
     current_user: User = Depends(get_current_user)
 ):
     """Guarda toda la lista de aprobadores de una categoría (reemplaza existentes)."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="Authentication required")
     return bulk_save_category_approvers(
         db, category_id, payload.approvers, approval_mode=payload.approval_mode
     )
@@ -375,8 +367,6 @@ def create_template(
     current_user: User = Depends(get_current_user)
 ):
     """Crea una nueva plantilla de formulario."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="Authentication required")
     return create_template_service(db, current_user.id, payload)
 
 
@@ -391,8 +381,6 @@ def list_templates(
     current_user: User = Depends(get_current_user)
 ):
     """Lista plantillas accesibles para el usuario actual."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="Authentication required")
     return list_templates_service(db, current_user.id, id_category, search, scope, skip, limit)
 
 
@@ -402,8 +390,6 @@ def list_template_categories(
     current_user: User = Depends(get_current_user)
 ):
     """Devuelve todas las categorías disponibles (las mismas de formularios)."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="Authentication required")
 
     categories = db.query(FormCategory).order_by(FormCategory.order, FormCategory.name).all()
     return [
@@ -426,8 +412,6 @@ def get_template(
     current_user: User = Depends(get_current_user)
 ):
     """Obtiene el detalle completo de una plantilla incluyendo su diseño."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="Authentication required")
     return get_template_detail_service(db, template_id, current_user.id)
 
 
@@ -438,8 +422,6 @@ def apply_template(
     current_user: User = Depends(get_current_user)
 ):
     """Aplica una plantilla: devuelve diseño con UUIDs frescos."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="Authentication required")
     design = apply_template_service(db, template_id, current_user.id)
     return {"template_design": design}
 
@@ -452,8 +434,6 @@ def update_template(
     current_user: User = Depends(get_current_user)
 ):
     """Actualiza metadatos o diseño de una plantilla propia."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="Authentication required")
     return update_template_service(db, template_id, current_user.id, payload)
 
 
@@ -464,8 +444,6 @@ def delete_template(
     current_user: User = Depends(get_current_user)
 ):
     """Elimina (soft-delete) una plantilla propia."""
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="Authentication required")
     delete_template_service(db, template_id, current_user.id)
     return {"message": "Template deleted successfully"}
 
@@ -544,11 +522,6 @@ def get_forms_list(
     """
     Obtener solo id y título de los formatos del usuario autenticado.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     
     forms = (
         db.query(Form.id, Form.title)
@@ -589,11 +562,6 @@ def get_form_endpoint(
     Raises:
         HTTPException: Error 404 si el formulario no se encuentra o no pertenece al usuario.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     form = get_form_id_users(db, form_id)
     if not form:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Form not found")
@@ -622,11 +590,6 @@ def get_form_design(
     Returns:
         dict: Diseño del formulario (id, title, description, version, form_design)
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
 
     # 🔒 S1-6: validar acceso ANTES del cache (el cache es por form_id,
     # no por usuario, así que debemos verificar permisos siempre).
@@ -678,11 +641,6 @@ def get_form_questions(
     Returns:
         dict: Metadata de todas las preguntas del formulario
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
 
     # 🔒 S1-6: validar acceso ANTES del cache
     _form_for_auth = db.query(Form).filter(Form.id == form_id).first()
@@ -921,11 +879,6 @@ def check_form_responses(form_id: int, db: Session = Depends(get_db), current_us
             - 403 si el usuario no está autenticado.
             - 404 si el formulario no existe.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get form"
-        )
 
     # 🔒 S1-6: validar acceso al formulario
     _form_for_auth = db.query(Form).filter(Form.id == form_id).first()
@@ -1191,11 +1144,6 @@ def get_all_emails(
         ]
     }
     """
-    if current_user is None:  # Ya con esto el IDE no marca warning
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     
     emails = db.query(User.email).all()
     return {"emails": [email[0] for email in emails]}
@@ -1226,11 +1174,6 @@ def register_form_schedule(
         FormSchedule: Objeto de programación recién creado o actualizado.
 
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     return create_form_schedule(
         db=db,
         form_id=schedule_data.form_id,
@@ -1267,11 +1210,6 @@ def get_responses_with_answers(
         HTTPException: 403 si no hay un usuario autenticado.
         HTTPException: 404 si no se encuentran respuestas.
     """
-    if not current_user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to access completed forms",
-        )
 
     stmt = (
         select(Response)
@@ -1443,11 +1381,6 @@ def get_completed_forms_with_responses(
     - **Código 403**: Usuario no autenticado o sin permisos
     - **Código 404**: No se encontraron formularios completados
     """
-    if not current_user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to access completed forms",
-        )
 
     completed_forms_data = fetch_completed_forms_with_all_responses(db, current_user.id)
     
@@ -1484,11 +1417,6 @@ def get_responses_summary(
         HTTPException: 403 si no hay un usuario autenticado.
         HTTPException: 404 si no se encuentran respuestas.
     """
-    if not current_user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to access responses",
-        )
 
     # Query optimizado: solo traemos lo necesario
     stmt = (
@@ -1555,11 +1483,6 @@ def get_forms_endpoint(
     - **Código 404**: No se encontraron formularios.
     - **Código 500**: Error interno del servidor.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
 
     try:
         forms = get_all_forms(db)
@@ -1587,11 +1510,6 @@ def get_forms_paginated_endpoint(
     - **Código 404**: No se encontraron formularios.
     - **Código 500**: Error interno del servidor.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     
     try:
         # Validar page_size máximo
@@ -1633,11 +1551,6 @@ def get_user_forms(
     - **Código 500**: Error interno del servidor.
     """
     try:
-        if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User does not have permission"
-            )
 
         # Validar page_size máximo
         if page_size > 100:
@@ -1676,11 +1589,6 @@ def get_user_forms_summary(
     - **Código 404**: No se encontraron formularios.
     - **Código 500**: Error interno del servidor.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get forms"
-        )
     
     try:
         forms = get_forms_by_user_summary(db, current_user.id)
@@ -1701,6 +1609,8 @@ def get_completed_forms_for_user(
     page: int = 1,
     page_size: int = 30,
     activity_id: int = None,
+    date_from: str = None,
+    date_to: str = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -1709,26 +1619,23 @@ def get_completed_forms_for_user(
 
     - **page**: Número de página (por defecto 1)
     - **page_size**: Cantidad de registros por página (por defecto 30, máximo 100)
+    - **date_from**: Fecha/hora inicio (ISO 8601, ej: 2026-01-01T00:00:00)
+    - **date_to**: Fecha/hora fin (ISO 8601, ej: 2026-12-31T23:59:59)
     - **Autenticación requerida**
     - **Código 200**: Lista paginada de formularios completados
     - **Código 403**: Usuario no autenticado o sin permisos
     - **Código 404**: No se encontraron formularios completados
     """
-    if not current_user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to access completed forms",
-        )
 
     # Validar page_size máximo
     if page_size > 100:
         page_size = 100
-    
+
     # Validar que page sea mayor a 0
     if page < 1:
         page = 1
 
-    completed_forms_data = fetch_completed_forms_by_user(db, current_user.id, page, page_size, activity_id)
+    completed_forms_data = fetch_completed_forms_by_user(db, current_user.id, page, page_size, activity_id, date_from, date_to)
 
     if not completed_forms_data["items"]:
         raise HTTPException(status_code=404, detail="No completed forms found for this user")
@@ -1906,11 +1813,6 @@ def create_form_answer(
     Returns:
         dict: Mensaje de confirmación y datos de la relación creada.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     
     form_answer = FormAnswer(
         form_id=payload.form_id,
@@ -2629,11 +2531,6 @@ def get_unanswered_forms(
     current_user: User = Depends(get_current_user)
 ):
     try:
-        if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User does not have permission to get forms"
-            )
 
         forms = get_unanswered_forms_by_user(db, current_user.id)
 
@@ -2715,11 +2612,6 @@ def create_response_approval_endpoint(
     HTTPException (400):
         Si ocurre un error durante la creación del registro, se retorna una excepción con el mensaje de error.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get forms"
-        )
 
     try:
         return create_response_approval(db, data)
@@ -2795,11 +2687,6 @@ def create_notification(notification: NotificationCreate, db: Session = Depends(
     - 400 BAD REQUEST: Si la notificación ya existe.
     """
     
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get forms"
-        )
     # Verifica si ya existe una notificación similar (opcional)
     existing = db.query(FormApprovalNotification).filter_by(
         form_id=notification.form_id,
@@ -3122,11 +3009,6 @@ def delete_notifications_bulk(
     dict:
         Mensaje de confirmación con cantidad eliminada
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to perform this action"
-        )
     
     # Validar que la lista no esté vacía
     if not notification_ids or len(notification_ids) == 0:
@@ -3230,11 +3112,6 @@ def get_form_close_config(form_id: int, db: Session = Depends(get_db), current_u
     """
     Obtiene la configuración de cierre de un formulario específico
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get form close config"
-        )
 
     config = db.query(FormCloseConfig).filter(FormCloseConfig.form_id == form_id).first()
     
@@ -3384,11 +3261,6 @@ def _resolve_logo_path():
 @router.post("/upload-logo/")
 async def upload_logo(file: UploadFile = File(...),current_user: User = Depends(get_current_user)):
     # H-BW-015: usar `is None` en lugar de `== None`
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to upload logo"
-            )
 
     # H-BW-001: Validar tamaño antes de procesar
     head = await file.read(MAX_LOGO_SIZE + 1)
@@ -3438,11 +3310,6 @@ async def upload_logo(file: UploadFile = File(...),current_user: User = Depends(
 
 @router.get("/get-logo/")
 def get_logo(current_user: User = Depends(get_current_user)):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get logo"
-            )
     # SECURITY (ID-017): usar helper que solo sirve logo.{png,jpg,jpeg}.
     resolved = _resolve_logo_path()
     if resolved is None:
@@ -3531,8 +3398,6 @@ def update_form_category(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="No tienes permiso")
 
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
@@ -3815,11 +3680,6 @@ def get_user_forms_by_category_endpoint(
     - **include_subcategories**: Incluir formularios de subcategorías (por defecto False)
     - **Requiere autenticación.**
     """
-    if not current_user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to access forms"
-        )
     
     if page_size > 100:
         page_size = 100
@@ -3910,11 +3770,6 @@ def get_user_completed_forms_by_category_endpoint(
     - **include_subcategories**: Incluir formularios de subcategorías (por defecto False)
     - **Requiere autenticación.**
     """
-    if not current_user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to access forms"
-        )
     
     if page_size > 100:
         page_size = 100
@@ -4258,11 +4113,6 @@ async def upload_form_instructivos(
     """
     try:
         # Verificar que el usuario está autenticado
-        if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User not authenticated"
-            )
 
         # 1. Buscar el formulario
         form = db.query(Form).filter(Form.id == form_id).first()
@@ -4443,11 +4293,6 @@ async def update_form_alert_message(
     """
     try:
         # Verificar que el usuario está autenticado
-        if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User not authenticated"
-            )
 
         # 1. Buscar el formulario
         form = db.query(Form).filter(Form.id == form_id).first()
@@ -4509,11 +4354,6 @@ async def download_instructivo(
     - Se rechazan symlinks, directorios y rutas no regulares.
     """
     try:
-        if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User not authenticated"
-            )
 
         # ═══════════════════════════════════════════════════════════════════════
         # 🔒 VALIDACIÓN CONTRA PATH TRAVERSAL
@@ -4602,11 +4442,6 @@ async def get_form_alert_message(
     """
     try:
         # Verificar que el usuario está autenticado
-        if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User not authenticated"
-            )
 
         # Buscar el formulario
         form = db.query(Form).filter(Form.id == form_id).first()
@@ -4645,11 +4480,6 @@ async def get_form_details(
     Incluyendo: título, descripción, instructivos, alert_message, etc.
     """
     try:
-        if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User not authenticated"
-            )
         form = db.query(Form).filter(Form.id == form_id).first()
         
         if not form:
@@ -4707,11 +4537,6 @@ async def delete_instructivo(
     """
     try:
         # Verificar que el usuario está autenticado
-        if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User not authenticated"
-            )
 
         # 1. Buscar el formulario
         form = db.query(Form).filter(Form.id == form_id).first()
@@ -4801,11 +4626,6 @@ async def delete_alert_message(
     """
     try:
         # Verificar que el usuario está autenticado
-        if current_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User not authenticated"
-            )
 
         # 1. Buscar el formulario
         form = db.query(Form).filter(Form.id == form_id).first()
@@ -5315,6 +5135,7 @@ def get_answers_by_movement(
                 "columns": [],
                 "rows": [],
                 "totals": {},
+                "distinct": {},   # consistencia con filtros por columna (movimiento vacio)
                 "aliases": [],
                 "pagination": {"page": 1, "page_size": page_size, "total_rows": 0, "total_pages": 1},
             })
@@ -5669,11 +5490,6 @@ def get_related_last_answers(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     # 1️⃣ Obtener response_id donde la pregunta MATCH tenga el valor dado
     response_ids = (
         db.query(Answer.response_id)
@@ -5754,11 +5570,6 @@ def send_answers_by_email(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     ok = send_response_answers_email(
         to_emails=payload.email_to,
         form_title=payload.form_title,
@@ -6354,695 +6165,3 @@ def _collect_movimiento_result(db: Session, movimiento):
             })
 
     return result
-
-
-@router.get(
-    "/movimientos/{movement_id}/answers",
-    status_code=status.HTTP_200_OK
-)
-def get_answers_by_movement(
-    movement_id: int,
-    page: Optional[int] = Query(None, description="Página (1-based). Si se omite, modo legacy anidado."),
-    page_size: int = Query(50, ge=1, le=200),
-    date_from: Optional[str] = Query(None, description="YYYY-MM-DD inicio del rango"),
-    date_to: Optional[str] = Query(None, description="YYYY-MM-DD fin del rango"),
-    search: Optional[str] = Query(None, description="Texto a buscar en las respuestas"),
-    alias: Optional[str] = Query(None, description="Filtrar por un alias específico"),
-    last_only: bool = Query(False, description="Solo el registro más reciente"),
-    column_filters: Optional[str] = Query(None, description="Filtro por columna estilo Excel: JSON {col_key: [valores...]}"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """Respuestas consolidadas de un movimiento.
-
-    - Sin `page`: modo legacy → estructura anidada {forms:[{responses:[{answers}]}]}.
-    - Con `page`: modo paginado → {columns, rows, totals, aliases, pagination}.
-      La consolidación, filtros, totales y paginación se calculan en el servidor.
-    """
-    movimiento = db.query(FormMovimientos).filter(
-        FormMovimientos.id == movement_id,
-        FormMovimientos.is_enabled == True
-    ).first()
-
-    if not movimiento:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Movimiento no encontrado"
-        )
-
-    # 🔐 Visibilidad por movimiento (admin / dueño / visor autorizado)
-    if not _user_can_view_movimiento(current_user, movimiento):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tienes permiso para ver este movimiento"
-        )
-
-    paginated = page is not None
-
-    if not movimiento.form_ids or not movimiento.question_ids:
-        empty = {
-            "movement_id": movimiento.id,
-            "title": movimiento.title,
-            "description": movimiento.description,
-            "forms": [],
-        }
-        if paginated:
-            empty.update({
-                "columns": [],
-                "rows": [],
-                "totals": {},
-                "distinct": {},
-                "aliases": [],
-                "pagination": {"page": 1, "page_size": page_size, "total_rows": 0, "total_pages": 1},
-            })
-        return empty
-
-    result = _collect_movimiento_result(db, movimiento)
-
-    # Modo legacy: estructura anidada (compatibilidad con MovementDetailView)
-    if not paginated:
-        return {
-            "movement_id": movimiento.id,
-            "title": movimiento.title,
-            "description": movimiento.description,
-            "forms": result
-        }
-
-    # Modo paginado: consolidado armado en el servidor
-    consolidado = _build_movimiento_consolidado(
-        result, page, page_size, date_from, date_to, search, alias, last_only,
-        column_filters=_parse_column_filters(column_filters),
-    )
-    return {
-        "movement_id": movimiento.id,
-        "title": movimiento.title,
-        "description": movimiento.description,
-        **consolidado,
-    }
-
-@router.get("/movimientos/{movement_id}/export", status_code=status.HTTP_200_OK)
-def export_movimiento_excel(
-    movement_id: int,
-    date_from: Optional[str] = Query(None),
-    date_to: Optional[str] = Query(None),
-    search: Optional[str] = Query(None),
-    alias: Optional[str] = Query(None),
-    last_only: bool = Query(False),
-    column_filters: Optional[str] = Query(None, description="Filtro por columna estilo Excel: JSON {col_key: [valores...]}"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Exporta la tabla COMPLETA del movimiento a Excel (todas las filas que
-    pasan los filtros, sin paginar) más una fila de totales."""
-    movimiento = db.query(FormMovimientos).filter(
-        FormMovimientos.id == movement_id,
-        FormMovimientos.is_enabled == True
-    ).first()
-    if not movimiento:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Movimiento no encontrado")
-
-    # 🔐 Visibilidad por movimiento (admin / dueño / visor autorizado)
-    if not _user_can_view_movimiento(current_user, movimiento):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tienes permiso para exportar este movimiento"
-        )
-
-    if movimiento.form_ids and movimiento.question_ids:
-        result = _collect_movimiento_result(db, movimiento)
-    else:
-        result = []
-
-    # Todas las filas filtradas (page_size enorme con cap elevado)
-    consolidado = _build_movimiento_consolidado(
-        result, page=1, page_size=10**9,
-        date_from=date_from, date_to=date_to, search=search,
-        alias=alias, last_only=last_only, cap=10**9,
-        column_filters=_parse_column_filters(column_filters),
-    )
-    columns = consolidado["columns"]
-    rows = consolidado["rows"]
-    totals = consolidado["totals"]
-
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment
-    from openpyxl.utils import get_column_letter
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Movimiento"
-
-    headers = ["Fecha y hora", "Formato origen"] + [c["label"] for c in columns]
-    ws.append(headers)
-    header_fill = PatternFill("solid", fgColor="0F8594")
-    for cell in ws[1]:
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = header_fill
-        cell.alignment = Alignment(vertical="center", horizontal="left")
-
-    for row in rows:
-        sa = row.get("submitted_at")
-        try:
-            fecha = sa.strftime("%d/%m/%Y %H:%M") if sa else ""
-        except AttributeError:
-            fecha = str(sa) if sa else ""
-        origen = row.get("form_alias") or row.get("form_title") or ""
-        vals = []
-        for c in columns:
-            v = row["values"].get(c["key"])
-            if c["totalize"]:
-                num = _movimiento_to_number(v)
-                vals.append(num if num is not None else ("" if v is None else str(v)))
-            else:
-                vals.append("" if v is None else str(v))
-        ws.append([fecha, origen] + vals)
-
-    # Fila de totales (solo columnas numéricas)
-    if totals:
-        total_row = ["", "TOTAL"]
-        for c in columns:
-            total_row.append(totals.get(c["key"], "") if c["totalize"] else "")
-        ws.append(total_row)
-        for cell in ws[ws.max_row]:
-            cell.font = Font(bold=True)
-
-    # Anchos aproximados de columna
-    widths = [20, 20] + [22 for _ in columns]
-    for i, w in enumerate(widths, start=1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-
-    ws.freeze_panes = "A2"
-
-    stream = BytesIO()
-    wb.save(stream)
-    stream.seek(0)
-
-    safe_title = "".join(ch for ch in (movimiento.title or "movimiento") if ch.isalnum() or ch in (" ", "-", "_")).strip() or "movimiento"
-    filename = f"{safe_title}.xlsx"
-    return StreamingResponse(
-        stream,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-@router.get("/movimientos/response/{response_id}/full", status_code=status.HTTP_200_OK)
-def get_movement_response_full(
-    response_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Registro original de una fila del movimiento.
-
-    Devuelve el formato completo (form + form_design) y la respuesta con sus
-    answers/approvals, con el MISMO shape que usa "Consultar mis respuestas"
-    (`/consultants/me/responses/{id}/full`), para poder reutilizar el mismo
-    componente de detalle. Acceso: admin, o cualquier usuario que pueda VER un
-    movimiento que incluya el formato de esta respuesta (dueño/visor).
-    """
-    r = (
-        db.query(Response)
-        .options(
-            joinedload(Response.form).joinedload(Form.category),
-            joinedload(Response.user),
-            joinedload(Response.answers).joinedload(Answer.question),
-            joinedload(Response.approvals).joinedload(ResponseApproval.user),
-        )
-        .filter(Response.id == response_id)
-        .first()
-    )
-    if not r:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Respuesta no encontrada")
-
-    # 🔐 Acceso: admin, o el usuario puede ver un movimiento que incluya el
-    # formato de esta respuesta (dueño o visor autorizado de ese movimiento).
-    if current_user.user_type.name != UserType.admin.name:
-        movs = db.query(FormMovimientos).filter(FormMovimientos.is_enabled == True).all()
-        can = any(
-            (r.form_id in (mv.form_ids or [])) and _user_can_view_movimiento(current_user, mv)
-            for mv in movs
-        )
-        if not can:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="No tienes permiso para ver este registro"
-            )
-
-    # Mostrar solo las answers más recientes (descartar las versionadas)
-    histories = db.query(AnswerHistory).filter(AnswerHistory.response_id == response_id).all()
-    previous_answer_ids = {h.previous_answer_id for h in histories if h.previous_answer_id}
-
-    def _qtype(q):
-        return q.question_type.value if hasattr(q.question_type, "value") else q.question_type
-
-    answers_payload = [
-        {
-            "id_answer": a.id,
-            "response_id": r.id,
-            "repeated_id": getattr(a, "repeated_id", None),
-            "question_id": a.question.id,
-            "question_text": a.question.question_text,
-            "question_type": _qtype(a.question),
-            "answer_text": process_regisfacial_answer(a.answer_text, _qtype(a.question)),
-            "file_path": a.file_path,
-            "form_design_element_id": a.form_design_element_id,
-        }
-        for a in r.answers
-        if a.id not in previous_answer_ids
-    ]
-
-    approval_summary = get_response_approval_status(r.approvals)
-    approvals_payload = [
-        {
-            "approval_id": ap.id,
-            "sequence_number": ap.sequence_number,
-            "is_mandatory": ap.is_mandatory,
-            "reconsideration_requested": ap.reconsideration_requested,
-            "status": ap.status.value if hasattr(ap.status, "value") else ap.status,
-            "reviewed_at": ap.reviewed_at.isoformat() if ap.reviewed_at else None,
-            "message": ap.message,
-            "user": {
-                "id": ap.user.id,
-                "name": ap.user.name,
-                "email": ap.user.email,
-                "nickname": ap.user.nickname,
-                "num_document": ap.user.num_document,
-            } if ap.user else None,
-        }
-        for ap in r.approvals
-    ]
-
-    form = r.form
-    form_payload = {
-        "id": form.id,
-        "title": form.title,
-        "description": form.description,
-        "format_type": form.format_type.value if form.format_type else None,
-        "created_at": form.created_at.isoformat() if form.created_at else None,
-        "category": (
-            {"id": form.category.id, "name": form.category.name, "description": form.category.description}
-            if form.category else None
-        ),
-    }
-
-    return {
-        "form": form_payload,
-        "form_design": form.form_design,
-        "response": {
-            "response_id": r.id,
-            "submitted_at": r.submitted_at.isoformat() if r.submitted_at else None,
-            "status": r.status.value if r.status else None,
-            "approval_status": approval_summary.get("status"),
-            "message": approval_summary.get("message"),
-            "submitted_by": {
-                "id": r.user.id,
-                "name": r.user.name,
-                "email": r.user.email,
-                "nickname": r.user.nickname,
-                "num_document": r.user.num_document,
-            } if r.user else None,
-            "answers": answers_payload,
-            "approvals": approvals_payload,
-        },
-    }
-
-
-@router.get("/movimientos/{movement_id}", status_code=status.HTTP_200_OK)
-def get_movimiento_detail(
-    movement_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """Configuración completa de un movimiento (para editarlo en el asistente)."""
-    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to view this movimiento"
-        )
-
-    mov = db.query(FormMovimientos).filter(
-        FormMovimientos.id == movement_id,
-        FormMovimientos.is_enabled == True
-    ).first()
-
-    if not mov:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Movimiento no encontrado")
-
-    return {
-        "id": mov.id,
-        "user_id": mov.user_id,
-        "title": mov.title,
-        "description": mov.description,
-        "id_category": mov.id_category,
-        "form_ids": mov.form_ids or [],
-        "question_ids": mov.question_ids or [],
-        "alias_groups": mov.alias_groups or [],
-        "form_aliases": mov.form_aliases or [],
-        "allowed_user_ids": mov.allowed_user_ids or [],
-        "is_enabled": mov.is_enabled,
-        "created_at": mov.created_at,
-    }
-
-
-@router.put(
-    "/movimientos/{movement_id}",
-    response_model=FormMovimientoResponse,
-    status_code=status.HTTP_200_OK
-)
-def update_form_movimiento_endpoint(
-    movement_id: int,
-    movimiento: FormMovimientoBase,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """Editar un movimiento (nombre, descripción, categoría, formatos, campos y alias)."""
-    if current_user.user_type.name not in [UserType.creator.name, UserType.admin.name]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to edit movimientos"
-        )
-
-    return update_form_movimiento(
-        db=db,
-        movement_id=movement_id,
-        movimiento=movimiento,
-        user_id=current_user.id,
-        is_admin=(current_user.user_type.name == UserType.admin.name),
-    )
-
-
-@router.delete("/movimientos/{movement_id}", status_code=status.HTTP_200_OK)
-def delete_movement(
-    movement_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    movement = (
-        db.query(FormMovimientos)
-        .filter(
-            FormMovimientos.id == movement_id,
-            FormMovimientos.user_id == current_user.id
-        )
-        .first()
-    )
-
-    if not movement:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Movimiento no encontrado"
-        )
-
-    db.delete(movement)
-    db.commit()
-
-    return {
-        "message": "Movimiento eliminado correctamente"
-    }
-    
-
-@router.post("/responses/related-last-answer")
-def get_related_last_answers(
-    payload: RelatedAnswerRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
-    # 1️⃣ Obtener response_id donde la pregunta MATCH tenga el valor dado
-    response_ids = (
-        db.query(Answer.response_id)
-        .join(Response, Response.id == Answer.response_id)
-        .filter(
-            Response.form_id == payload.form_id,
-            Answer.question_id == payload.question_id_match,
-            Answer.answer_text == payload.value_base
-        )
-        .distinct()
-        .all()
-    )
-
-    response_ids = [r.response_id for r in response_ids]
-
-    if not response_ids:
-        return []
-
-    # 2️⃣ Buscar relación de la pregunta lookup
-    relation = (
-        db.query(QuestionTableRelation)
-        .filter(
-            QuestionTableRelation.question_id == payload.question_id_lookup
-        )
-        .first()
-    )
-
-    if not relation or not relation.related_question_id:
-        raise HTTPException(
-            status_code=404,
-            detail="La pregunta no tiene relación definida en QuestionTableRelation"
-        )
-
-    related_question_id = relation.related_question_id
-
-    # 3️⃣ Obtener TODAS las últimas respuestas en UNA SOLA QUERY (optimizado)
-    # Subquery para obtener el máximo ID de Answer por cada response_id
-    max_answer_subquery = (
-        db.query(
-            Answer.response_id,
-            func.max(Answer.id).label('max_id')
-        )
-        .filter(
-            Answer.response_id.in_(response_ids),
-            Answer.question_id == related_question_id
-        )
-        .group_by(Answer.response_id)
-        .subquery()
-    )
-
-    # Query principal que obtiene las respuestas usando la subquery
-    last_answers = (
-        db.query(Answer)
-        .join(
-            max_answer_subquery,
-            Answer.id == max_answer_subquery.c.max_id
-        )
-        .all()
-    )
-
-    # Construir resultados
-    results = [
-        {
-            "response_id": answer.response_id,
-            "question_id": related_question_id,
-            "answer_id": answer.id,
-            "answer_text": answer.answer_text,
-            "file_path": answer.file_path
-        }
-        for answer in last_answers
-    ]
-
-    return results
-
-@router.post("/send-answers-by-email")
-def send_answers_by_email(
-    payload: SendResponseEmailRequest,   
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
-    ok = send_response_answers_email(
-        to_emails=payload.email_to,
-        form_title=payload.form_title,
-        response_id=payload.response_id,
-        answers=payload.answers
-    )
-
-    if not ok:
-        raise HTTPException(
-            status_code=500,
-            detail="No se pudo enviar el correo"
-        )
-
-    return {
-        "status": "ok",
-        "sent_to": payload.email_to
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Diligenciar context — para la pantalla "Diligenciar formato" (mockup nuevo).
-# Lectura pura sobre FormApproval/ResponseApproval/Response/Form. NO toca el
-# motor de aprobaciones (intocable #1, crud.py:4138-4509).
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/{form_id}/diligenciar-context")
-def get_form_diligenciar_context(
-    form_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Contexto del formato al diligenciarlo:
-    - Aprobadores (orden, nombre, avg días histórico por persona, mandatorio).
-    - Email recipients (FormApprovalNotification).
-    - avg total días histórico de cierre del formato.
-    - Respuestas previas del usuario + stats personales.
-    """
-    form = db.query(Form).filter(Form.id == form_id).first()
-    if not form:
-        raise HTTPException(status_code=404, detail="Formato no encontrado")
-
-    # ── 1. Aprobadores activos ───────────────────────────────────────────────
-    template = (
-        db.query(FormApproval)
-        .options(joinedload(FormApproval.user))
-        .filter(
-            FormApproval.form_id == form_id,
-            FormApproval.is_active.is_(True),
-        )
-        .order_by(FormApproval.sequence_number)
-        .all()
-    )
-
-    def avg_days_for_approver(user_id: int):
-        rows = (
-            db.query(ResponseApproval.reviewed_at, Response.submitted_at)
-            .join(Response, Response.id == ResponseApproval.response_id)
-            .filter(
-                Response.form_id == form_id,
-                ResponseApproval.user_id == user_id,
-                ResponseApproval.reviewed_at.isnot(None),
-                ResponseApproval.status.in_(
-                    [ApprovalStatus.aprobado, ApprovalStatus.rechazado]
-                ),
-            )
-            .all()
-        )
-        deltas = []
-        for reviewed, submitted in rows:
-            if reviewed and submitted:
-                d = (reviewed - submitted).total_seconds() / 86400.0
-                if d >= 0:
-                    deltas.append(d)
-        return round(sum(deltas) / len(deltas), 1) if deltas else None
-
-    approvers = [
-        {
-            "sequence_number": t.sequence_number,
-            "is_mandatory": t.is_mandatory,
-            "user_id": t.user_id,
-            "user_name": t.user.name if t.user else f"Usuario #{t.user_id}",
-            "user_email": t.user.email if t.user else None,
-            "deadline_days": t.deadline_days,
-            "avg_days": avg_days_for_approver(t.user_id),
-        }
-        for t in template
-    ]
-
-    # ── 2. Email recipients ──────────────────────────────────────────────────
-    notifs = (
-        db.query(FormApprovalNotification)
-        .options(joinedload(FormApprovalNotification.user))
-        .filter(FormApprovalNotification.form_id == form_id)
-        .all()
-    )
-    email_recipients = [
-        {
-            "email": n.user.email if n.user else None,
-            "name": n.user.name if n.user else f"Usuario #{n.user_id}",
-            "notify_on": n.notify_on.value
-            if hasattr(n.notify_on, "value")
-            else str(n.notify_on),
-        }
-        for n in notifs
-        if n.user
-    ]
-
-    # ── 3. avg total días histórico del formato (sobre cerradas) ────────────
-    all_responses = (
-        db.query(Response)
-        .options(joinedload(Response.approvals))
-        .filter(Response.form_id == form_id)
-        .all()
-    )
-    total_deltas = []
-    for r in all_responses:
-        approvals = r.approvals or []
-        mandatory = [a for a in approvals if a.is_mandatory]
-        if not mandatory:
-            continue
-        if not all(a.status == ApprovalStatus.aprobado for a in mandatory):
-            continue
-        reviewed = [a.reviewed_at for a in mandatory if a.reviewed_at]
-        if not reviewed:
-            continue
-        d = (max(reviewed) - r.submitted_at).total_seconds() / 86400.0
-        if d >= 0:
-            total_deltas.append(d)
-    avg_total_days = (
-        round(sum(total_deltas) / len(total_deltas), 1) if total_deltas else None
-    )
-
-    # ── 4. Mis respuestas previas del usuario ───────────────────────────────
-    my_responses = (
-        db.query(Response)
-        .options(joinedload(Response.approvals))
-        .filter(Response.form_id == form_id, Response.user_id == current_user.id)
-        .order_by(Response.submitted_at.desc())
-        .limit(10)
-        .all()
-    )
-
-    my_previous = []
-    my_days = []
-    approved_count = 0
-    for r in my_responses:
-        approvals = r.approvals or []
-        mandatory = [a for a in approvals if a.is_mandatory]
-        approved = [a for a in mandatory if a.status == ApprovalStatus.aprobado]
-        rejected_any = any(a.status == ApprovalStatus.rechazado for a in approvals)
-
-        if rejected_any:
-            status_str = "rechazado"
-        elif mandatory and len(approved) == len(mandatory):
-            status_str = "aprobado"
-            approved_count += 1
-            reviewed = [a.reviewed_at for a in mandatory if a.reviewed_at]
-            if reviewed:
-                d = (max(reviewed) - r.submitted_at).total_seconds() / 86400.0
-                if d >= 0:
-                    my_days.append(d)
-        else:
-            status_str = "pendiente"
-
-        my_previous.append(
-            {
-                "response_id": r.id,
-                "submitted_at": r.submitted_at,
-                "status": status_str,
-                "approvers_total": len(mandatory),
-                "approvers_approved": len(approved),
-            }
-        )
-
-    my_avg_days = round(sum(my_days) / len(my_days), 1) if my_days else None
-
-    return {
-        "form_id": form.id,
-        "form_title": form.title,
-        "approval_mode": form.approval_mode,
-        "approvers": approvers,
-        "email_recipients": email_recipients,
-        "avg_total_days": avg_total_days,
-        "my_previous_responses": my_previous,
-        "my_stats": {
-            "total": len(my_previous),
-            "approved": approved_count,
-            "avg_days": my_avg_days,
-        },
-    }

@@ -116,11 +116,6 @@ def get_available_forms(
     Retorna la lista de formatos disponibles para asignar a una pregunta.
     Usado en el modal de selección de formato al crear una pregunta.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No autenticado",
-        )
 
     forms = (
         db.query(Form.id, Form.title, Form.description, Form.format_type)
@@ -150,11 +145,6 @@ def get_questions_by_form(
     Retorna todas las preguntas que tienen id_form igual al form_id recibido.
     Permite saber qué preguntas pertenecen originalmente a un formato.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No autenticado",
-        )
 
     questions = (
         db.query(Question)
@@ -350,11 +340,6 @@ def list_regisfacial_questions(
     Retorna:
         [{ id, question_text, form_id, form_name }, ...]
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No autenticado",
-        )
 
     rows = (
         db.query(
@@ -414,11 +399,6 @@ def get_question_by_id_endpoint(
         - 403: Si el usuario no está autenticado.
         - 404: Si la pregunta no existe.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get this question"
-        )
 
     
     question = get_question_by_id_with_category(db, question_id)
@@ -717,7 +697,8 @@ def create_question_table_relation(
         name_table=relation_data.name_table,
         related_question_id=relation_data.related_question_id,
         related_form_id=relation_data.related_form_id,
-        field_name=relation_data.field_name  # <-- NUEVO
+        field_name=relation_data.field_name,  # <-- NUEVO
+        logged_user_part=relation_data.logged_user_part
     )
 
     return {
@@ -728,7 +709,8 @@ def create_question_table_relation(
             "related_question_id": relation.related_question_id,
             "related_form_id": relation.related_form_id,
             "name_table": relation.name_table,
-            "field_name": relation.field_name  # <-- NUEVO
+            "field_name": relation.field_name,  # <-- NUEVO
+            "logged_user_part": relation.logged_user_part
         }
     }
 
@@ -755,11 +737,6 @@ def get_all_related_answers(
             - `related_question` (dict): información de la pregunta relacionada (si aplica)
             - `correlations` (dict): mapa de correlaciones entre respuestas
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get all questions"
-        )
     
     # Obtener todas las preguntas que tienen relaciones o condiciones
     relations = db.query(QuestionTableRelation).all()
@@ -802,9 +779,87 @@ def get_all_related_answers(
     }
 
 # Endpoint actualizado
+@router.get("/question-table-relation/files/{question_id}")
+def get_file_answers(
+    question_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Devuelve los archivos subidos como respuesta a una pregunta tipo file.
+    Sigue la relacion question_table_relations para buscar archivos en la
+    pregunta relacionada si la pregunta directa no tiene archivos.
+    """
+    from app.models import Answer, Response, User as UserModel, QuestionTableRelation
+
+    # Buscar la pregunta donde estan los archivos:
+    # 1. Directamente en esta pregunta
+    # 2. En la pregunta relacionada (question_table_relations.related_question_id)
+    # 3. En preguntas que apuntan a esta (relacion inversa)
+    target_ids = [question_id]
+
+    relation = db.query(QuestionTableRelation).filter(
+        QuestionTableRelation.question_id == question_id
+    ).first()
+    if relation and relation.related_question_id:
+        target_ids.append(relation.related_question_id)
+
+    # Relacion inversa: si otra pregunta apunta a esta
+    inverse_rels = db.query(QuestionTableRelation).filter(
+        QuestionTableRelation.related_question_id == question_id
+    ).all()
+    for inv in inverse_rels:
+        target_ids.append(inv.question_id)
+
+    target_ids = list(set(target_ids))
+
+    rows = (
+        db.query(
+            Answer.id,
+            Answer.answer_text,
+            Answer.file_path,
+            Answer.response_id,
+            Response.submitted_at,
+            UserModel.name.label("user_name"),
+        )
+        .join(Response, Response.id == Answer.response_id)
+        .join(UserModel, UserModel.id == Response.user_id)
+        .filter(Answer.question_id.in_(target_ids))
+        .filter(Answer.file_path.isnot(None))
+        .filter(Answer.file_path != "")
+        .order_by(Response.submitted_at.desc())
+        .all()
+    )
+
+    files = []
+    seen = set()
+    for row in rows:
+        if row.file_path in seen:
+            continue
+        seen.add(row.file_path)
+        # Nombre legible: usar answer_text si existe, sino el nombre del archivo
+        file_name = row.file_path.split("/")[-1].split("\\")[-1] if row.file_path else ""
+        display_name = row.answer_text or file_name
+        files.append({
+            "id": row.id,
+            "name": display_name,
+            "file_path": row.file_path,
+            "file_name": file_name,
+            "response_id": row.response_id,
+            "user_name": row.user_name,
+            "submitted_at": row.submitted_at.isoformat() if row.submitted_at else None,
+        })
+
+    return {
+        "source": "file_answers",
+        "data": files,
+        "total": len(files),
+    }
+
+
 @router.get("/question-table-relation/answers/{question_id}")
 def get_related_answers(
-    question_id: int, 
+    question_id: int,
     db: Session = Depends(get_db), 
     current_user: User = Depends(get_current_user)
 ):
@@ -821,11 +876,6 @@ def get_related_answers(
         - `data`: lista de respuestas únicas con el campo `name`
         - `correlations`: mapeo de correlaciones entre respuestas
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get all questions"
-        )
     
     return get_related_or_filtered_answers_optimized(db, question_id)
 
@@ -930,11 +980,6 @@ def create_question_category(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to create categories"
-        )
 
     existing = db.query(QuestionCategory).filter(QuestionCategory.name == category.name).first()
     if existing:
@@ -953,11 +998,6 @@ def get_all_categories(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get categories"
-        )
 
     # Solo las categorías raíz (padre None)
     root_categories = db.query(QuestionCategory).filter(QuestionCategory.parent_id == None).all()
@@ -967,11 +1007,6 @@ def get_all_categories(
 
 @router.delete("/categories/{category_id}", status_code=204)
 def delete_category(category_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
-            )
     category = db.query(QuestionCategory).filter(QuestionCategory.id == category_id).first()
     
     if not category:
@@ -993,11 +1028,6 @@ def get_all_categories_including_subcategories(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get categories"
-        )
     
     # Obtener todas las categorías (incluyendo subcategorías)
     all_categories = db.query(QuestionCategory).all()
@@ -1009,11 +1039,6 @@ def update_question_category(
     category_data: UpdateQuestionCategory,
     db: Session = Depends(get_db),current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get options"
-            )
     question = db.query(Question).filter(Question.id == question_id).first()
     if not question:
         raise HTTPException(status_code=404, detail="Pregunta no encontrada")
@@ -1067,11 +1092,6 @@ def get_questions_by_category(
     HTTPException:
         - 403: Si el usuario no está autenticado.
     """
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to get questions"
-        )
     
     # Traer preguntas filtradas por categoría
     questions = get_questions_by_category_id(db, category_id)
@@ -1216,11 +1236,6 @@ def get_answers_by_question(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to view answers"
-        )
 
     answers = get_answers_by_question_id(db, question_id)
 
@@ -1426,8 +1441,6 @@ def get_serials_for_field(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="No autorizado")
 
     relation = (
         db.query(QuestionTableRelation)
@@ -1487,8 +1500,6 @@ def get_answers_map_for_serial(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(status_code=403, detail="No autorizado")
 
     answers = (
         db.query(Answer)
@@ -1500,9 +1511,6 @@ def get_answers_map_for_serial(
         raise HTTPException(status_code=404, detail=f"No hay respuestas para el serial {response_id}")
 
     def is_useful(a) -> bool:
-        fp = getattr(a, 'file_path', None)
-        if fp and str(fp).strip():
-            return False
         txt = getattr(a, 'answer_text', None)
         if not txt or not str(txt).strip():
             return False
@@ -1618,11 +1626,6 @@ def update_question_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission"
-        )
 
     # 1. Verificar que la pregunta existe
     question = db.query(Question).filter(Question.id == question_id).first()

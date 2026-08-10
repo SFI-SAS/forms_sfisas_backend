@@ -1088,11 +1088,6 @@ def get_email_configs(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User not authenticated"
-        )
     """
     Obtiene todas las configuraciones de correo electrónico disponibles.
 
@@ -1282,11 +1277,6 @@ def create_category_endpoint(
 
 @router.get("/list_all_user/categories", response_model=List[UserCategoryResponse])
 def list_all_user_categories(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tienes permiso"
-        )
     return get_all_user_categories(db)
 
 @router.delete("/delete_user_category/{category_id}", status_code=status.HTTP_200_OK)

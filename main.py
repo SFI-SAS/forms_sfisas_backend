@@ -20,7 +20,8 @@ from app.models import Base, EmailConfig
 import app.models_audit  # noqa: F401  — registra NotificationSendLog en Base
 from app.api.endpoints import (
     alias, approvers, consultants, download_template, home_dashboard, integrations, list_form, pdf_router, profiles, projects, responses,
-    responsibilitytransfer, users, forms, auth, questions, generic_activities, security, question_requests
+    responsibilitytransfer, users, forms, auth, questions, generic_activities, security, question_requests, rut,
+    tokens
 )
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -64,14 +65,23 @@ async def _sanitized_http_exception_handler(request: _Request, exc: _StarletteHT
 
 # 1. CORS debe ir primero
 import os
-_default_origins = "https://forms.sfisas.com.co,http://localhost:4321"
+_default_origins = "https://safemetrics-sfi-dev.service.saferut.com,https://forms.sfisas.com.co,http://localhost:4321"
 _origins_env = os.getenv("CORS_ORIGINS", _default_origins)
 origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
+
+# En DESARROLLO, aceptar cualquier puerto de localhost. Astro cambia de puerto
+# solo cuando el 4321 está ocupado (4322, 4323...), y entonces el navegador
+# bloqueaba TODAS las llamadas por CORS. Peor aún: el error que se ve en consola
+# dice "CORS" aunque el fallo real sea otro, porque una respuesta 500 sin las
+# cabeceras permitidas se reporta igual. En producción no aplica: allí la lista
+# blanca sigue siendo estricta.
+_origin_regex = r"http://(localhost|127\.0\.0\.1):\d+" if os.getenv("ENV") == "development" else None
 
 # 1. CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,                     # NUNCA "*" con credentials
+    allow_origin_regex=_origin_regex,          # solo en desarrollo (localhost:*)
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "User-Agent"],
@@ -155,11 +165,20 @@ app.include_router(integrations.router, prefix="/integrations", tags=["integrati
 app.include_router(home_dashboard.router, prefix="/home", tags=["home"])
 app.include_router(security.router, prefix="/security", tags=["security"])
 app.include_router(question_requests.router, prefix="/question-requests", tags=["Question Requests"])
+app.include_router(rut.router, prefix="/rut", tags=["RUT"])
+# Tokens — fase de medición: solo mide y muestra, no bloquea nada.
+app.include_router(tokens.router, prefix="/tokens", tags=["tokens"])
 
 # ========================================
 # CREAR TABLAS
 # ========================================
 # H-BW-008: create_all solo en desarrollo. En prod usar migraciones manuales (carpeta migrations/).
+# Excepcion: tablas nuevas que deben existir siempre se crean con checkfirst=True.
+from app.models import FormRutConfig, RutSubmission
+for _tbl in (FormRutConfig.__table__, RutSubmission.__table__):
+    _tbl.create(bind=engine, checkfirst=True)
+logger.info("✅ Tablas de RUT verificadas/creadas (checkfirst)")
+
 if os.getenv("ENV") == "development":
     Base.metadata.create_all(bind=engine)
     logger.info("✅ Tablas creadas/verificadas (modo desarrollo)")
