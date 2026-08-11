@@ -3,7 +3,7 @@ import json
 from fastapi import APIRouter, Body, Depends, File, Form as FastAPIForm, HTTPException, UploadFile, status, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr, ValidationError
-from sqlalchemy import text
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app import models
@@ -12,7 +12,8 @@ from app.api.controllers.mail import send_welcome_email
 from app.api.controllers.pdf_form_exporter import FormPdfExporter, generate_form_pdf
 from app.database import get_db
 
-from app.models import Answer, EmailConfig, Form, Response, User, UserCategory, UserType
+from app.models import (Answer, EmailConfig, Form, FormModerators, Profile, ProfileCategory,
+                        ProfileForm, ProfileUser, Response, User, UserCategory, UserType)
 from app.crud import _extract_style_config, _serialize_answers, create_email_config, create_user, create_user_category, create_user_with_random_password, delete_user_category_by_id, fetch_all_users, fetch_users_selectable, generate_random_password, get_all_email_configs, get_all_user_categories, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
 from app.schemas import EmailConfigCreate, EmailConfigResponse, EmailConfigUpdate, EmailStatusUpdate, UpdateRecognitionId, UpdateUserCategory, UserAdminUpdate, UserBaseCreate, UserCategoryCreate, UserCategoryResponse, UserCreate, UserResponse, UserSelfUpdate, UserUpdate, UserUpdateInfo
 from app.core.security import get_current_user, hash_password, require_roles
@@ -1681,4 +1682,121 @@ async def get_problematic_answers(
     return {
         "total_problematic": len(problematic),
         "answers": problematic
+    }
+
+
+# ---------------------------------------------------------------------------
+# Quitar asignacion de formatos a un usuario
+# ---------------------------------------------------------------------------
+#
+# Hasta ahora quitar la asignacion era una operacion CENTRADA EN EL FORMATO:
+# DELETE /forms/{form_id}/moderators/{user_id}/delete. Para desvincular a una
+# persona de veinte formatos habia que entrar formato por formato.
+#
+# Este endpoint invierte el eje: se para en el usuario y quita varias
+# asignaciones (o todas) en una sola transaccion, para no dejar el trabajo a
+# medias si una falla.
+#
+# OJO: solo borra filas de form_moderators. Si el usuario ademas pertenece a un
+# perfil que tiene el formato asignado, va a seguir viendolo — eso se quita
+# editando el perfil, no desde aqui. La respuesta lo reporta en
+# `formatos_por_perfil` para que la interfaz pueda avisarlo.
+
+class QuitarAsignacionFormatos(BaseModel):
+    form_ids: Optional[List[int]] = None   # cuales quitar
+    todos: bool = False                    # o todas las del usuario
+
+
+@router.post("/{user_id}/remove-form-assignments")
+def remove_user_form_assignments(
+    user_id: int,
+    body: QuitarAsignacionFormatos,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """
+    Quita la asignacion de formatos de un usuario (accion de administrador).
+
+    - `todos=true` quita todas las asignaciones directas del usuario.
+    - `form_ids=[...]` quita solo esas.
+
+    Devuelve cuantas se quitaron y cuales formatos seguirian visibles por
+    pertenecer a un perfil.
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado",
+        )
+
+    if not body.todos and not body.form_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Indique 'todos' o una lista de 'form_ids'",
+        )
+
+    consulta = db.query(FormModerators).filter(FormModerators.user_id == user_id)
+    if not body.todos:
+        consulta = consulta.filter(FormModerators.form_id.in_(body.form_ids))
+
+    asignaciones = consulta.all()
+
+    # Se responde con los titulos porque la interfaz muestra un resumen de lo
+    # que se quito, y despues de borrar ya no hay de donde sacarlos.
+    quitados = [
+        {"form_id": a.form_id, "title": a.form.title if a.form else None}
+        for a in asignaciones
+    ]
+
+    for asignacion in asignaciones:
+        db.delete(asignacion)
+    db.commit()
+
+    # Aviso: acceso que sobrevive por perfil. Sin esto el administrador cree
+    # que la operacion fallo al ver que el usuario todavia tiene el formato.
+    ids_quitados = [q["form_id"] for q in quitados]
+    formatos_por_perfil = []
+    if ids_quitados:
+        # Perfiles ACTIVOS a los que pertenece el usuario. Un perfil inactivo no
+        # concede acceso, asi que avisar por el seria una falsa alarma.
+        perfil_ids = [
+            fila[0]
+            for fila in db.query(ProfileUser.profile_id)
+            .join(Profile, Profile.id == ProfileUser.profile_id)
+            .filter(
+                ProfileUser.user_id == user_id,
+                Profile.is_active.is_(True),
+            )
+            .all()
+        ]
+        if perfil_ids:
+            # Un perfil concede el formato de dos maneras: directa o por su
+            # categoria. Mismo criterio que crud.get_forms_by_user.
+            formatos_directos = select(ProfileForm.form_id).where(
+                ProfileForm.profile_id.in_(perfil_ids)
+            )
+            categorias_del_perfil = select(ProfileCategory.category_id).where(
+                ProfileCategory.profile_id.in_(perfil_ids)
+            )
+            filas = (
+                db.query(Form.id, Form.title)
+                .filter(
+                    Form.id.in_(ids_quitados),
+                    or_(
+                        Form.id.in_(formatos_directos),
+                        Form.id_category.in_(categorias_del_perfil),
+                    ),
+                )
+                .distinct()
+                .all()
+            )
+            formatos_por_perfil = [{"form_id": f[0], "title": f[1]} for f in filas]
+
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "removidos": len(quitados),
+        "formatos": quitados,
+        "formatos_por_perfil": formatos_por_perfil,
     }
