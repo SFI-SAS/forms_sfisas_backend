@@ -165,6 +165,7 @@ app.include_router(integrations.router, prefix="/integrations", tags=["integrati
 app.include_router(home_dashboard.router, prefix="/home", tags=["home"])
 app.include_router(security.router, prefix="/security", tags=["security"])
 app.include_router(question_requests.router, prefix="/question-requests", tags=["Question Requests"])
+app.include_router(rut.router, prefix="/rut", tags=["RUT"])
 # Tokens — fase de medición: solo mide y muestra, no bloquea nada.
 app.include_router(tokens.router, prefix="/tokens", tags=["tokens"])
 
