@@ -14,6 +14,7 @@ from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
 # from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
+from app.core import field_access, response_scope
 from app.models import  AnswerFileSerial, AnswerHistory, ApprovalRequirement, ApprovalStatus, BitacoraLogsSimple, CategoryApproval, EmailConfig, EstadoEvento, FormAnswer, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormSchedule, FormTemplate, GenericActivity, GenericActivityForm, PalabrasClave, Profile, ProfileCategory, ProfileForm, ProfileUser, Project, QuestionAndAnswerBitacora, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, RelationBitacora, RelationOperationMath, RelationQuestionRule, ResponseApproval, ResponseApprovalRequirement, TemplateScope, User, UserType, Form, Question, Option, Response, Answer, FormQuestion, UserCategory
 from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprovalCreateSchema, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormMovimientoBase, NotificationResponse, PalabrasClaveCreate, ProjectCreate, ResponseApprovalCreate, UpdateResponseApprovalRequest, UserBase, UserBaseCreate, UserCategoryCreate, UserCreate, OptionCreate, ResponseCreate, AnswerCreate, UserUpdate, QuestionUpdate, UserUpdateInfo
 from fastapi import HTTPException, UploadFile, status
@@ -833,7 +834,10 @@ def create_response(db: Session, response: ResponseCreate, form_id: int, user_id
     return db_response
 
 def get_responses(db: Session, form_id: int):
-    return db.query(Response).filter(Response.form_id == form_id).all()
+    # Solo diligenciamientos: las respuestas de aprobador cuelgan de ellos.
+    return response_scope.only_submissions(
+        db.query(Response).filter(Response.form_id == form_id)
+    ).all()
 
 # Answer CRUD Operations
 def create_answer(db: Session, answer: AnswerCreate, response_id: int, question_id: int):
@@ -1160,7 +1164,9 @@ async def create_answer_in_db(answer, db: Session, current_user: User, request, 
                     question_id=question_id,
                     answer_text=text,
                     file_path=answer.file_path,
-                    repeated_id=answer.repeated_id,
+                    repeated_id=getattr(answer, "repeated_id", None),
+                    repeater_row_index=getattr(answer, "repeater_row_index", None),
+                    parent_repeated_id=getattr(answer, "parent_repeated_id", None),
                     form_design_element_id=answer.form_design_element_id
                 )
                 db.add(new_answer)
@@ -1237,9 +1243,16 @@ def save_single_answer(answer, db: Session, id_relation_bitacora: int, current_u
         answer_text=answer.answer_text,
         file_path=answer.file_path,
         # ✅ NUEVO: Guardar el UUID
-        form_design_element_id=answer.form_design_element_id
+        form_design_element_id=answer.form_design_element_id,
+        # Fila del repetidor. El frontend siempre los mandó, pero el schema no
+        # los declaraba y se perdían: sin esto no se puede saber a qué fila
+        # pertenece cada dato (rompía el filtro de filas por aprobador, que
+        # tenía que reconstruirlas por posición).
+        repeated_id=getattr(answer, "repeated_id", None),
+        repeater_row_index=getattr(answer, "repeater_row_index", None),
+        parent_repeated_id=getattr(answer, "parent_repeated_id", None),
     )
-    
+
     db.add(new_answer)
 
     question = db.query(Question).filter(Question.id == answer.question_id).first()
@@ -1294,7 +1307,9 @@ def check_form_data(db: Session, form_id: int):
     if not form:
         raise HTTPException(status_code=404, detail="Form not found")
     
-    responses = db.query(Response).filter(Response.form_id == form_id).all()
+    responses = response_scope.only_submissions(
+        db.query(Response).filter(Response.form_id == form_id)
+    ).all()
     answers = db.query(Answer).join(Response).filter(Response.form_id == form_id).all()
     questions = db.query(Question).all()
     
@@ -3528,8 +3543,9 @@ def get_questions_and_answers_by_form_id(db: Session, form_id: int):
     # Traer preguntas relacionadas al formulario
     questions = db.query(Question).join(Form.questions).filter(Form.id == form_id).all()
 
-    # Traer respuestas, con usuario y respuestas anidadas
-    responses = db.query(Response).filter(Response.form_id == form_id)\
+    # Traer respuestas, con usuario y respuestas anidadas.
+    # Solo diligenciamientos: las de aprobador cuelgan de ellos.
+    responses = response_scope.only_submissions(db.query(Response).filter(Response.form_id == form_id))\
         .options(
             joinedload(Response.answers).joinedload(Answer.question),
             joinedload(Response.user)
@@ -3583,7 +3599,8 @@ def get_questions_and_answers_by_form_id_and_user(db: Session, form_id: int, use
 
     questions = db.query(Question).join(Form.questions).filter(Form.id == form_id).all()
 
-    responses = db.query(Response).filter(Response.form_id == form_id, Response.user_id == user_id)\
+    # Solo diligenciamientos: las de aprobador cuelgan de ellos.
+    responses = response_scope.only_submissions(db.query(Response).filter(Response.form_id == form_id, Response.user_id == user_id))\
         .options(
             joinedload(Response.answers).joinedload(Answer.question),
             joinedload(Response.user)
@@ -3930,7 +3947,8 @@ def get_all_user_responses_by_form_id(db: Session, form_id: int):
     # Crear mapeo de question_id -> question para acceso rápido
     question_map = {q.id: q for q in questions}
 
-    responses = db.query(Response).filter(Response.form_id == form_id)\
+    # Solo diligenciamientos: las de aprobador cuelgan de ellos.
+    responses = response_scope.only_submissions(db.query(Response).filter(Response.form_id == form_id))\
         .options(
             joinedload(Response.answers).joinedload(Answer.question),
             joinedload(Response.user)
@@ -4185,6 +4203,12 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
     for form_approval in form_approvals:
         form = form_approval.form
 
+        # Config de campos/filas de ESTE aprobador en ESTE formato. Decide qué
+        # answers se le envían y qué filas del repetidor le llegan.
+        # Sin config → ve todo en solo lectura (comportamiento de siempre).
+        fa_config = field_access.load_field_access(db, form.id).get(user_id)
+        fa_design = field_access.collect_design(form.form_design) if fa_config else None
+
         # Obtener requisitos de aprobación para este formulario y usuario
         approval_requirements = (
             db.query(ApprovalRequirement)
@@ -4208,7 +4232,9 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 joinedload(Response.user),
                 joinedload(Response.approvals).joinedload(ResponseApproval.user),
             )
-            .filter(Response.form_id == form.id)
+            # Solo diligenciamientos: las respuestas de los aprobadores cuelgan
+            # de estas y se leen junto con ellas, no como respuestas aparte.
+            .filter(Response.form_id == form.id, Response.parent_response_id.is_(None))
             .all()
         )
 
@@ -4313,11 +4339,18 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
             # (reutilizamos la lista ya ordenada y precargada).
             response_approvals_all = all_ra_sorted
 
-            # Obtener respuestas actuales (excluyendo las que son previous_answer_ids)
+            # Obtener respuestas actuales (excluyendo las que son previous_answer_ids).
+            # Se lee la respuesta COMPLETA: la del diligenciador más las de sus
+            # aprobadores, que son responses propias colgadas de esta. Cada dato
+            # llega con su autor (answered_by_user_id).
             answers = db.query(Answer, Question).join(Question).filter(
-                Answer.response_id == response.id,
+                Answer.response_id.in_(response_scope.response_tree_ids(db, response.id)),
                 ~Answer.id.in_(previous_answer_ids) if previous_answer_ids else True
             ).all()
+
+            # Nombre de los posibles autores distintos al diligenciador: solo
+            # los aprobadores escriben answers con answered_by_user_id.
+            approver_names = {ra.user_id: ra.user.name for ra in all_ra_sorted if ra.user}
 
             answers_data = []
             for a, q in answers:
@@ -4328,9 +4361,22 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                     "answer_text": a.answer_text,
                     "file_path": a.file_path,
                     "answer_id": a.id,
-                    "has_history": a.id in history_map
+                    "has_history": a.id in history_map,
+                    # Ubicación en el diseño y en el repetidor. El renderer ya
+                    # sabía leerlos; antes no se enviaban y caía al fallback
+                    # posicional. Son necesarios para filtrar filas por aprobador.
+                    "form_design_element_id": a.form_design_element_id,
+                    "repeated_id": a.repeated_id,
+                    "repeater_row_index": a.repeater_row_index,
+                    "parent_repeated_id": a.parent_repeated_id,
+                    # Autoría: NULL = lo escribió quien diligenció el formato.
+                    "answered_by_user_id": a.answered_by_user_id,
+                    "answered_by_name": approver_names.get(a.answered_by_user_id),
+                    # Cuándo lo escribió el aprobador (NULL en lo del diligenciador,
+                    # que se fecha por Response.submitted_at).
+                    "answered_at": a.answered_at.isoformat() if a.answered_at else None,
                 }
-                
+
                 # Agregar información del historial si existe
                 if a.id in history_map:
                     history = history_map[a.id]
@@ -4350,6 +4396,24 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                     }
                 
                 answers_data.append(answer_data)
+
+            # Recorte por aprobador: fuera los campos que no debe ver y fuera
+            # las filas del repetidor que no pasan su filtro. Se hace aquí, en
+            # el servidor, no en el cliente.
+            condition_visibility = {}
+            if fa_config and fa_design is not None:
+                visible_answers = field_access.filter_answers_for_approver(
+                    answers_data, fa_config, fa_design
+                )
+                # Los campos condicionales se evalúan contra la pregunta que los
+                # condiciona; si a este aprobador se le ocultó ESA pregunta, el
+                # cliente ya no puede resolverlo y los borraría de la vista. El
+                # veredicto se calcula aquí, con las respuestas completas, y se
+                # manda resuelto (el valor oculto no sale del servidor).
+                condition_visibility = field_access.condition_visibility_for_approver(
+                    form.form_design, fa_design, answers_data, visible_answers, fa_config
+                )
+                answers_data = visible_answers
 
             all_approvals = [{
                 "user_id": ra.user_id,
@@ -4436,6 +4500,10 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 "response_id": response.id,
                 "submitted_at": response.submitted_at.isoformat(),
                 "answers": answers_data,
+                # Condiciones ya resueltas por el servidor (solo las que este
+                # aprobador no puede evaluar con lo que se le envía). Vacío =
+                # las evalúa el cliente como siempre.
+                "condition_visibility": condition_visibility,
                 "your_approval_status": {
                     "status": response_approval.status.value,
                     "reviewed_at": response_approval.reviewed_at.isoformat() if response_approval.reviewed_at else None,
@@ -5459,7 +5527,14 @@ async def update_response_approval_status(
     from app.database import SessionLocal
     from fastapi import HTTPException
     from datetime import datetime
-    
+
+    # 0. Resolver primero a los aprobadores que quedaron sin filas que revisar.
+    # Se hace también aquí (no solo al enviar) porque hay formatos que crean sus
+    # aprobaciones por otras rutas —los cerrados, por ejemplo— y si no, la
+    # cadena se quedaría esperando a alguien que no tiene nada que hacer.
+    # Es idempotente y no-op si el formato no usa filtros por aprobador.
+    field_access.auto_resolve_empty_approvals(db, response_id)
+
     # 1. Buscar el ResponseApproval correspondiente
     response_approval = db.query(ResponseApproval).filter(
         ResponseApproval.response_id == response_id,
@@ -6663,8 +6738,10 @@ def analyze_form_relations(db: Session, form_id: int):
             "description": form.description
         }
     
-    # Respuestas del formulario
-    responses = db.query(Response).filter(Response.form_id == form_id).all()
+    # Respuestas del formulario (solo diligenciamientos)
+    responses = response_scope.only_submissions(
+        db.query(Response).filter(Response.form_id == form_id)
+    ).all()
     if responses:
         relations["responses"] = {
             "count": len(responses),
@@ -7986,7 +8063,8 @@ def get_all_user_responses_by_form_id_improved(db: Session, form_id: int):
     questions = db.query(Question).join(Form.questions).filter(Form.id == form_id).all()
     question_map = {q.id: q for q in questions}
 
-    responses = db.query(Response).filter(Response.form_id == form_id)\
+    # Solo diligenciamientos: las de aprobador cuelgan de ellos.
+    responses = response_scope.only_submissions(db.query(Response).filter(Response.form_id == form_id))\
         .options(
             joinedload(Response.answers).joinedload(Answer.question),
             joinedload(Response.user)

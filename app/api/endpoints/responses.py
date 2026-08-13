@@ -15,6 +15,7 @@ from app.database import get_db
 from app.schemas import UpdateMathOperationRequest, AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, GetQuestionTextsRequest, GetQuestionTextsResponse, PalabrasClaveCreate, PalabrasClaveOut, PalabrasClaveUpdate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, QuestionTextValue, RegisfacialAnswerResponse, RelationOperationMathCreate, RelationOperationMathOut, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
 from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, BitacoraLogsSimple, ClasificacionBitacoraRelacion, Form, FormAnswerEditor, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionType, RelationBitacora, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, UploadedFile, User, UserType
 from app.core.security import get_current_user, require_roles
+from app.core import field_access
 from typing import Dict
 from sqlalchemy import delete, cast, Text as SAText
 from app.redis_client import redis_client
@@ -168,6 +169,11 @@ async def create_answer(
     # vivir en los endpoints de edición real (update-answer / delete answers),
     # no en la creación. Ver _enforce_edit_permission().
 
+    # Config de campos por aprobador, cacheada por formato dentro del request:
+    # un envío trae muchas answers del mismo formato y no vale la pena volver a
+    # consultarla por cada una.
+    field_access_cache: dict = {}
+
     # Procesar cada respuesta
     for answer in answers_list:
         # Obtener formato del formulario
@@ -178,6 +184,21 @@ async def create_answer(
         form = db.query(Form).filter(Form.id == response.form_id).first()
         if not form:
             raise HTTPException(status_code=404, detail="Form not found")
+
+        # SEGURIDAD: los campos que llena un aprobador no los puede escribir
+        # quien diligencia. La UI se los oculta, pero el guard real va acá: el
+        # aprobador escribe por /approvers/field-answers/{response_id}, que
+        # además marca la autoría.
+        element_id = getattr(answer, "form_design_element_id", None)
+        if element_id:
+            if form.id not in field_access_cache:
+                field_access_cache[form.id] = field_access.load_field_access(db, form.id)
+            owner_id = field_access.owner_of_element(field_access_cache[form.id], element_id)
+            if owner_id is not None and owner_id != current_user.id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Ese campo lo responde un aprobador del formato, no quien lo diligencia"
+                )
 
         # REGLA SIMPLE:
         # - Cerrado = siempre enviar emails
@@ -281,6 +302,11 @@ async def close_response(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al cerrar la respuesta. Cambios revertidos"
         )
+
+    # Aprobadores con filtro de filas a los que esta respuesta no les dejó
+    # ninguna fila: se resuelven solos para que la cadena no quede esperando.
+    # No-op si el formato no usa filtros por aprobador.
+    field_access.auto_resolve_empty_approvals(db, response_id)
 
     # Enviar notificaciones
     send_mails_to_next_supporters(response_id, db)

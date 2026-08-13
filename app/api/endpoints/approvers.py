@@ -2,18 +2,19 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Literal, Optional, Tuple
 import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field as PydanticField
 from sqlalchemy import and_
 from sqlalchemy.orm import Session, joinedload
 from app.crud import get_forms_by_approver, save_form_approvals, update_response_approval_status
 from app.database import get_db
 from app.core.security import get_current_user, require_roles
+from app.core import field_access, response_scope
 import pandas as pd
-from app.models import Answer, AnswerHistory, ApprovalRequirement, ApprovalStatus, Form, FormApproval, Question, Response, ResponseApproval, ResponseApprovalRequirement, User, UserType
+from app.models import Answer, AnswerHistory, ApprovalRequirement, ApprovalStatus, Form, FormApproval, FormApprovalFieldAccess, Question, Response, ResponseApproval, ResponseApprovalRequirement, User, UserType
 from app.schemas import ApprovalRequirementsCreateSchema, BulkUpdateFormApprovals, FormApprovalCreateSchema, FormWithApproversResponse, RequiredFormsResponse, ResponseDetailInfo, UpdateResponseApprovalRequest
 from fastapi import Form as FastAPIForm 
 import logging
@@ -1882,4 +1883,568 @@ def list_pending_responses(
             }
             for ra, resp, form_title in rows
         ]
+    }
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Campos y filas por aprobador
+# ─────────────────────────────────────────────────────────────────────────────
+# Un formato puede tener campos que NO llena quien lo diligencia sino uno de sus
+# aprobadores, y campos que un aprobador no debe ver. Además, cada repetidor
+# puede filtrarse por aprobador (ej. "solo las filas de Contado").
+#
+# La config vive por (formato, usuario aprobador) en form_approval_field_access.
+# Se administra desde "Administrar aprobadores" → "Configurar campos".
+#
+# Default sin config: 'read' (ve todo en solo lectura), que es como se comportó
+# el sistema siempre. Solo se persisten las reglas que difieren del default.
+# ═════════════════════════════════════════════════════════════════════════════
+
+class FieldAccessRuleSchema(BaseModel):
+    element_id: str
+    question_id: Optional[int] = None
+    mode: Literal["hidden", "read", "edit"]
+
+
+class RowFilterSchema(BaseModel):
+    repeater_id: str
+    element_id: str
+    question_id: Optional[int] = None
+    values: List[str] = PydanticField(default_factory=list)
+
+
+class ApproverFieldAccessSchema(BaseModel):
+    rules: List[FieldAccessRuleSchema] = PydanticField(default_factory=list)
+    row_filters: List[RowFilterSchema] = PydanticField(default_factory=list)
+
+
+class FieldAccessUpdateSchema(BaseModel):
+    """Mapa user_id → config. Reemplaza la config completa del formato."""
+    access: Dict[int, ApproverFieldAccessSchema] = PydanticField(default_factory=dict)
+
+
+@router.get("/field-access/form/{form_id}")
+def get_form_field_access(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator]))
+):
+    """Devuelve la config de campos/filas de todos los aprobadores del formato.
+
+    Formato de salida: {"access": {"<user_id>": {"rules": [...], "row_filters": [...]}}}
+    Un aprobador sin fila simplemente no aparece: ve todo en solo lectura.
+    """
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    rows = (
+        db.query(FormApprovalFieldAccess)
+        .filter(FormApprovalFieldAccess.form_id == form_id)
+        .all()
+    )
+
+    access = {}
+    for row in rows:
+        config = row.config
+        # AutoJSON ya deserializa, pero una fila escrita a mano puede traer str.
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except (ValueError, TypeError):
+                config = {}
+        access[str(row.user_id)] = config or {"rules": [], "row_filters": []}
+
+    return {"access": access}
+
+
+@router.put("/field-access/form/{form_id}")
+def update_form_field_access(
+    form_id: int,
+    data: FieldAccessUpdateSchema,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator]))
+):
+    """Reemplaza la config de campos/filas de los aprobadores del formato.
+
+    El payload trae la config completa: los usuarios que no vengan quedan sin
+    config (borrados), que es lo que debe pasar al quitar un aprobador o al
+    dejarlo en el comportamiento por defecto.
+    """
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    # Solo se acepta config para quien es aprobador activo del formato: evita
+    # dejar reglas colgando de usuarios que no participan en el flujo.
+    approver_ids = {
+        row.user_id
+        for row in db.query(FormApproval.user_id)
+        .filter(FormApproval.form_id == form_id, FormApproval.is_active == True)
+        .all()
+    }
+
+    incoming = {}
+    for user_id, config in data.access.items():
+        if user_id not in approver_ids:
+            raise HTTPException(
+                status_code=422,
+                detail=f"El usuario {user_id} no es aprobador activo de este formato"
+            )
+        incoming[user_id] = config.model_dump()
+
+    existing = {
+        row.user_id: row
+        for row in db.query(FormApprovalFieldAccess)
+        .filter(FormApprovalFieldAccess.form_id == form_id)
+        .all()
+    }
+
+    for user_id, config in incoming.items():
+        row = existing.get(user_id)
+        if row:
+            row.config = config
+        else:
+            db.add(FormApprovalFieldAccess(
+                form_id=form_id,
+                user_id=user_id,
+                config=config
+            ))
+
+    for user_id, row in existing.items():
+        if user_id not in incoming:
+            db.delete(row)
+
+    db.commit()
+
+    return {"ok": True, "configured_approvers": len(incoming)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Respuestas del aprobador
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ApproverAnswerItem(BaseModel):
+    """Una respuesta escrita por el aprobador sobre un campo suyo."""
+    element_id: str
+    answer_text: Optional[str] = None
+    # Fila del repetidor a la que pertenece. Ausente en campos sueltos.
+    repeated_id: Optional[str] = None
+    repeater_row_index: Optional[int] = None
+
+
+class ApproverAnswersSchema(BaseModel):
+    answers: List[ApproverAnswerItem] = PydanticField(default_factory=list)
+
+
+@router.post("/field-answers/{response_id}")
+def save_approver_field_answers(
+    response_id: int,
+    data: ApproverAnswersSchema,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Guarda las respuestas que el aprobador escribe sobre SUS campos.
+
+    Van a la misma Response del diligenciador, marcadas con
+    `answered_by_user_id` para poder distinguir después quién respondió qué.
+
+    Valida, en el servidor:
+      · que quien llama sea aprobador de esta respuesta y siga pendiente
+      · que cada campo esté en modo `edit` para él (no puede escribir en los
+        campos de otro aprobador ni en los del diligenciador)
+      · que la fila del repetidor pase su filtro (no puede responder sobre una
+        fila que ni siquiera debería estar viendo)
+    """
+    response = db.query(Response).filter(Response.id == response_id).first()
+    if not response:
+        raise HTTPException(status_code=404, detail="Respuesta no encontrada")
+
+    approval = (
+        db.query(ResponseApproval)
+        .filter(
+            ResponseApproval.response_id == response_id,
+            ResponseApproval.user_id == current_user.id,
+        )
+        .first()
+    )
+    if not approval:
+        raise HTTPException(
+            status_code=403, detail="No eres aprobador de esta respuesta"
+        )
+    if approval.status != ApprovalStatus.pendiente:
+        raise HTTPException(
+            status_code=409,
+            detail="Ya tomaste una decisión sobre esta respuesta; sus campos quedaron cerrados"
+        )
+
+    form = db.query(Form).filter(Form.id == response.form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    config = field_access.load_field_access(db, form.id).get(current_user.id)
+    if not config:
+        raise HTTPException(
+            status_code=422,
+            detail="Este aprobador no tiene campos asignados en este formato"
+        )
+
+    design = field_access.collect_design(form.form_design)
+    editable = field_access.elements_with_mode(config, field_access.EDIT)
+    filters = {f["repeater_id"]: f for f in field_access.row_filters(config)}
+
+    # Filas visibles para este aprobador, calculadas sobre lo que ya está
+    # guardado (lo que escribió quien diligenció el formato).
+    existing_answers = db.query(Answer).filter(Answer.response_id == response_id).all()
+    allowed_rows = {
+        repeater_id: field_access.passing_row_keys(existing_answers, row_filter, design)
+        for repeater_id, row_filter in filters.items()
+    }
+
+    # La respuesta PROPIA de este aprobador sobre esta respuesta. Sus datos van
+    # ahí, no en la del diligenciador, que queda exactamente como la mandó.
+    from app.models import ResponseStatus
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    my_response = response_scope.include_approver_responses(
+        db.query(Response).filter(
+            Response.parent_response_id == response_id,
+            Response.user_id == current_user.id,
+        )
+    ).first()
+    if not my_response:
+        # mode_sequence es NOT NULL y se numera por modo, igual que al crear una
+        # respuesta normal.
+        ultima = (
+            db.query(Response)
+            .filter(Response.mode == "approver")
+            .order_by(Response.mode_sequence.desc())
+            .first()
+        )
+        my_response = Response(
+            form_id=form.id,
+            user_id=current_user.id,
+            mode="approver",
+            mode_sequence=(ultima.mode_sequence + 1) if ultima else 1,
+            parent_response_id=response_id,
+            status=ResponseStatus.submitted,
+            submitted_at=now,
+        )
+        db.add(my_response)
+        db.flush()  # necesitamos su id para las answers
+
+    # Lo que ya haya escrito ANTES este aprobador, para corregirlo en vez de
+    # duplicarlo. Vive en su propia respuesta.
+    my_answers = (
+        db.query(Answer).filter(Answer.response_id == my_response.id).all()
+        if my_response.id else []
+    )
+
+    saved = 0
+    for item in data.answers:
+        if item.element_id not in editable:
+            raise HTTPException(
+                status_code=403,
+                detail=f"El campo {item.element_id} no te pertenece en este formato"
+            )
+
+        question_id = design.question_of_element.get(item.element_id)
+        if not question_id:
+            raise HTTPException(
+                status_code=422,
+                detail=f"El campo {item.element_id} ya no existe en el diseño del formato"
+            )
+
+        repeater_id = design.repeater_of_element.get(item.element_id)
+        if repeater_id and repeater_id in allowed_rows:
+            # Misma clave que usa el filtro: el par (repeated_id, índice). El
+            # cliente manda `pos-N` como índice cuando la fila se reconstruyó
+            # por posición, que es como está guardado casi todo.
+            row_key = field_access.row_key(item.repeated_id, item.repeater_row_index)
+            if row_key not in allowed_rows[repeater_id]:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Esa fila no corresponde a las que puedes revisar"
+                )
+
+        # Upsert sobre lo que ESTE aprobador ya haya escrito en ese campo/fila.
+        # Se busca solo dentro de SU respuesta: la del diligenciador no se toca.
+        def _same_row(answer) -> bool:
+            # La fila son sus dos partes; con `pos-N` solo llega el índice.
+            return field_access.row_key(
+                answer.repeated_id, answer.repeater_row_index
+            ) == field_access.row_key(item.repeated_id, item.repeater_row_index)
+
+        existing = next(
+            (
+                a for a in my_answers
+                if a.form_design_element_id == item.element_id and _same_row(a)
+            ),
+            None
+        )
+
+        if existing:
+            existing.answer_text = item.answer_text
+            existing.answered_at = now
+        else:
+            new_answer = Answer(
+                response_id=my_response.id,
+                question_id=question_id,
+                answer_text=item.answer_text,
+                form_design_element_id=item.element_id,
+                repeated_id=item.repeated_id,
+                repeater_row_index=item.repeater_row_index,
+                answered_by_user_id=current_user.id,
+                answered_at=now,
+            )
+            db.add(new_answer)
+            my_answers.append(new_answer)
+        saved += 1
+
+    db.commit()
+    return {
+        "ok": True,
+        "saved": saved,
+        "approver_response_id": my_response.id,
+        "answered_at": now.isoformat(),
+    }
+
+
+@router.get("/my-participations")
+def get_my_approver_participations(
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Mis respuestas como aprobador: lo que llené sobre respuestas de otros.
+
+    Cada elemento es una respuesta MÍA (`Response` con `parent_response_id`): el
+    formato, quién diligenció la respuesta original, cuándo la respondí y qué
+    escribí. No devuelve nada del diligenciador ni de los demás aprobadores.
+
+    Alimenta la vista "Lo que respondí como aprobador" de Consultar respuestas.
+    """
+    participations = response_scope.include_approver_responses(
+        db.query(Response)
+        .options(
+            joinedload(Response.form),
+            joinedload(Response.parent_response).joinedload(Response.user),
+        )
+        .filter(
+            Response.user_id == current_user.id,
+            Response.parent_response_id.isnot(None),
+        )
+        .order_by(Response.submitted_at.desc())
+        .limit(max(1, min(limit, 500)))
+    ).all()
+    if not participations:
+        return {"participations": []}
+
+    # Mis answers de todas esas respuestas, de una sola consulta.
+    my_answers = (
+        db.query(Answer)
+        .filter(Answer.response_id.in_([p.id for p in participations]))
+        .all()
+    )
+    answers_by_participation: Dict[int, List[Answer]] = {}
+    for answer in my_answers:
+        answers_by_participation.setdefault(answer.response_id, []).append(answer)
+
+    # Estado de mi aprobación sobre cada respuesta original.
+    approvals = (
+        db.query(ResponseApproval)
+        .filter(
+            ResponseApproval.response_id.in_([p.parent_response_id for p in participations]),
+            ResponseApproval.user_id == current_user.id,
+        )
+        .all()
+    )
+    approval_by_response = {a.response_id: a for a in approvals}
+
+    # Numeración de filas del repetidor: el orden en que aparecen los
+    # repeated_id entre TODAS las answers de la respuesta, para que "fila 2"
+    # signifique lo mismo que en la tabla que se ve arriba.
+    design_cache: Dict[int, object] = {}
+    rows_cache: Dict[int, Dict[str, int]] = {}
+
+    def design_of(form) -> object:
+        if form.id not in design_cache:
+            design_cache[form.id] = field_access.collect_design(form.form_design)
+        return design_cache[form.id]
+
+    def row_numbers(parent_id: int, design) -> Dict[Tuple, int]:
+        """Nº de fila de cada clave de fila, contando sobre la respuesta COMPLETA
+        (la del diligenciador más las de sus aprobadores) para que "fila 2"
+        signifique lo mismo que en la tabla que se ve arriba."""
+        if parent_id in rows_cache:
+            return rows_cache[parent_id]
+
+        todas = (
+            db.query(Answer)
+            .filter(Answer.response_id.in_(response_scope.response_tree_ids(db, parent_id)))
+            .order_by(Answer.id)
+            .all()
+        )
+        numbers: Dict[Tuple, int] = {}
+        for repeater in design.repeaters:
+            claves = field_access.build_row_keys(todas, repeater["id"], design)
+            orden: List[Tuple] = []
+            for a in todas:
+                key = claves.get(id(a))
+                if key is not None and key not in orden:
+                    orden.append(key)
+                    numbers[key] = len(orden)
+        rows_cache[parent_id] = numbers
+        return numbers
+
+    result = []
+    for participation in participations:
+        form = participation.form
+        design = design_of(form)
+        labels = {f["element_id"]: f["label"] for f in design.fields}
+        repeater_labels = {r["id"]: r["label"] for r in design.repeaters}
+        numbers = row_numbers(participation.parent_response_id, design)
+
+        items = []
+        for answer in sorted(
+            answers_by_participation.get(participation.id, []), key=lambda a: a.id
+        ):
+            element_id = answer.form_design_element_id
+            repeater_id = design.repeater_of_element.get(element_id)
+            context = None
+            if repeater_id:
+                name = repeater_labels.get(repeater_id, "Repetidor")
+                number = numbers.get(
+                    field_access.row_key(answer.repeated_id, answer.repeater_row_index)
+                )
+                context = f"{name} · fila {number}" if number else name
+
+            items.append({
+                "element_id": element_id,
+                "question_id": answer.question_id,
+                "label": labels.get(element_id) or f"Campo {answer.question_id}",
+                "value": answer.answer_text,
+                "context": context,
+                "answered_at": answer.answered_at.isoformat() if answer.answered_at else None,
+            })
+
+        approval = approval_by_response.get(participation.parent_response_id)
+        original = participation.parent_response
+        # Última corrección: la fecha del dato más reciente que escribí.
+        fechas = [a.answered_at for a in answers_by_participation.get(participation.id, []) if a.answered_at]
+        ultima = max(fechas) if fechas else None
+
+        result.append({
+            "id": participation.id,
+            "response_id": participation.parent_response_id,
+            "form_id": form.id,
+            "form_title": form.title,
+            "submitted_at": participation.submitted_at.isoformat(),
+            "updated_at": ultima.isoformat() if ultima else None,
+            # De quién es la respuesta sobre la que trabajé.
+            "response_submitted_by": {
+                "user_id": original.user.id,
+                "name": original.user.name,
+            } if original and original.user else None,
+            "response_submitted_at": original.submitted_at.isoformat() if original else None,
+            "my_approval_status": approval.status.value if approval else None,
+            "answers": items,
+        })
+
+    return {"participations": result}
+
+
+@router.get("/my-participations/{response_id}")
+def get_my_participation_detail(
+    response_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """El formato COMPLETO de una respuesta en la que participé como aprobador.
+
+    Devuelve el diseño (sin los campos que no puedo ver) y todas las respuestas
+    —las de quien diligenció y las de cada aprobador— con el autor de cada una,
+    para poder mostrar en el mismo formato quién respondió qué y qué respondí yo.
+
+    Solo se puede pedir si soy aprobador de esa respuesta.
+    """
+    original = db.query(Response).filter(Response.id == response_id).first()
+    if not original or original.parent_response_id is not None:
+        raise HTTPException(status_code=404, detail="Respuesta no encontrada")
+
+    approval = (
+        db.query(ResponseApproval)
+        .filter(
+            ResponseApproval.response_id == response_id,
+            ResponseApproval.user_id == current_user.id,
+        )
+        .first()
+    )
+    if not approval:
+        raise HTTPException(
+            status_code=403, detail="No eres aprobador de esta respuesta"
+        )
+
+    form = db.query(Form).filter(Form.id == original.form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    config = field_access.load_field_access(db, form.id).get(current_user.id)
+    design = field_access.collect_design(form.form_design)
+
+    # Nombres de todos los que pudieron escribir algo en esta respuesta.
+    autores = {
+        ra.user_id: ra.user.name
+        for ra in db.query(ResponseApproval)
+        .options(joinedload(ResponseApproval.user))
+        .filter(ResponseApproval.response_id == response_id)
+        .all()
+        if ra.user
+    }
+
+    filas = (
+        db.query(Answer, Question)
+        .join(Question)
+        .filter(Answer.response_id.in_(response_scope.response_tree_ids(db, response_id)))
+        .all()
+    )
+
+    answers_data = [{
+        "question_id": q.id,
+        "question_text": q.question_text,
+        "question_type": q.question_type,
+        "answer_text": a.answer_text,
+        "file_path": a.file_path,
+        "answer_id": a.id,
+        "form_design_element_id": a.form_design_element_id,
+        "repeated_id": a.repeated_id,
+        "repeater_row_index": a.repeater_row_index,
+        "parent_repeated_id": a.parent_repeated_id,
+        "answered_by_user_id": a.answered_by_user_id,
+        "answered_by_name": autores.get(a.answered_by_user_id),
+        "answered_at": a.answered_at.isoformat() if a.answered_at else None,
+    } for a, q in filas]
+
+    visibles = field_access.filter_answers_for_approver(answers_data, config, design)
+    veredictos = field_access.condition_visibility_for_approver(
+        form.form_design, design, answers_data, visibles, config
+    )
+
+    ocultos = field_access.elements_with_mode(config, field_access.HIDDEN)
+    diseno = field_access.strip_elements(form.form_design, ocultos)
+
+    return {
+        "form": {"id": form.id, "title": form.title, "description": form.description},
+        "response": {
+            "id": original.id,
+            "submitted_at": original.submitted_at.isoformat(),
+            "submitted_by": {
+                "user_id": original.user.id,
+                "name": original.user.name,
+            } if original.user else None,
+        },
+        "my_approval_status": approval.status.value,
+        "form_design": diseno,
+        "answers": visibles,
+        "condition_visibility": veredictos,
     }

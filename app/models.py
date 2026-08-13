@@ -286,6 +286,20 @@ class Response(Base):
     submitted_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     status = Column(Enum(ResponseStatus), default=ResponseStatus.draft, nullable=False)
     sync_pendiente = Column(Boolean, default=False, nullable=False)
+    # Respuesta que ESTA responde. NULL = diligenciamiento normal.
+    #
+    # Cuando un aprobador llena sus campos, no se toca la respuesta de quien
+    # diligenció: se le crea una respuesta propia colgada de ella. Al mostrar el
+    # formato se unen las dos y cada dato lleva su autor.
+    #
+    # OJO: una respuesta hija NO es un diligenciamiento. Todo listado o conteo
+    # de respuestas por formato debe excluirlas (ver `solo_diligenciamientos`).
+    parent_response_id = Column(
+        BigInteger, ForeignKey('responses.id', ondelete='CASCADE'), nullable=True
+    )
+    parent_response = relationship(
+        'Response', remote_side=[id], backref='approver_responses'
+    )
     form = relationship('Form', back_populates='responses')
     user = relationship('User', back_populates='responses')
     answers = relationship('Answer', back_populates='response')
@@ -312,8 +326,19 @@ class Answer(Base):
     repeated_id = Column(String(80), nullable=True)
     repeater_row_index = Column(Integer, nullable=True)
     parent_repeated_id = Column(String(80), nullable=True)
+    # Autor real de la respuesta. NULL = la escribió quien diligenció el formato
+    # (Response.user_id), que es el caso de siempre. Se llena solo cuando un
+    # aprobador responde un campo que le pertenece (ver form_approval_field_access).
+    # Es lo que permite distinguir "del formato / de otros / mío" al visualizar.
+    answered_by_user_id = Column(
+        BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True
+    )
+    # Cuándo se escribió. Solo se llena en las answers de aprobador: las del
+    # diligenciador se fechan por Response.submitted_at, como siempre.
+    answered_at = Column(TIMESTAMP(timezone=True), nullable=True)
 
     response = relationship('Response', back_populates='answers')
+    answered_by = relationship('User', foreign_keys=[answered_by_user_id])
     question = relationship('Question', back_populates='answers')
     file_serial = relationship('AnswerFileSerial', back_populates='answer', uselist=False, cascade='all, delete-orphan')
 
@@ -436,6 +461,39 @@ class FormApproval(Base):
     form = relationship("Form", backref="approval_template")
     user = relationship("User", backref="forms_to_approve")
     firm_source_question = relationship("Question", foreign_keys=[firm_source_question_id])
+
+class FormApprovalFieldAccess(Base):
+    """Qué campos ve/llena cada aprobador de un formato, y qué filas del
+    repetidor le llegan.
+
+    Una fila por (formato, usuario aprobador). `config` es el JSON que arma la
+    pantalla "Campos del aprobador":
+
+        {
+          "rules": [ {"element_id": "...", "question_id": 12, "mode": "edit"} ],
+          "row_filters": [ {"repeater_id": "...", "element_id": "...",
+                            "question_id": 34, "values": ["Contado"]} ]
+        }
+
+    Modos: 'hidden' | 'read' | 'edit'. Solo se guardan las reglas que difieren
+    del default ('read'), así que un formato sin fila aquí se comporta igual que
+    antes de esta feature.
+    """
+    __tablename__ = 'form_approval_field_access'
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    config = Column(AutoJSON, nullable=False, default=dict)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), onupdate=func.now(), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint('form_id', 'user_id', name='uq_form_approval_field_access'),
+    )
+
+    form = relationship("Form")
+    user = relationship("User")
+
 
 class ResponseApproval(Base):
     __tablename__ = 'response_approvals'

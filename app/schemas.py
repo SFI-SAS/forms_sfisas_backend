@@ -229,10 +229,21 @@ class ProjectResponse(ProjectCreate):
     
 class PostCreate(BaseModel):
     response_id: int
-    question_id: Union[int, str]  
+    question_id: Union[int, str]
     answer_text: str | None = None
     file_path: str | None = None
-    form_design_element_id: Optional[str] = None 
+    form_design_element_id: Optional[str] = None
+    # Fila del repetidor a la que pertenece la answer. El frontend SIEMPRE los
+    # mandó; hasta el 2026-08-12 no estaban declarados aquí y Pydantic los
+    # descartaba, así que todo lo diligenciado desde el web quedaba sin
+    # identidad de fila y había que reconstruirla por posición.
+    # `repeated_id` es el id del REPETIDOR (igual en todas las filas) y
+    # `repeater_row_index` es la fila; el móvil, en cambio, manda un
+    # `repeated_id` propio por fila. Ambas convenciones conviven.
+    repeated_id: Optional[str] = None
+    repeater_row_index: Optional[int] = None
+    parent_repeated_id: Optional[str] = None
+    parent_row_index: Optional[int] = None
 
     
 class FormScheduleCreate(BaseModel):

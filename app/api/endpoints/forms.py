@@ -19,6 +19,7 @@ from app.models import Answer, AnswerHistory, ApprovalStatus, CategoryApproval, 
 from app.crud import  _extract_style_config, _serialize_answers, add_category_approver, analyze_form_relations, apply_template_service, bulk_save_category_approvers, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, create_template_service, delete_form, delete_form_category, delete_template_service, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_categories_with_approvers, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_approvals, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_template_detail_service, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, list_templates_service, move_category, process_regisfacial_answer, remove_category_approver, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, sync_form_approvals_from_category, toggle_form_status, update_category_approver, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status, update_template_service, update_form_movimiento
 from app.schemas import AlertMessageRequest, AnswerEditorsConfigOut, AnswerEditorsConfigUpdate, AnswerEditorUserOut, CategoryApprovalBulkSave, CategoryApprovalCreate, CategoryApprovalResponse, CategoryApprovalUpdate, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, FormTemplateCreate, FormTemplateDetail, FormTemplateResponse, FormTemplateUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user, require_roles
+from app.core import field_access
 from io import BytesIO
 import pandas as pd
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -578,15 +579,29 @@ def get_form_endpoint(
 @router.get("/{form_id}/form_design")
 def get_form_design(
     form_id: int,
+    audience: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
     Obtener solo el diseño visual de un formulario (sin respuestas).
-    
+
     Este endpoint es ultra-ligero y usa caché de Redis con TTL de 1 hora.
     Ideal para renderizar la UI del formulario sin cargar respuestas.
-    
+
+    `audience` recorta el diseño según quién lo va a usar (ver
+    app/core/field_access.py). Sin el parámetro NO cambia nada:
+
+        None / "design" → diseño completo (diseñador, admin, config de aprobadores)
+        "fill"          → sin los campos que llenan los aprobadores
+        "approve"       → sin los campos ocultos para el aprobador actual, y con
+                          `field_access` diciendo cuáles puede editar
+        "view"          → ver una respuesta enviada: recorta según QUIÉN mira
+                          (admin/creador ven todo)
+
+    El caché de Redis es por form_id, así que se cachea SIEMPRE el diseño
+    completo y el recorte se aplica a la salida, nunca antes de guardar.
+
     Returns:
         dict: Diseño del formulario (id, title, description, version, form_design)
     """
@@ -602,29 +617,98 @@ def get_form_design(
     
     if cached:
         logger.info(f"✅ Cache HIT: {cache_key}")
-        return cached  # Ya viene deserializado por tu método
-    
-    # PASO 2: Cache MISS - Consultar BD
-    logger.error(f"❌ Cache MISS: {cache_key}")
-    form = db.query(Form).filter(Form.id == form_id).first()
-    
-    if not form:
-        raise HTTPException(status_code=404, detail="Form not found")
-    
-    # PASO 3: Extraer solo el diseño
-    design_response = {
-        "id": form.id,
-        "title": form.title,
-        "description": form.description,
-        "created_at": form.created_at.isoformat() if hasattr(form, 'created_at') and form.created_at else None,
-        "format_type": form.format_type.name if hasattr(form, 'format_type') else None,
-        "form_design": form.form_design  # Componentes visuales
+        design_response = cached  # Ya viene deserializado por tu método
+    else:
+        # PASO 2: Cache MISS - Consultar BD
+        logger.error(f"❌ Cache MISS: {cache_key}")
+        form = db.query(Form).filter(Form.id == form_id).first()
+
+        if not form:
+            raise HTTPException(status_code=404, detail="Form not found")
+
+        # PASO 3: Extraer solo el diseño
+        design_response = {
+            "id": form.id,
+            "title": form.title,
+            "description": form.description,
+            "created_at": form.created_at.isoformat() if hasattr(form, 'created_at') and form.created_at else None,
+            "format_type": form.format_type.name if hasattr(form, 'format_type') else None,
+            "form_design": form.form_design  # Componentes visuales
+        }
+
+        # PASO 4: Guardar en Redis (TTL: 1 hora = 3600 segundos)
+        redis_client.set(cache_key, design_response, ttl=3600)  # Usa tu método .set()
+
+    # PASO 5: Recorte por audiencia. Se hace SIEMPRE después del caché para que
+    # nunca se guarde una versión recortada bajo la llave global del formato.
+    return _apply_design_audience(db, form_id, design_response, audience, current_user)
+
+
+def _apply_design_audience(db, form_id: int, design_response: dict,
+                           audience: Optional[str], current_user: User) -> dict:
+    """Recorta el diseño según quién lo va a usar. Ver get_form_design."""
+    if audience not in ("fill", "approve", "view"):
+        return design_response
+
+    configs = field_access.load_field_access(db, form_id)
+    if not configs:
+        return design_response
+
+    result = dict(design_response)
+
+    if audience == "view":
+        # Ver una respuesta ya enviada. Un campo que este usuario no puede ver
+        # no debe aparecer NI VACÍO: el hueco también dice cosas.
+        #   · admin/creador → ven todo, que para eso auditan;
+        #   · aprobador     → sin los campos que tiene en "No lo ve";
+        #   · quien diligencia → sin los campos que llenan los aprobadores.
+        if getattr(current_user.user_type, "name", "") in ("admin", "creator"):
+            return design_response
+
+        config = configs.get(current_user.id)
+        recortar = (
+            field_access.elements_with_mode(config, field_access.HIDDEN)
+            if config is not None
+            else field_access.owned_element_ids(configs)
+        )
+        result["form_design"] = field_access.strip_elements(
+            design_response.get("form_design"), recortar
+        )
+        return result
+
+    if audience == "fill":
+        # Quien diligencia no ve los campos que llena algún aprobador.
+        owned = field_access.owned_element_ids(configs)
+        result["form_design"] = field_access.strip_elements(
+            design_response.get("form_design"), owned
+        )
+        return result
+
+    # audience == "approve"
+    config = configs.get(current_user.id)
+    if not config:
+        return design_response
+
+    hidden = field_access.elements_with_mode(config, field_access.HIDDEN)
+    result["form_design"] = field_access.strip_elements(
+        design_response.get("form_design"), hidden
+    )
+
+    # Solo se ofrecen como editables los campos que SÍ tienen pregunta: sin
+    # pregunta no se puede guardar una respuesta, y pintarlos como escribibles
+    # solo consigue que el aprobador escriba algo que se pierde.
+    design = field_access.collect_design(design_response.get("form_design"))
+    editables = [
+        element_id
+        for element_id in field_access.elements_with_mode(config, field_access.EDIT)
+        if design.question_of_element.get(element_id)
+    ]
+
+    result["field_access"] = {
+        "editable_element_ids": sorted(editables),
+        "row_filters": field_access.row_filters(config),
     }
-    
-    # PASO 4: Guardar en Redis (TTL: 1 hora = 3600 segundos)
-    redis_client.set(cache_key, design_response, ttl=3600)  # Usa tu método .set()
-    
-    return design_response
+    return result
 
 @router.get("/{form_id}/questions")
 def get_form_questions(
@@ -1324,13 +1408,30 @@ def get_responses_with_answers(
             "answers": [
                 {
                     "id_answer": a.id,
+                    # OJO: este `repeated_id` es el de la RESPUESTA (modo repetido),
+                    # no el de la fila del repetidor. Se deja como estaba para no
+                    # cambiar lo que ya renderiza el cliente; la fila real va en
+                    # `answer_repeated_id`.
                     "repeated_id": r.repeated_id,
+                    "answer_repeated_id": a.repeated_id,
+                    "repeater_row_index": a.repeater_row_index,
                     "question_id": a.question.id,
                     "question_text": a.question.question_text,
                     "question_type": a.question.question_type,
                     "answer_text": process_regisfacial_answer(a.answer_text, a.question.question_type),
                     "file_path": a.file_path,
-                    "form_design_element_id": a.form_design_element_id
+                    "form_design_element_id": a.form_design_element_id,
+                    # Autoría: NULL = lo escribió quien diligenció el formato.
+                    # Solo los aprobadores escriben con autor, así que el nombre
+                    # sale de la propia cadena de aprobación de esta respuesta.
+                    "answered_by_user_id": a.answered_by_user_id,
+                    "answered_by_name": next(
+                        (ap.user.name for ap in r.approvals
+                         if ap.user and ap.user_id == a.answered_by_user_id),
+                        None
+                    ) if a.answered_by_user_id else None,
+                    # Cuándo lo escribió el aprobador (NULL en lo del diligenciador).
+                    "answered_at": a.answered_at.isoformat() if a.answered_at else None,
                 }
                 for a in current_answers
             ],
