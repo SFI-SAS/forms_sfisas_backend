@@ -15,7 +15,7 @@ from app.database import get_db
 from app.schemas import UpdateMathOperationRequest, AnswerHistoryChangeSchema, AnswerHistoryCreate, BitacoraLogsSimpleAnswer, BitacoraLogsSimpleCreate, BitacoraResponse, FileSerialCreate, FilteredAnswersResponse, GetQuestionTextsRequest, GetQuestionTextsResponse, PalabrasClaveCreate, PalabrasClaveOut, PalabrasClaveUpdate, PostCreate, QuestionAnswerDetailSchema, QuestionFilterConditionCreate, QuestionTextValue, RegisfacialAnswerResponse, RelationOperationMathCreate, RelationOperationMathOut, ResponseItem, ResponseWithAnswersAndHistorySchema, UpdateAnswerText, UpdateAnswertHistory
 from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, BitacoraLogsSimple, ClasificacionBitacoraRelacion, Form, FormAnswerEditor, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionType, RelationBitacora, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, UploadedFile, User, UserType
 from app.core.security import get_current_user, require_roles
-from app.core import field_access
+from app.core import field_access, response_scope
 from typing import Dict
 from sqlalchemy import delete, cast, Text as SAText
 from app.redis_client import redis_client
@@ -1765,8 +1765,17 @@ async def delete_response(
                 detail="No tienes permiso para eliminar esta respuesta",
             )
 
+        # Se borra el ÁRBOL completo: la respuesta y las que escribieron sus
+        # aprobadores sobre ella (Response.parent_response_id).
+        #
+        # Sin esto el borrado fallaba: al eliminar la respuesta, Postgres
+        # arrastra en cascada a las hijas, pero las answers de esas hijas
+        # seguían apuntándolas y la FK reventaba. Quien diligenció no podía
+        # eliminar una respuesta en cuanto un aprobador escribía algo en ella.
+        tree_ids = response_scope.response_tree_ids(db, response_id)
+
         # 1. Obtener IDs de las respuestas (Answer)
-        answer_ids = db.query(Answer.id).filter(Answer.response_id == response_id).all()
+        answer_ids = db.query(Answer.id).filter(Answer.response_id.in_(tree_ids)).all()
         answer_ids_list = [answer.id for answer in answer_ids]
 
         # 2. Eliminar AnswerFileSerial relacionados
@@ -1779,28 +1788,32 @@ async def delete_response(
 
         # 3. Eliminar AnswerHistory relacionados
         db.execute(
-            delete(AnswerHistory).where(AnswerHistory.response_id == response_id)
+            delete(AnswerHistory).where(AnswerHistory.response_id.in_(tree_ids))
         )
 
         # 4. Eliminar Answer relacionados
         db.execute(
-            delete(Answer).where(Answer.response_id == response_id)
+            delete(Answer).where(Answer.response_id.in_(tree_ids))
         )
 
         # 5. Eliminar registros en ResponseApprovalRequirements
         db.execute(
             delete(ResponseApprovalRequirement).where(
-                (ResponseApprovalRequirement.response_id == response_id) |
-                (ResponseApprovalRequirement.fulfilling_response_id == response_id)
+                (ResponseApprovalRequirement.response_id.in_(tree_ids)) |
+                (ResponseApprovalRequirement.fulfilling_response_id.in_(tree_ids))
             )
         )
 
         # 6. Eliminar registros en ResponseApproval
         db.execute(
-            delete(ResponseApproval).where(ResponseApproval.response_id == response_id)
+            delete(ResponseApproval).where(ResponseApproval.response_id.in_(tree_ids))
         )
 
-        # 7. Finalmente eliminar la Response
+        # 7. Finalmente las Response: primero las de los aprobadores, luego la
+        #    original (el orden evita depender del ON DELETE CASCADE).
+        db.execute(
+            delete(Response).where(Response.parent_response_id == response_id)
+        )
         db.execute(
             delete(Response).where(Response.id == response_id)
         )
@@ -1815,6 +1828,10 @@ async def delete_response(
         raise
     except Exception as e:
         db.rollback()
+        # El mensaje genérico dejaba el motivo real (casi siempre una FK) solo en
+        # la excepción, sin rastro en los logs: se tardó en ver por qué no se
+        # podía borrar. Ahora queda el stack completo.
+        logger.exception("delete_response falló para response_id=%s", response_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error deleting response"
