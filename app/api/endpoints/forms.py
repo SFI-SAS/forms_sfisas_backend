@@ -1476,6 +1476,15 @@ def get_responses_with_answers(
                          if ap.user and ap.user_id == a.answered_by_user_id),
                         None
                     ) if a.answered_by_user_id else None,
+                    # Qué papel cumplía quien lo escribió: 'approver' o
+                    # 'receiver'. Con el nombre solo no se distingue, y en una
+                    # misma cadena hay de los dos.
+                    "answered_by_role": next(
+                        ((getattr(ap, "participant_role", None) or "approver")
+                         for ap in r.approvals
+                         if ap.user_id == a.answered_by_user_id),
+                        None
+                    ) if a.answered_by_user_id else None,
                     # Cuándo lo escribió el aprobador (NULL en lo del diligenciador).
                     "answered_at": a.answered_at.isoformat() if a.answered_at else None,
                 }

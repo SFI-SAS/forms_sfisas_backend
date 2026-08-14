@@ -2095,12 +2095,20 @@ def save_approver_field_answers(
     )
     if not approval:
         raise HTTPException(
-            status_code=403, detail="No eres aprobador de esta respuesta"
+            status_code=403, detail="No estás en la cadena de esta respuesta"
         )
+
+    # Al recibidor no se le habla de aprobar: él recibe.
+    es_recibidor = (getattr(approval, "participant_role", None) or "approver") == "receiver"
+
     if approval.status != ApprovalStatus.pendiente:
         raise HTTPException(
             status_code=409,
-            detail="Ya tomaste una decisión sobre esta respuesta; sus campos quedaron cerrados"
+            detail=(
+                "Ya confirmaste la recepción de esta respuesta; sus campos quedaron cerrados"
+                if es_recibidor
+                else "Ya tomaste una decisión sobre esta respuesta; sus campos quedaron cerrados"
+            )
         )
 
     form = db.query(Form).filter(Form.id == response.form_id).first()
@@ -2111,16 +2119,30 @@ def save_approver_field_answers(
     if not config:
         raise HTTPException(
             status_code=422,
-            detail="Este aprobador no tiene campos asignados en este formato"
+            detail=(
+                "No tienes campos asignados en este formato"
+                if es_recibidor
+                else "Este aprobador no tiene campos asignados en este formato"
+            )
         )
 
     design = field_access.collect_design(form.form_design)
     editable = field_access.elements_with_mode(config, field_access.EDIT)
 
-    # Filas visibles para este aprobador, calculadas sobre lo que ya está
-    # guardado (lo que escribió quien diligenció el formato). Un repetidor puede
-    # tener VARIOS filtros: los combina passing_rows_by_repeater.
-    existing_answers = db.query(Answer).filter(Answer.response_id == response_id).all()
+    # Filas visibles para este participante, calculadas sobre lo que ya está
+    # guardado. Un repetidor puede tener VARIOS filtros: los combina
+    # passing_rows_by_repeater.
+    #
+    # Se lee el ÁRBOL completo, no solo la respuesta del diligenciador: hay
+    # filtros que miran un campo que llena un aprobador anterior, y esas answers
+    # viven en la respuesta hija de ese aprobador. Leyendo solo la padre, el
+    # filtro no encontraba nada, `allowed_rows` quedaba vacío y esto rechazaba
+    # con 403 filas que la pantalla sí le estaba mostrando.
+    existing_answers = (
+        db.query(Answer)
+        .filter(Answer.response_id.in_(response_scope.response_tree_ids(db, response_id)))
+        .all()
+    )
     allowed_rows = field_access.passing_rows_by_repeater(existing_answers, config, design)
 
     # La respuesta PROPIA de este aprobador sobre esta respuesta. Sus datos van
@@ -2187,7 +2209,11 @@ def save_approver_field_answers(
             if row_key not in allowed_rows[repeater_id]:
                 raise HTTPException(
                     status_code=403,
-                    detail="Esa fila no corresponde a las que puedes revisar"
+                    detail=(
+                        "Esa fila no corresponde a las que te llegan"
+                        if es_recibidor
+                        else "Esa fila no corresponde a las que puedes revisar"
+                    )
                 )
 
         # Upsert sobre lo que ESTE aprobador ya haya escrito en ese campo/fila.
@@ -2503,7 +2529,7 @@ def get_my_participation_detail(
     )
     if not approval:
         raise HTTPException(
-            status_code=403, detail="No eres aprobador de esta respuesta"
+            status_code=403, detail="No estás en la cadena de esta respuesta"
         )
 
     form = db.query(Form).filter(Form.id == original.form_id).first()

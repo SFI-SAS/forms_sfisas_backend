@@ -4296,22 +4296,33 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
 
             sequence = response_approval.sequence_number
 
-            # En modo SECUENCIAL, ocultar el pendiente hasta que sea el turno de
-            # este aprobador (todos los aprobadores obligatorios anteriores ya
-            # aprobaron). En modo PARALELO no hay turno: todos los aprobadores
-            # deben ver su pendiente desde el inicio, así que se omite este filtro.
+            # ¿Ya es su turno?
+            #
+            # RECIBIDOR: cuelga de uno o varios aprobadores concretos
+            # (`receives_from_user_ids`). Espera a ESOS y a nadie más —da igual
+            # el modo del formato y da igual quién más haya en la cadena: dos
+            # recibidores del mismo aprobador reciben a la vez, no en fila—.
+            # Si alguno de sus aprobadores rechaza, no hay nada que recibir y
+            # el pendiente no le aparece nunca.
+            #
+            # APROBADOR: en modo SECUENCIAL espera a todos los obligatorios que
+            # van antes. En modo PARALELO no hay turno y ve su pendiente desde
+            # el inicio.
+            recibe_de = getattr(response_approval, "receives_from_user_ids", None) or []
             approval_mode = getattr(form, "approval_mode", "sequential")
-            if approval_mode != "parallel":
-                # Verificar si todos los aprobadores anteriores obligatorios ya aprobaron
-                prev_approvers = [
+
+            if recibe_de:
+                previos = [ra for ra in all_ra_sorted if ra.user_id in recibe_de]
+            elif approval_mode != "parallel":
+                previos = [
                     ra for ra in all_ra_sorted
                     if ra.sequence_number < sequence and ra.is_mandatory
                 ]
+            else:
+                previos = []
 
-                all_prev_approved = all(pa.status == ApprovalStatus.aprobado for pa in prev_approvers)
-
-                if not all_prev_approved:
-                    continue  # Todavía no es el turno de este aprobador
+            if not all(pa.status == ApprovalStatus.aprobado for pa in previos):
+                continue  # Todavía no le toca
 
             # 🔥 NUEVA VALIDACIÓN: Verificar requisitos de aprobadores anteriores
             validation_result = validate_approver_requirements_with_approval_line(
@@ -4919,10 +4930,43 @@ def get_next_mandatory_approver(response_id: int, db: Session):
                     break
  
     # ═══════════════════════════════════════════════════════════════════════
+    # Recibidores a los que ya les toca.
+    #
+    # Van aparte del recorrido de arriba: un recibidor no hace fila con los
+    # demás, espera solo a SUS aprobadores (`receives_from_user_ids`). Dos
+    # recibidores del mismo aprobador se enteran a la vez —el `break` del modo
+    # secuencial se comía al segundo—. Se avisa una sola vez por persona.
+    # ═══════════════════════════════════════════════════════════════════════
+    ya_aprobaron = {
+        ra.user_id for ra in response_approvals if ra.status == ApprovalStatus.aprobado
+    }
+    ya_en_lista = {s["email"] for s in siguientes_aprobadores}
+
+    for ra in response_approvals:
+        if (getattr(ra, "participant_role", None) or "approver") != "receiver":
+            continue
+        if ra.status != ApprovalStatus.pendiente or not ra.user:
+            continue
+        recibe_de = getattr(ra, "receives_from_user_ids", None) or []
+        if not recibe_de or not all(uid in ya_aprobaron for uid in recibe_de):
+            continue  # todavía falta que alguno de sus aprobadores apruebe
+        if ra.user.email in ya_en_lista:
+            continue
+        siguientes_aprobadores.append({
+            "nombre": ra.user.name,
+            "email": ra.user.email,
+            "telefono": ra.user.telephone,
+            "secuencia": ra.sequence_number,
+            "es_obligatorio": ra.is_mandatory,
+            "es_recibidor": True,
+        })
+        ya_en_lista.add(ra.user.email)
+
+    # ═══════════════════════════════════════════════════════════════════════
     # Parte final ORIGINAL — sin cambios. Ahora funciona en ambos modos
     # porque ultima_aprobacion / encontrado_obligatorio ya están definidas.
     # ═══════════════════════════════════════════════════════════════════════
- 
+
     # Agregar todos los aprobadores del formato
     todos_los_aprobadores = []
  
@@ -5093,7 +5137,8 @@ def send_mails_to_next_supporters(response_id: int, db: Session):
         return False
 
     html_content = build_email_html_approvers(aprobacion_info)
-    asunto = f"Pendiente aprobación - {aprobacion_info['formato']['titulo']}"
+    titulo = aprobacion_info['formato']['titulo']
+    asunto = f"Pendiente aprobación - {titulo}"
 
     enviado_todos = True
 
@@ -5104,10 +5149,15 @@ def send_mails_to_next_supporters(response_id: int, db: Session):
 
         exito = send_email_plain_approval_status_vencidos(
             to_email=email,
-            name_form=aprobacion_info["formato"]["titulo"],
+            name_form=titulo,
             to_name=nombre,
             body_html=html_content,
-            subject=asunto
+            # El recibidor no aprueba nada: se le avisa que tiene algo por recibir.
+            subject=(
+                f"Pendiente por recibir - {titulo}"
+                if aprobador.get("es_recibidor")
+                else asunto
+            )
         )
 
         if not exito:
@@ -5599,6 +5649,12 @@ async def update_response_approval_status(
     # El rechazo NUNCA requiere firma facial (solo mensaje obligatorio).
     firm_mode = getattr(response_approval, "firm_mode", "button") or "button"
     firm_answer_id = getattr(update_data, "firm_answer_id", None)
+
+    # El RECIBIDOR no firma: solo deja constancia de que recibió. La pantalla
+    # nunca le abre la cámara, así que exigirle firma facial aquí sería un 400
+    # que no puede resolver desde ningún lado.
+    if (getattr(response_approval, "participant_role", None) or "approver") == "receiver":
+        firm_mode = "button"
 
     if firm_mode == "button" and firm_answer_id is not None:
         raise HTTPException(
@@ -6186,6 +6242,13 @@ def get_form_with_full_responses(form_id: int, db: Session):
                 "question_text": ans.question.question_text,
                 "answer_text": processed_answer_text,
                 "file_path": ans.file_path,
+                # A qué fila del repetidor pertenece cada dato. Sin esto el
+                # cliente solo podía reconstruir las filas por el orden en que
+                # llegan las answers —que NO es el orden de las filas— y la
+                # tabla salía barajada.
+                "repeated_id": ans.repeated_id,
+                "repeater_row_index": ans.repeater_row_index,
+                "parent_repeated_id": ans.parent_repeated_id,
             })
 
         # Obtener aprobaciones y calcular estado

@@ -668,9 +668,14 @@ def auto_resolve_empty_approvals(db, response_id: int) -> List[int]:
     aprobación se marca aprobada con un mensaje explicativo y el flujo sigue de
     largo. Sin esto la respuesta se quedaría esperando para siempre.
 
+    Al RECIBIDOR no se le aplica: su trabajo no es revisar filas sino dar el
+    acuse de recibo, y eso solo lo puede hacer él. Aunque su filtro no deje
+    ninguna fila, el pendiente le llega y queda ahí hasta que pulse "Recibido".
+
     Es idempotente: solo toca aprobaciones en estado pendiente. Devuelve los
     user_id que se saltaron.
     """
+    from app.core import response_scope
     from app.models import Answer, ApprovalStatus, Form, Response, ResponseApproval
     from datetime import datetime, timezone
 
@@ -688,7 +693,15 @@ def auto_resolve_empty_approvals(db, response_id: int) -> List[int]:
         return []
 
     design = collect_design(form.form_design)
-    answers = db.query(Answer).filter(Answer.response_id == response_id).all()
+    # El árbol completo, no solo la respuesta del diligenciador: hay filtros de
+    # fila que miran un campo que llena un aprobador anterior, y esas answers
+    # viven en la respuesta hija de ese aprobador. Leyendo solo la padre, el
+    # filtro no encontraba nada y saltaba a quien sí tenía trabajo.
+    answers = (
+        db.query(Answer)
+        .filter(Answer.response_id.in_(response_scope.response_tree_ids(db, response_id)))
+        .all()
+    )
 
     pending = (
         db.query(ResponseApproval)
@@ -701,6 +714,8 @@ def auto_resolve_empty_approvals(db, response_id: int) -> List[int]:
 
     skipped: List[int] = []
     for approval in pending:
+        if (getattr(approval, "participant_role", None) or "approver") == "receiver":
+            continue  # el acuse de recibo no se firma solo
         config = configs.get(approval.user_id)
         if not config:
             continue
