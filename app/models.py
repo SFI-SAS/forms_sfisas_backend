@@ -125,6 +125,7 @@ class User(Base):
     password = Column(Text, nullable=False)
     recognition_id = Column(String(100), nullable=True, unique=True)  
     asign_bitacora = Column(Boolean, default=False, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False, server_default="true")
     id_category = Column(BigInteger, ForeignKey('user_categories.id'), nullable=True)
     # SM-CARGO-02: fecha de creación (vigila picos de creación de usuarios, Cargo 7 Seguridad).
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)

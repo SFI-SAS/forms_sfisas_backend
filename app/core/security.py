@@ -107,6 +107,12 @@ def get_current_user(db: Session = Depends(get_db), token: str = Depends(oauth2_
     user = db.query(User).filter(User.email == user_id).first()
     if user is None:
         raise credentials_exception
+    # Bloquear usuarios desactivados (safe si la columna aun no existe)
+    if getattr(user, 'is_active', True) is False:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tu cuenta ha sido desactivada. Contacta al administrador.",
+        )
     return user
 
 
@@ -143,6 +149,11 @@ def get_integrator_or_user(
     user = db.query(User).filter(User.email == email).first()
     if user is None:
         raise credentials_exception
+    if getattr(user, 'is_active', True) is False:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tu cuenta ha sido desactivada. Contacta al administrador.",
+        )
     return user
 
 
