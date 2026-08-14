@@ -12,8 +12,11 @@ from app.api.controllers.mail import send_welcome_email
 from app.api.controllers.pdf_form_exporter import FormPdfExporter, generate_form_pdf
 from app.database import get_db
 
-from app.models import (Answer, EmailConfig, Form, FormModerators, Profile, ProfileCategory,
-                        ProfileForm, ProfileUser, Response, User, UserCategory, UserType)
+from app.models import (Answer, EmailConfig, Form, FormApproval, FormModerators,
+                        FormSchedule, FormApprovalFieldAccess, FormApprovalNotification,
+                        FormMovimientos, FormTemplate, DownloadTemplate,
+                        Profile, ProfileCategory, ProfileForm, ProfileUser,
+                        Response, ResponseApproval, User, UserCategory, UserType)
 from app.crud import _extract_style_config, _serialize_answers, create_email_config, create_user, create_user_category, create_user_with_random_password, delete_user_category_by_id, fetch_all_users, fetch_users_selectable, generate_random_password, get_all_email_configs, get_all_user_categories, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
 from app.schemas import EmailConfigCreate, EmailConfigResponse, EmailConfigUpdate, EmailStatusUpdate, UpdateRecognitionId, UpdateUserCategory, UserAdminUpdate, UserBaseCreate, UserCategoryCreate, UserCategoryResponse, UserCreate, UserResponse, UserSelfUpdate, UserUpdate, UserUpdateInfo
 from app.core.security import get_current_user, hash_password, require_roles
@@ -1800,3 +1803,118 @@ def remove_user_form_assignments(
         "formatos": quitados,
         "formatos_por_perfil": formatos_por_perfil,
     }
+
+
+@router.delete("/{user_id}")
+def delete_user_endpoint(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """
+    Elimina un usuario del sistema.
+
+    - No se puede eliminar a si mismo.
+    - Si el usuario creo formularios o tiene respuestas enviadas, se hace
+      soft-delete (is_active=False) para preservar la integridad de los datos.
+    - Si el usuario no tiene dependencias criticas, se elimina por completo
+      limpiando primero las tablas relacionadas.
+    """
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No puedes eliminarte a ti mismo",
+        )
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado",
+        )
+
+    # Verificar dependencias criticas que impiden eliminacion real
+    has_forms = db.query(Form.id).filter(Form.user_id == user_id).first() is not None
+    has_responses = db.query(Response.id).filter(Response.user_id == user_id).first() is not None
+    has_approvals_done = db.query(ResponseApproval.id).filter(
+        ResponseApproval.user_id == user_id
+    ).first() is not None
+
+    if has_forms or has_responses or has_approvals_done:
+        # Soft-delete: desactivar usuario sin borrar datos
+        user.is_active = False
+        db.commit()
+        return {
+            "ok": True,
+            "user_id": user_id,
+            "method": "soft_delete",
+            "message": "El usuario fue desactivado porque tiene formularios, respuestas o aprobaciones asociadas.",
+        }
+
+    # Eliminacion real: limpiar tablas relacionadas primero
+    try:
+        db.query(FormModerators).filter(FormModerators.user_id == user_id).delete()
+        db.query(FormSchedule).filter(FormSchedule.user_id == user_id).delete()
+        db.query(FormApproval).filter(FormApproval.user_id == user_id).delete()
+        db.query(FormApprovalFieldAccess).filter(FormApprovalFieldAccess.user_id == user_id).delete()
+        db.query(FormApprovalNotification).filter(FormApprovalNotification.user_id == user_id).delete()
+        db.query(FormMovimientos).filter(FormMovimientos.user_id == user_id).delete()
+        db.query(FormTemplate).filter(FormTemplate.user_id == user_id).delete()
+        db.query(DownloadTemplate).filter(DownloadTemplate.user_id == user_id).delete()
+        db.query(ProfileUser).filter(ProfileUser.user_id == user_id).delete()
+
+        db.delete(user)
+        db.commit()
+        return {
+            "ok": True,
+            "user_id": user_id,
+            "method": "hard_delete",
+            "message": "El usuario fue eliminado completamente del sistema.",
+        }
+    except Exception as e:
+        db.rollback()
+        # Si falla por alguna FK inesperada, hacer soft-delete como fallback
+        user_reload = db.query(User).filter(User.id == user_id).first()
+        if user_reload:
+            user_reload.is_active = False
+            db.commit()
+        return {
+            "ok": True,
+            "user_id": user_id,
+            "method": "soft_delete",
+            "message": "El usuario fue desactivado (no se pudo eliminar completamente).",
+        }
+
+
+@router.patch("/{user_id}/reactivate")
+def reactivate_user_endpoint(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """Reactiva un usuario previamente desactivado."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    user.is_active = True
+    db.commit()
+    return {"ok": True, "user_id": user_id, "message": "Usuario reactivado correctamente."}
+
+
+@router.get("/inactive/list")
+def list_inactive_users(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """Lista los usuarios desactivados para que el admin pueda reactivarlos."""
+    try:
+        results = db.query(
+            User.id, User.name, User.email, User.num_document, User.user_type
+        ).filter(User.is_active.is_(False)).all()
+    except Exception:
+        return []
+    return [
+        {"id": r.id, "name": r.name, "email": r.email,
+         "num_document": r.num_document, "user_type": r.user_type.value}
+        for r in results
+    ]

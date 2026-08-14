@@ -7,7 +7,7 @@ import math
 import os
 import threading
 import pytz
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session, joinedload, defer
 from sqlalchemy.exc import IntegrityError
 from app import models
@@ -280,7 +280,10 @@ def get_user_by_email(db: Session, email: str):
     return db.query(User).filter(User.email == email).first()
 
 def get_users(db: Session, skip: int = 0, limit: int = 10):
-    return db.query(User).offset(skip).limit(limit).all()
+    query = db.query(User)
+    if _has_column(db, "users", "is_active"):
+        query = query.filter(User.is_active.is_(True))
+    return query.offset(skip).limit(limit).all()
 
 
 def _integrity_detail(e, default="Datos inválidos: el registro viola una restricción de la base de datos.") -> str:
@@ -1416,12 +1419,30 @@ def create_form_schedule(
         return new_schedule
 
 
+def _has_column(db: Session, table: str, column: str) -> bool:
+    """Verifica si una columna existe en la tabla (cache en memoria)."""
+    cache_key = f"{table}.{column}"
+    if not hasattr(_has_column, "_cache"):
+        _has_column._cache = {}
+    if cache_key not in _has_column._cache:
+        try:
+            result = db.execute(
+                text("SELECT 1 FROM information_schema.columns WHERE table_name=:t AND column_name=:c"),
+                {"t": table, "c": column}
+            ).first()
+            _has_column._cache[cache_key] = result is not None
+        except Exception:
+            _has_column._cache[cache_key] = False
+    return _has_column._cache[cache_key]
+
+
 def fetch_all_users(db: Session):
     """
     Función para obtener un resumen de todos los usuarios.
     Solo trae campos esenciales sin información sensible como contraseñas.
+    Excluye usuarios desactivados (is_active=False).
     """
-    results = db.query(
+    query = db.query(
         User.id,
         User.num_document,
         User.name,
@@ -1437,7 +1458,10 @@ def fetch_all_users(db: Session):
         UserCategory.name.label('category_name')
     ).outerjoin(
         UserCategory, User.id_category == UserCategory.id
-    ).all()
+    )
+    if _has_column(db, "users", "is_active"):
+        query = query.filter(User.is_active.is_(True))
+    results = query.all()
 
     if not results:
         raise HTTPException(status_code=404, detail="No se encontraron usuarios")
@@ -1465,14 +1489,9 @@ def fetch_all_users(db: Session):
 def fetch_users_selectable(db: Session, include_pii: bool = False):
     """
     Proyección liviana de usuarios para selectores (M-2).
-
-    Devuelve siempre campos NO sensibles (`id`, `name`, `nickname`, `user_type`,
-    `asign_bitacora`, `category`). La PII (`num_document`, `email`, `telephone`)
-    solo se incluye cuando `include_pii=True`, es decir cuando el que consulta es
-    `admin`/`creator`. Un usuario normal nunca recibe la cédula/correo/teléfono de
-    los demás, independientemente de la pantalla desde la que llame.
+    Excluye usuarios desactivados (is_active=False).
     """
-    results = db.query(
+    query = db.query(
         User.id,
         User.name,
         User.nickname,
@@ -1486,7 +1505,10 @@ def fetch_users_selectable(db: Session, include_pii: bool = False):
         UserCategory.name.label('category_name')
     ).outerjoin(
         UserCategory, User.id_category == UserCategory.id
-    ).all()
+    )
+    if _has_column(db, "users", "is_active"):
+        query = query.filter(User.is_active.is_(True))
+    results = query.all()
 
     if not results:
         raise HTTPException(status_code=404, detail="No se encontraron usuarios")
@@ -2241,8 +2263,11 @@ def fetch_form_users(form_id: int, db: Session):
     if not form:
         raise HTTPException(status_code=404, detail="Formulario no encontrado")
 
-    # Obtener todos los usuarios
-    all_users = db.query(User).all()
+    # Obtener todos los usuarios activos
+    q = db.query(User)
+    if _has_column(db, "users", "is_active"):
+        q = q.filter(User.is_active.is_(True))
+    all_users = q.all()
 
     # Obtener IDs de usuarios asociados como moderadores
     associated_users_ids = {moderator.user_id for moderator in form.form_moderators}
