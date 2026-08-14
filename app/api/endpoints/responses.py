@@ -289,6 +289,8 @@ async def close_response(
                 # luego el admin cambie el template del formato.
                 firm_mode=getattr(approver, "firm_mode", "button") or "button",
                 firm_source_question_id=getattr(approver, "firm_source_question_id", None),
+                # Aprobador o recibidor: se congela al enviar.
+                participant_role=getattr(approver, "participant_role", "approver") or "approver",
             )
             db.add(response_approval)
 

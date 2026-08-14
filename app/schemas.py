@@ -409,6 +409,13 @@ class ApproverSchema(BaseModel):
     # Pregunta regisfacial fuente de los registros para validar al aprobador.
     # Obligatoria cuando firm_mode != 'button' (validado en model_validator).
     firm_source_question_id: Optional[int] = None
+    # Papel en la cadena del formato:
+    #   'approver' → aprueba o rechaza (default: lo de siempre)
+    #   'receiver' → recibe lo que otro aprobó; mismo flujo, otra sección
+    participant_role: Literal["approver", "receiver"] = Field(default="approver")
+    # Solo para recibidores: user_id de los aprobadores de los que cuelgan.
+    # Varios aprobadores pueden compartir el mismo recibidor.
+    receives_from_user_ids: Optional[List[int]] = None
 
     @model_validator(mode="after")
     def _validate_firm_source(self) -> "ApproverSchema":
@@ -422,6 +429,7 @@ class ApproverSchema(BaseModel):
 class FormApprovalCreateSchema(BaseModel):
     form_id: int
     approvers: List[ApproverSchema]
+    show_approver_answers_to_filler: Optional[bool] = None
     approval_mode: Optional[Literal["sequential", "parallel"]] = "sequential"
 
     class Config:
@@ -504,6 +512,10 @@ class FormApprovalInfo(BaseModel):
     deadline_days: Optional[int]
     firm_mode: str = "button"
     firm_source_question_id: Optional[int] = None
+    # 'approver' (default) | 'receiver': quien recibe lo que otro aprobó.
+    participant_role: str = "approver"
+    # De quién recibe (solo recibidores).
+    receives_from_user_ids: Optional[List[int]] = None
     user: UserInfo
 
     class Config:
@@ -516,6 +528,8 @@ class FormWithApproversResponse(BaseModel):
     format_type: str
     form_design: Optional[Dict[str, Any]] = None
     approval_mode: str = "sequential"
+    # ¿Quien diligenció ve lo que respondieron aprobadores y recibidores?
+    show_approver_answers_to_filler: bool = False
 
     approvers: List[FormApprovalInfo]
 
@@ -530,9 +544,14 @@ class FormApprovalUpdate(BaseModel):
     deadline_days: Optional[int] = None
     firm_mode: Optional[Literal["button", "button_or_facial", "facial"]] = None
     firm_source_question_id: Optional[int] = None
+    participant_role: Optional[Literal["approver", "receiver"]] = None
+    receives_from_user_ids: Optional[List[int]] = None
 
 class BulkUpdateFormApprovals(BaseModel):
     updates: List[FormApprovalUpdate]
+    # Si viene, se actualiza forms.show_approver_answers_to_filler: ¿quien
+    # diligenció puede ver lo que respondieron aprobadores y recibidores?
+    show_approver_answers_to_filler: Optional[bool] = None
     # Modo de aprobación del formato. Si viene, se actualiza forms.approval_mode.
     # Si es None, se conserva el valor actual del formato.
     approval_mode: Optional[Literal["sequential", "parallel"]] = None

@@ -1089,6 +1089,9 @@ async def post_create_response(
                     # respuesta, aunque luego el admin cambie el template del formato.
                     firm_mode=getattr(approver, "firm_mode", "button") or "button",
                     firm_source_question_id=getattr(approver, "firm_source_question_id", None),
+                    # Aprobador o recibidor: se congela al enviar.
+                    participant_role=getattr(approver, "participant_role", "approver") or "approver",
+                    receives_from_user_ids=getattr(approver, "receives_from_user_ids", None),
                 )
                 db.add(response_approval)
                 approvers_created += 1
@@ -4103,6 +4106,11 @@ def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
     incoming_mode = getattr(data, "approval_mode", None)
     if incoming_mode in ("sequential", "parallel"):
         form.approval_mode = incoming_mode
+
+    # ¿Quien diligenció ve lo que respondieron aprobadores y recibidores?
+    ver_de_aprobadores = getattr(data, "show_approver_answers_to_filler", None)
+    if ver_de_aprobadores is not None:
+        form.show_approver_answers_to_filler = ver_de_aprobadores
  
     # Obtiene las aprobaciones existentes para este formulario
     existing_approvals = db.query(FormApproval).filter(FormApproval.form_id == data.form_id).all()
@@ -4132,6 +4140,9 @@ def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
                     # Default 'button' = flujo clásico (botón + comentario opcional).
                     firm_mode=getattr(approver, "firm_mode", "button") or "button",
                     firm_source_question_id=getattr(approver, "firm_source_question_id", None),
+                    # Aprobador o recibidor.
+                    participant_role=getattr(approver, "participant_role", "approver") or "approver",
+                    receives_from_user_ids=getattr(approver, "receives_from_user_ids", None),
                 )
                 db.add(new_approval)
                 newly_created_user_ids.append(approver.user_id)
@@ -4146,6 +4157,9 @@ def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
                 is_active=approver.is_active if approver.is_active is not None else True,
                 firm_mode=getattr(approver, "firm_mode", "button") or "button",
                 firm_source_question_id=getattr(approver, "firm_source_question_id", None),
+                # Aprobador o recibidor.
+                participant_role=getattr(approver, "participant_role", "approver") or "approver",
+                    receives_from_user_ids=getattr(approver, "receives_from_user_ids", None),
             )
             db.add(new_approval)
             newly_created_user_ids.append(approver.user_id)
@@ -4426,6 +4440,8 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                 # Método de firma heredado al enviar la respuesta.
                 # Default 'button' para retrocompat con ResponseApproval antiguas.
                 "firm_mode": getattr(ra, "firm_mode", "button") or "button",
+                # Aprobador o recibidor, para poder etiquetar a cada quien.
+                "participant_role": getattr(ra, "participant_role", None) or "approver",
                 # Evidencia: id de la Answer regisfacial usada al firmar
                 # (NULL si aún no firmó o si firmó solo con botón).
                 "firm_answer_id": getattr(ra, "firm_answer_id", None),
@@ -4510,6 +4526,12 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                     "message": response_approval.message,
                     "sequence_number": response_approval.sequence_number
                 },
+                # Qué papel cumplo YO en esta respuesta: 'approver' (aprobar o
+                # rechazar) o 'receiver' (recibir lo que otro aprobó). El cliente
+                # usa esto para mandar cada pendiente a su sección.
+                "my_participant_role": (
+                    getattr(response_approval, "participant_role", None) or "approver"
+                ),
                 "all_approvers": all_approvals,
                 "response_history": {
                     "has_modifications": len(histories) > 0,
@@ -6651,8 +6673,16 @@ def delete_form(db: Session, form_id: int):
         raise HTTPException(status_code=404, detail="No encontrado")
 
     try:
-        # 1. Respuestas y sus datos
-        response_ids = [r.id for r in db.query(Response.id).filter(Response.form_id == form_id).all()]
+        # 1. Respuestas y sus datos.
+        # Se piden TODAS, incluidas las de los aprobadores y recibidores: aquí
+        # se está limpiando, no listando. Sin ellas, el filtro global las dejaba
+        # fuera, sus answers seguían apuntándolas y el borrado del formato
+        # reventaba por la FK (`answers_response_id_fkey`).
+        response_ids = [
+            r.id for r in response_scope.include_approver_responses(
+                db.query(Response.id).filter(Response.form_id == form_id)
+            ).all()
+        ]
 
         if response_ids:
             answer_ids = [a.id for a in db.query(Answer.id).filter(Answer.response_id.in_(response_ids)).all()]

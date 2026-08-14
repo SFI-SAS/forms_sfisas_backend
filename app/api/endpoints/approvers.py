@@ -466,6 +466,20 @@ def bulk_update_form_approvals(
             firm_source_qid = existing.firm_source_question_id
         firm_source_changed = existing.firm_source_question_id != firm_source_qid
 
+        # Papel en la cadena: aprobador o recibidor. Misma resolución.
+        rol = getattr(update, "participant_role", None) or (
+            getattr(existing, "participant_role", None) or "approver"
+        )
+        rol_changed = (getattr(existing, "participant_role", None) or "approver") != rol
+
+        # De quién recibe (solo recibidores). Misma resolución: lo entrante si
+        # vino, si no lo que ya tenía.
+        if "receives_from_user_ids" in update.model_fields_set:
+            recibe_de = update.receives_from_user_ids
+        else:
+            recibe_de = getattr(existing, "receives_from_user_ids", None)
+        recibe_changed = (getattr(existing, "receives_from_user_ids", None) or []) != (recibe_de or [])
+
         # Coherencia: si el modo final no es 'button', exigir pregunta fuente.
         if firm_mode != "button" and firm_source_qid is None:
             raise HTTPException(
@@ -475,7 +489,7 @@ def bulk_update_form_approvals(
                 )
             )
 
-        if user_changed or seq_changed or mandatory_changed or firm_changed or firm_source_changed:
+        if user_changed or seq_changed or mandatory_changed or firm_changed or firm_source_changed or rol_changed or recibe_changed:
             # Desactivar el actual
             existing.is_active = False
 
@@ -489,6 +503,8 @@ def bulk_update_form_approvals(
                 is_active=True,
                 firm_mode=firm_mode,
                 firm_source_question_id=firm_source_qid,
+                participant_role=rol,
+                receives_from_user_ids=recibe_de,
             )
             db.add(new_approval)
 
@@ -514,6 +530,10 @@ def bulk_update_form_approvals(
                 # no actuaron.
                 ra.firm_mode = firm_mode
                 ra.firm_source_question_id = firm_source_qid
+                # El papel también se propaga: si pasa a recibidor, su pendiente
+                # se mueve de sección sin tener que reenviar la respuesta.
+                ra.participant_role = rol
+                ra.receives_from_user_ids = recibe_de
 
         else:
             # Si no hubo cambio crítico, solo actualiza campos simples
@@ -527,13 +547,16 @@ def bulk_update_form_approvals(
     # Modo de aprobación del formato. Solo se actualiza si vino en el payload.
     # El form_id se infiere del primer FormApproval del bulk (todos los updates
     # del mismo bulk pertenecen al mismo formato).
-    if data.approval_mode is not None and data.updates:
+    if (data.approval_mode is not None or data.show_approver_answers_to_filler is not None) and data.updates:
         first_id = data.updates[0].id
         anchor = db.query(FormApproval).filter(FormApproval.id == first_id).first()
         if anchor:
             form = db.query(Form).filter(Form.id == anchor.form_id).first()
-            if form and form.approval_mode != data.approval_mode:
+            if form and data.approval_mode is not None and form.approval_mode != data.approval_mode:
                 form.approval_mode = data.approval_mode
+            # ¿Quien diligenció ve lo que respondieron aprobadores y recibidores?
+            if form is not None and data.show_approver_answers_to_filler is not None:
+                form.show_approver_answers_to_filler = data.show_approver_answers_to_filler
 
     db.commit()
     return {"message": "FormApprovals updated successfully"}
@@ -599,6 +622,9 @@ def get_form_with_approvers(
             # Modo de aprobación del formato — el frontend lo carga para
             # mostrar el selector en estado actual al editar aprobadores.
             "approval_mode": getattr(form, "approval_mode", "sequential") or "sequential",
+            "show_approver_answers_to_filler": bool(
+                getattr(form, "show_approver_answers_to_filler", False)
+            ),
             "approvers": approvals
         }
 
@@ -2090,15 +2116,12 @@ def save_approver_field_answers(
 
     design = field_access.collect_design(form.form_design)
     editable = field_access.elements_with_mode(config, field_access.EDIT)
-    filters = {f["repeater_id"]: f for f in field_access.row_filters(config)}
 
     # Filas visibles para este aprobador, calculadas sobre lo que ya está
-    # guardado (lo que escribió quien diligenció el formato).
+    # guardado (lo que escribió quien diligenció el formato). Un repetidor puede
+    # tener VARIOS filtros: los combina passing_rows_by_repeater.
     existing_answers = db.query(Answer).filter(Answer.response_id == response_id).all()
-    allowed_rows = {
-        repeater_id: field_access.passing_row_keys(existing_answers, row_filter, design)
-        for repeater_id, row_filter in filters.items()
-    }
+    allowed_rows = field_access.passing_rows_by_repeater(existing_answers, config, design)
 
     # La respuesta PROPIA de este aprobador sobre esta respuesta. Sus datos van
     # ahí, no en la del diligenciador, que queda exactamente como la mandó.
@@ -2208,6 +2231,104 @@ def save_approver_field_answers(
         "approver_response_id": my_response.id,
         "answered_at": now.isoformat(),
     }
+
+
+@router.post("/form-approvals/normalize-sequence/{form_id}")
+def normalize_chain_sequence(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator]))
+):
+    """Renumera la cadena: cada aprobador, y detrás los recibidores que le tocan.
+
+    Un recibidor cuelga de UNO O VARIOS aprobadores
+    (`receives_from_user_ids`): recibe lo que ellos aprobaron, así que va
+    después del ÚLTIMO de ellos —no puede recibir algo que todavía no han
+    aprobado todos—. Un recibidor sin aprobadores queda al final.
+
+        #1 NEIDER (aprobador)
+        #2 ANA    (aprobadora)
+        #3 YESID    (recibe de NEIDER y de ANA → después de las dos)
+        #4 CRISTIAN (recibe de NEIDER)          ← iría en #3 si ANA no existiera
+
+    Se llama al guardar en cualquiera de las pantallas. Es idempotente.
+    """
+    activos = (
+        db.query(FormApproval)
+        .filter(FormApproval.form_id == form_id, FormApproval.is_active == True)
+        .all()
+    )
+    if not activos:
+        return {"ok": True, "reordenados": 0}
+
+    def es_aprobador(fa) -> bool:
+        return (getattr(fa, "participant_role", None) or "approver") == "approver"
+
+    aprobadores = sorted(
+        [fa for fa in activos if es_aprobador(fa)],
+        key=lambda fa: (fa.sequence_number or 0, fa.id),
+    )
+    recibidores = [fa for fa in activos if not es_aprobador(fa)]
+
+    # Cada recibidor se engancha detrás del ÚLTIMO de sus aprobadores.
+    posicion_de = {a.user_id: i for i, a in enumerate(aprobadores)}
+    tras_aprobador = {}
+    sueltos = []
+    for fa in sorted(recibidores, key=lambda x: (x.sequence_number or 0, x.id)):
+        origenes = [
+            u for u in (getattr(fa, "receives_from_user_ids", None) or [])
+            if u in posicion_de
+        ]
+        if origenes:
+            # El último de sus aprobadores manda: hasta que ese no apruebe, no
+            # hay nada que recibir.
+            ultimo = max(origenes, key=lambda u: posicion_de[u])
+            tras_aprobador.setdefault(ultimo, []).append(fa)
+        else:
+            # Recibidor sin aprobadores (o cuyos aprobadores ya no están):
+            # se queda al final de la cadena.
+            sueltos.append(fa)
+
+    orden = []
+    for aprobador in aprobadores:
+        orden.append(aprobador)
+        orden.extend(tras_aprobador.get(aprobador.user_id, []))
+    orden.extend(sueltos)
+
+    cambios = 0
+    nuevo_por_usuario = {}
+    for posicion, fa in enumerate(orden, start=1):
+        if fa.sequence_number != posicion:
+            fa.sequence_number = posicion
+            cambios += 1
+        nuevo_por_usuario[fa.user_id] = (
+            posicion,
+            getattr(fa, "participant_role", None) or "approver",
+            getattr(fa, "receives_from_user_ids", None),
+        )
+
+    # Propagar a las aprobaciones que siguen pendientes, para que el cambio
+    # aplique a las respuestas en curso sin tener que reenviarlas.
+    pendientes = (
+        db.query(ResponseApproval)
+        .join(Response, ResponseApproval.response_id == Response.id)
+        .filter(
+            Response.form_id == form_id,
+            ResponseApproval.status == ApprovalStatus.pendiente,
+        )
+        .all()
+    )
+    for ra in pendientes:
+        destino = nuevo_por_usuario.get(ra.user_id)
+        if not destino:
+            continue
+        secuencia, rol, recibe_de = destino
+        ra.sequence_number = secuencia
+        ra.participant_role = rol
+        ra.receives_from_user_ids = recibe_de
+
+    db.commit()
+    return {"ok": True, "reordenados": cambios, "total": len(activos)}
 
 
 @router.get("/my-participations")

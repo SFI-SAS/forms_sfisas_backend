@@ -90,6 +90,62 @@ def row_filters(config: Optional[dict]) -> List[dict]:
     ]
 
 
+def elements_visible_to_filler(form_design: Any) -> Set[str]:
+    """Campos de aprobador que SÍ puede ver quien diligenció, al consultar.
+
+    Se marca campo por campo en el diseñador (`props.verDiligenciador`), al
+    vincular las preguntas al formato. Por defecto un campo que llena un
+    aprobador no se le muestra a quien diligenció: solo ve lo suyo.
+
+    OJO: esto es para VER la respuesta ya enviada. Al diligenciar siguen sin
+    aparecerle nunca — no son suyos.
+    """
+    import json
+
+    if isinstance(form_design, str):
+        try:
+            form_design = json.loads(form_design)
+        except (ValueError, TypeError):
+            return set()
+
+    if not isinstance(form_design, list):
+        return set()
+
+    visibles: Set[str] = set()
+
+    def walk(items: Iterable[Any]):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            props = item.get("props") or {}
+            if item.get("id") is not None and props.get("verDiligenciador"):
+                visibles.add(str(item["id"]))
+            children = item.get("children")
+            if isinstance(children, list) and children:
+                walk(children)
+
+    walk(form_design)
+    return visibles
+
+
+def row_filter_mode(config: Optional[dict], repeater_id: str) -> str:
+    """¿Cómo se combinan los filtros de ese repetidor?
+
+    'todas'  → la fila tiene que cumplirlos TODOS (default)
+    'alguna' → basta con que cumpla uno
+    """
+    modos = (config or {}).get("row_filter_modes") or {}
+    return "alguna" if modos.get(repeater_id) == "alguna" else "todas"
+
+
+def filters_by_repeater(config: Optional[dict]) -> Dict[str, List[dict]]:
+    """Los filtros agrupados por repetidor. Puede haber VARIOS por repetidor."""
+    agrupados: Dict[str, List[dict]] = {}
+    for f in row_filters(config):
+        agrupados.setdefault(f["repeater_id"], []).append(f)
+    return agrupados
+
+
 def owned_element_ids(configs: Dict[int, dict]) -> Set[str]:
     """Elementos que llena ALGÚN aprobador → no los ve quien diligencia."""
     owned: Set[str] = set()
@@ -327,6 +383,38 @@ def passing_row_keys(
     return passing
 
 
+def passing_rows_by_repeater(
+    answers: Iterable[Any], config: Optional[dict], design: DesignInfo
+) -> Dict[str, Set[Tuple]]:
+    """Filas que le llegan al aprobador, por repetidor.
+
+    Un repetidor puede tener VARIOS filtros ("solo Contado" + "solo Bogotá").
+    Se combinan según el modo del repetidor: `todas` deja las filas que cumplen
+    todos (intersección) y `alguna` las que cumplen al menos uno (unión).
+
+    Es el único sitio donde se decide esto: lo usan el recorte de answers, el
+    auto-salto y la validación al guardar los campos del aprobador.
+    """
+    answers = list(answers)
+    resultado: Dict[str, Set[Tuple]] = {}
+
+    for repeater_id, filtros in filters_by_repeater(config).items():
+        conjuntos = [passing_row_keys(answers, f, design) for f in filtros]
+        if not conjuntos:
+            continue
+        if row_filter_mode(config, repeater_id) == "alguna":
+            pasan: Set[Tuple] = set()
+            for c in conjuntos:
+                pasan |= c
+        else:
+            pasan = set(conjuntos[0])
+            for c in conjuntos[1:]:
+                pasan &= c
+        resultado[repeater_id] = pasan
+
+    return resultado
+
+
 def filter_answers_for_approver(
     answers: List[Any], config: Optional[dict], design: DesignInfo
 ) -> List[Any]:
@@ -342,12 +430,11 @@ def filter_answers_for_approver(
         return answers
 
     # Por repetidor filtrado: qué filas sobreviven y a qué fila va cada answer.
-    allowed_rows: Dict[str, Set[Tuple]] = {}
-    row_keys: Dict[str, Dict[int, Tuple]] = {}
-    for f in filters:
-        repeater_id = f["repeater_id"]
-        allowed_rows[repeater_id] = passing_row_keys(answers, f, design)
-        row_keys[repeater_id] = build_row_keys(answers, repeater_id, design)
+    allowed_rows = passing_rows_by_repeater(answers, config, design)
+    row_keys: Dict[str, Dict[int, Tuple]] = {
+        repeater_id: build_row_keys(answers, repeater_id, design)
+        for repeater_id in allowed_rows
+    }
 
     result = []
     for answer in answers:
@@ -393,8 +480,8 @@ def approver_has_work(
             return True
 
     # Si algún repetidor filtrado le deja filas, tiene trabajo.
-    for row_filter in filters:
-        if passing_row_keys(answers, row_filter, design):
+    for pasan in passing_rows_by_repeater(answers, config, design).values():
+        if pasan:
             return True
 
     return False
@@ -525,37 +612,39 @@ def condition_visibility_for_approver(
         if element_id in hidden:
             continue
 
-        question_id = element["question_id"]
+        question_ids = element["question_ids"]
         props = element["props"]
         repeater_id = element["repeater_id"]
 
-        # ¿La pregunta que condiciona vive dentro de ese mismo repetidor? Es lo
-        # que el cliente busca primero entre las columnas de la fila.
-        sibling = bool(
-            repeater_id and question_id in design.questions_of_repeater.get(repeater_id, set())
-        )
+        # Un elemento puede depender de VARIAS preguntas, y cada una puede vivir
+        # dentro del repetidor (valor por fila) o fuera (valor único).
+        en_repetidor = design.questions_of_repeater.get(repeater_id, set()) if repeater_id else set()
+        por_fila = [q for q in question_ids if q in en_repetidor]
+        sueltas = [q for q in question_ids if q not in en_repetidor]
 
-        if repeater_id and sibling:
-            for key, token in _rows_of_repeater(visible_answers, repeater_id, design):
-                if (key, question_id) in seen_rows:
-                    continue  # el cliente tiene el valor: que lo evalúe él
-                value = all_rows.get((key, question_id))
-                visible = conditions.is_visible_by_condition(props, lambda _q: value)
-                result_rows.setdefault(token, {})[element_id] = visible
-            continue
-
-        # Pregunta suelta: el mismo valor sirve para el campo suelto y para
-        # todas las filas del repetidor (es el fallback global del cliente).
-        if question_id in seen_loose:
-            continue
-        value = all_loose.get(question_id)
-        visible = conditions.is_visible_by_condition(props, lambda _q: value)
+        def valor_para(qid: int, key=None):
+            """El valor que usaría el servidor para esa pregunta."""
+            if qid in en_repetidor and key is not None:
+                return all_rows.get((key, qid))
+            return all_loose.get(qid)
 
         if repeater_id:
-            for _key, token in _rows_of_repeater(visible_answers, repeater_id, design):
+            for key, token in _rows_of_repeater(visible_answers, repeater_id, design):
+                # Si el cliente TIENE todos los valores, que lo evalúe él.
+                le_falta = any((key, q) not in seen_rows for q in por_fila)                     or any(q not in seen_loose for q in sueltas)
+                if not le_falta:
+                    continue
+                visible = conditions.is_visible_by_condition(
+                    props, lambda q, _k=key: valor_para(q, _k)
+                )
                 result_rows.setdefault(token, {})[element_id] = visible
-        else:
-            result_global[element_id] = visible
+            continue
+
+        # Campo suelto: solo dependen de valores sueltos.
+        if all(q in seen_loose for q in question_ids):
+            continue
+        visible = conditions.is_visible_by_condition(props, lambda q: all_loose.get(q))
+        result_global[element_id] = visible
 
     if not result_global and not result_rows:
         return {}

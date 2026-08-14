@@ -191,6 +191,19 @@ class Form(Base):
     # ═══════════════════════════════════════════════════════════════════════
     answer_editors_mode = Column(String(10), nullable=False, default='none')
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # ¿Quien diligenció puede ver lo que respondieron aprobadores y recibidores?
+    # ───────────────────────────────────────────────────────────────────────
+    # False (default) → su respuesta muestra SOLO lo suyo, y los campos que
+    #                   llenan ellos ni le aparecen. Es como funcionó siempre.
+    # True            → al consultar SU respuesta ve también lo que ellos
+    #                   respondieron, con el nombre de quién escribió cada dato.
+    # Se configura por formato en "Administrar aprobadores".
+    # ═══════════════════════════════════════════════════════════════════════
+    show_approver_answers_to_filler = Column(
+        Boolean, nullable=False, default=False, server_default='false'
+    )
+
     user = relationship('User', back_populates='forms')
     form_moderators = relationship("FormModerators", back_populates="form", cascade="all, delete-orphan")
     answer_editors = relationship("FormAnswerEditor", back_populates="form", cascade="all, delete-orphan")
@@ -458,8 +471,27 @@ class FormApproval(Base):
     firm_source_question_id = Column(
         BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True
     )
+    # Papel que cumple en la cadena del formato (CHECK en BD):
+    #   'approver' → aprueba o rechaza, como siempre (DEFAULT)
+    #   'receiver' → RECIBE lo que otro aprobó: mismo flujo y misma secuencia,
+    #                pero no es un aprobador y su pendiente sale en su propia
+    #                sección ("Formatos por recibir"), no en aprobaciones.
+    participant_role = Column(
+        String(20), nullable=False, default='approver', server_default='approver'
+    )
+    # De quiénes recibe (solo para 'receiver'): lista de user_id de los
+    # aprobadores de los que cuelga. VARIOS aprobadores pueden compartir el
+    # mismo recibidor, y aun así es UNA sola persona en la cadena (una sola
+    # config de campos, una sola aprobación por respuesta).
+    #
+    # Guarda usuarios y no filas de form_approvals porque editar un aprobador
+    # recrea su fila y el vínculo se perdería.
+    #
+    # Su lugar en la cadena es después del ÚLTIMO de sus aprobadores: no puede
+    # recibir algo que todavía no han aprobado todos.
+    receives_from_user_ids = Column(AutoJSON, nullable=True)
     form = relationship("Form", backref="approval_template")
-    user = relationship("User", backref="forms_to_approve")
+    user = relationship("User", backref="forms_to_approve", foreign_keys=[user_id])
     firm_source_question = relationship("Question", foreign_keys=[firm_source_question_id])
 
 class FormApprovalFieldAccess(Base):
@@ -524,8 +556,16 @@ class ResponseApproval(Base):
     firm_source_question_id = Column(
         BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True
     )
+    # Papel heredado de FormApproval al enviar la respuesta ('approver' |
+    # 'receiver'). Se congela aquí para que cambiar la plantilla del formato
+    # después no reescriba lo que ya pasó.
+    participant_role = Column(
+        String(20), nullable=False, default='approver', server_default='approver'
+    )
+    # De quiénes recibe, heredado al enviar la respuesta.
+    receives_from_user_ids = Column(AutoJSON, nullable=True)
     response = relationship("Response", back_populates="approvals")
-    user = relationship("User")
+    user = relationship("User", foreign_keys=[user_id])
     firm_answer = relationship("Answer", foreign_keys=[firm_answer_id])
     firm_source_question = relationship("Question", foreign_keys=[firm_source_question_id])
 

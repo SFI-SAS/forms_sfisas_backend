@@ -19,7 +19,7 @@ from app.models import Answer, AnswerHistory, ApprovalStatus, CategoryApproval, 
 from app.crud import  _extract_style_config, _serialize_answers, add_category_approver, analyze_form_relations, apply_template_service, bulk_save_category_approvers, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, create_template_service, delete_form, delete_form_category, delete_template_service, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_categories_with_approvers, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_approvals, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_template_detail_service, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, list_templates_service, move_category, process_regisfacial_answer, remove_category_approver, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, sync_form_approvals_from_category, toggle_form_status, update_category_approver, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status, update_template_service, update_form_movimiento
 from app.schemas import AlertMessageRequest, AnswerEditorsConfigOut, AnswerEditorsConfigUpdate, AnswerEditorUserOut, CategoryApprovalBulkSave, CategoryApprovalCreate, CategoryApprovalResponse, CategoryApprovalUpdate, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, FormTemplateCreate, FormTemplateDetail, FormTemplateResponse, FormTemplateUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user, require_roles
-from app.core import field_access
+from app.core import field_access, response_scope
 from io import BytesIO
 import pandas as pd
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -666,11 +666,20 @@ def _apply_design_audience(db, form_id: int, design_response: dict,
             return design_response
 
         config = configs.get(current_user.id)
-        recortar = (
-            field_access.elements_with_mode(config, field_access.HIDDEN)
-            if config is not None
-            else field_access.owned_element_ids(configs)
-        )
+        if config is not None:
+            # Es aprobador o recibidor: no ve los campos que tiene en "No lo ve".
+            recortar = field_access.elements_with_mode(config, field_access.HIDDEN)
+        else:
+            # Quien diligencia: no ve los campos de los aprobadores... salvo los
+            # que se marcaron en el diseñador ("Quien diligencia puede ver lo
+            # que respondan aquí"), o todos si el formato tiene activada la
+            # opción global.
+            form = db.query(Form).filter(Form.id == form_id).first()
+            if form is not None and getattr(form, "show_approver_answers_to_filler", False):
+                recortar = set()
+            else:
+                diseno = design_response.get("form_design")
+                recortar = field_access.owned_element_ids(configs) -                     field_access.elements_visible_to_filler(diseno)
         result["form_design"] = field_access.strip_elements(
             design_response.get("form_design"), recortar
         )
@@ -1388,6 +1397,18 @@ def get_responses_with_answers(
         if history.previous_answer_id:
             previous_answer_ids.add(history.previous_answer_id)
 
+    # ¿El formato deja que quien diligenció vea lo que respondieron sus
+    # aprobadores y recibidores? Por defecto NO: su respuesta muestra solo lo
+    # suyo. Se configura por formato en "Administrar aprobadores".
+    form = db.query(Form).filter(Form.id == form_id).first()
+    mostrar_de_aprobadores = bool(
+        getattr(form, "show_approver_answers_to_filler", False)
+    ) if form else False
+    # Campos sueltos marcados en el diseñador para que su autor los vea.
+    visibles_para_diligenciador = (
+        field_access.elements_visible_to_filler(form.form_design) if form else set()
+    )
+
     result = []
     for r in responses:
         approval_result = get_response_approval_status(r.approvals)
@@ -1398,6 +1419,31 @@ def get_responses_with_answers(
             # Solo incluir respuestas que no sean previous_answer_ids (es decir, las más recientes)
             if answer.id not in previous_answer_ids:
                 current_answers.append(answer)
+
+        # Con la opción activada se agregan las respuestas que escribieron los
+        # aprobadores y recibidores, que viven en SUS propias responses colgadas
+        # de esta. Cada una llega con su autor, así que en el formato se ve
+        # quién respondió qué.
+        if mostrar_de_aprobadores or visibles_para_diligenciador:
+            hijas = response_scope.response_tree_ids(db, r.id)[1:]
+            if hijas:
+                de_ellos = (
+                    db.query(Answer)
+                    .options(joinedload(Answer.question))
+                    .filter(
+                        Answer.response_id.in_(hijas),
+                        ~Answer.id.in_(previous_answer_ids) if previous_answer_ids else True,
+                    )
+                    .all()
+                )
+                # Con la opción global entran todas; si no, solo las de los
+                # campos marcados uno por uno en el diseñador.
+                if not mostrar_de_aprobadores:
+                    de_ellos = [
+                        a for a in de_ellos
+                        if a.form_design_element_id in visibles_para_diligenciador
+                    ]
+                current_answers = current_answers + de_ellos
 
         result.append({
             "response_id": r.id,
