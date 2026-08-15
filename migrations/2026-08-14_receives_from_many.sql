@@ -17,10 +17,9 @@
 -- valores que hubiera en la columna anterior se migran a la lista.
 --
 -- APLICADO EN: forms_sfisas @ localhost
--- PENDIENTE EN: prod (forms_sfisas_dev @ 207.246.75.205)
---   OJO: si en prod nunca se aplicó `2026-08-14_receives_from.sql`, las dos
---   primeras sentencias no encuentran la columna vieja y no pasa nada: el
---   UPDATE simplemente no corre y el DROP es IF EXISTS.
+-- APLICADO EN PROD el 2026-08-14, vía 2026-08-14_pendientes_produccion_recibidores.sql
+--   En prod nunca existió la columna vieja `receives_from_user_id`, así que allá
+--   se creó directamente `receives_from_user_ids` y no hubo nada que migrar.
 -- ═════════════════════════════════════════════════════════════════════════════
 
 ALTER TABLE form_approvals

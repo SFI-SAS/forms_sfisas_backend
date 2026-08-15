@@ -2501,9 +2501,117 @@ def get_my_approver_participations(
     return {"participations": result}
 
 
+@router.get("/received-from-me")
+def get_receipts_of_my_approvals(
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Lo que envié: respuestas que aprobé y que le tocan a un recibidor MÍO.
+
+    Salen las DOS caras: las que ya me recibieron y las que siguen esperando
+    recepción. El campo `status` las distingue ('recibido' | 'sin_recibir').
+
+    "Mío" es literal: solo cuentan los recibidores que cuelgan de mí
+    (`receives_from_user_ids` incluye mi id). Si un recibidor cuelga de otro
+    aprobador de la misma cadena, lo suyo no me aparece — no me recibió a mí.
+
+    Solo entran las respuestas que YO ya aprobé: mientras no apruebe, no he
+    enviado nada y no hay nada que esperar.
+
+    Cada elemento trae el formato, quién lo diligenció, quién lo recibió (o a
+    quién le toca) y cuándo. El detalle se abre aparte con
+    `/my-participations/{response_id}`, que devuelve la respuesta tal como YO
+    la veo (con mis campos y mis filas).
+    """
+    # 1. Las respuestas que ya APROBÉ. Acota todo lo demás.
+    mis_aprobaciones = (
+        db.query(ResponseApproval)
+        .filter(
+            ResponseApproval.user_id == current_user.id,
+            ResponseApproval.participant_role == "approver",
+            ResponseApproval.status == ApprovalStatus.aprobado,
+        )
+        .all()
+    )
+    if not mis_aprobaciones:
+        return {"receipts": []}
+
+    response_ids = [ra.response_id for ra in mis_aprobaciones]
+    mi_estado = {ra.response_id: ra for ra in mis_aprobaciones}
+
+    # 2. Los recibidores de esas respuestas, hayan confirmado o no.
+    recepciones = (
+        db.query(ResponseApproval)
+        .options(joinedload(ResponseApproval.user))
+        .filter(
+            ResponseApproval.response_id.in_(response_ids),
+            ResponseApproval.participant_role == "receiver",
+        )
+        .all()
+    )
+    if not recepciones:
+        return {"receipts": []}
+
+    # 3. Solo las de quien recibe DE MÍ. El filtro va en Python porque la lista
+    #    se guarda como JSON en texto (AutoJSON), no como columna consultable.
+    mias = [
+        ra for ra in recepciones
+        if current_user.id in (getattr(ra, "receives_from_user_ids", None) or [])
+    ]
+    if not mias:
+        return {"receipts": []}
+
+    # 4. Formato y diligenciador de cada respuesta, en una sola consulta.
+    originales = (
+        db.query(Response)
+        .options(joinedload(Response.form), joinedload(Response.user))
+        .filter(Response.id.in_([ra.response_id for ra in mias]))
+        .all()
+    )
+    original_by_id = {r.id: r for r in originales}
+
+    result = []
+    for ra in mias:
+        original = original_by_id.get(ra.response_id)
+        if not original or not original.form:
+            continue
+        yo = mi_estado.get(ra.response_id)
+        recibido = ra.status == ApprovalStatus.aprobado
+        result.append({
+            "response_id": ra.response_id,
+            "form_id": original.form.id,
+            "form_title": original.form.title,
+            "submitted_by": {
+                "user_id": original.user.id,
+                "name": original.user.name,
+            } if original.user else None,
+            "submitted_at": original.submitted_at.isoformat() if original.submitted_at else None,
+            # Quién lo recibió, o a quién le toca recibirlo.
+            "received_by": {
+                "user_id": ra.user.id,
+                "name": ra.user.name,
+            } if ra.user else None,
+            "received_at": ra.reviewed_at.isoformat() if recibido and ra.reviewed_at else None,
+            "receipt_message": ra.message if recibido else None,
+            # 'recibido' o 'sin_recibir'. Es lo que separa las dos caras.
+            "status": "recibido" if recibido else "sin_recibir",
+            # Desde cuándo está esperando: el momento en que YO aprobé.
+            "sent_at": yo.reviewed_at.isoformat() if yo and yo.reviewed_at else None,
+            "my_sequence_number": yo.sequence_number if yo else None,
+        })
+
+    # Lo más reciente primero. Para lo recibido manda la fecha de recepción;
+    # para lo que sigue esperando, desde cuándo espera.
+    result.sort(key=lambda x: (x["received_at"] or x["sent_at"] or ""), reverse=True)
+
+    return {"receipts": result[:max(1, min(limit, 500))]}
+
+
 @router.get("/my-participations/{response_id}")
 def get_my_participation_detail(
     response_id: int,
+    as_user_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -2514,6 +2622,11 @@ def get_my_participation_detail(
     para poder mostrar en el mismo formato quién respondió qué y qué respondí yo.
 
     Solo se puede pedir si soy aprobador de esa respuesta.
+
+    `as_user_id`: mirarlo con los ojos de un RECIBIDOR MÍO, o sea ver exactamente
+    lo que a él le llegó —sus campos y sus filas— y no todo el registro. Se usa
+    desde "Lo que envié", donde cada tarjeta es un recibidor concreto. Solo se
+    permite con recibidores que cuelgan de mí: la vista de otro no es asunto mío.
     """
     original = db.query(Response).filter(Response.id == response_id).first()
     if not original or original.parent_response_id is not None:
@@ -2536,7 +2649,39 @@ def get_my_participation_detail(
     if not form:
         raise HTTPException(status_code=404, detail="Formato no encontrado")
 
-    config = field_access.load_field_access(db, form.id).get(current_user.id)
+    # De quién son los ojos con los que se mira. Por defecto, los míos.
+    ojos_de = current_user.id
+    visto_como = None
+
+    if as_user_id is not None and as_user_id != current_user.id:
+        destino = (
+            db.query(ResponseApproval)
+            .options(joinedload(ResponseApproval.user))
+            .filter(
+                ResponseApproval.response_id == response_id,
+                ResponseApproval.user_id == as_user_id,
+                ResponseApproval.participant_role == "receiver",
+            )
+            .first()
+        )
+        if not destino:
+            raise HTTPException(
+                status_code=404,
+                detail="Esa persona no es recibidora de esta respuesta",
+            )
+        if current_user.id not in (getattr(destino, "receives_from_user_ids", None) or []):
+            raise HTTPException(
+                status_code=403,
+                detail="Ese recibidor no recibe de ti",
+            )
+        ojos_de = as_user_id
+        visto_como = {
+            "user_id": as_user_id,
+            "name": destino.user.name if destino.user else None,
+            "role": "receiver",
+        }
+
+    config = field_access.load_field_access(db, form.id).get(ojos_de)
     design = field_access.collect_design(form.form_design)
 
     # Nombres de todos los que pudieron escribir algo en esta respuesta.
@@ -2594,4 +2739,6 @@ def get_my_participation_detail(
         "form_design": diseno,
         "answers": visibles,
         "condition_visibility": veredictos,
+        # Presente solo cuando se está mirando con los ojos de otro.
+        "viewed_as": visto_como,
     }

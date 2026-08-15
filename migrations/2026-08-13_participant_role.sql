@@ -15,7 +15,7 @@
 --                          la plantilla después no reescriba el pasado
 --
 -- APLICADO EN: forms_sfisas @ localhost
--- PENDIENTE EN: prod (forms_sfisas_dev @ 207.246.75.205)
+-- APLICADO EN PROD el 2026-08-14, vía 2026-08-14_pendientes_produccion_recibidores.sql
 -- ═════════════════════════════════════════════════════════════════════════════
 
 ALTER TABLE form_approvals
