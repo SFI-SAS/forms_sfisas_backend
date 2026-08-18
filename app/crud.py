@@ -3047,16 +3047,31 @@ def _reconstruct_answer_rows(answers):
       los exportadores PDF/Excel).
     - Un campo con un solo valor (top-level, fuera del repetidor) se comparte en
       todas las filas.
+    - Un ARCHIVO sin descripción cuenta como respuesta y se identifica por el
+      nombre del archivo (ver nota abajo).
 
     Devuelve una lista de dicts { question_id: answer_text }, una por fila.
     """
     from collections import defaultdict
     cols = defaultdict(list)
     for a in answers:
-        if a.answer_text is None or a.answer_text == '':
+        texto = a.answer_text
+        # Un adjunto es una respuesta válida aunque no traiga descripción: el
+        # archivo se guarda con `answer_text` = descripción y `file_path` aparte,
+        # y la descripción casi nunca se llena. Descartarlo aquí lo dejaba fuera
+        # de la fila, así que no llegaba a las correlaciones y el autocompletado
+        # dejaba el campo vacío — y sin valor tampoco aparece el enlace de
+        # descarga, que se activa cuando el valor coincide con el nombre listado.
+        #
+        # Se usa el MISMO criterio que la lista de opciones (get_file_answers,
+        # `display_name = answer_text or file_name`) para que ambos lados hablen
+        # de la misma etiqueta.
+        if (texto is None or texto == '') and a.file_path:
+            texto = a.file_path.split("/")[-1].split("\\")[-1]
+        if texto is None or texto == '':
             continue
         order = a.repeater_row_index if a.repeater_row_index is not None else (a.id or 0)
-        cols[a.question_id].append((order, a.answer_text))
+        cols[a.question_id].append((order, texto))
     for qid in cols:
         cols[qid].sort(key=lambda t: t[0])
         cols[qid] = [t[1] for t in cols[qid]]
