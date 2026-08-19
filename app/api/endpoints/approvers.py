@@ -1946,6 +1946,11 @@ class ApproverFieldAccessSchema(BaseModel):
 class FieldAccessUpdateSchema(BaseModel):
     """Mapa user_id → config. Reemplaza la config completa del formato."""
     access: Dict[int, ApproverFieldAccessSchema] = PydanticField(default_factory=dict)
+    # Participantes DINÁMICOS: element_id del campo selector → config. Son los
+    # "recibidores aleatorios", que no tienen usuario hasta que alguien los
+    # escoge al diligenciar. Opcional: si no viene, las que ya estén guardadas
+    # se conservan (a diferencia de `access`, que sí reemplaza por completo).
+    dynamic_access: Optional[Dict[str, ApproverFieldAccessSchema]] = None
 
 
 @router.get("/field-access/form/{form_id}")
@@ -1970,6 +1975,7 @@ def get_form_field_access(
     )
 
     access = {}
+    dynamic_access = {}
     for row in rows:
         config = row.config
         # AutoJSON ya deserializa, pero una fila escrita a mano puede traer str.
@@ -1978,9 +1984,24 @@ def get_form_field_access(
                 config = json.loads(config)
             except (ValueError, TypeError):
                 config = {}
-        access[str(row.user_id)] = config or {"rules": [], "row_filters": []}
+        config = config or {"rules": [], "row_filters": []}
 
-    return {"access": access}
+        # Las de participante dinámico van en su propio mapa: no son de un
+        # usuario, así que meterlas en `access` las dejaría bajo la clave "None".
+        if getattr(row, "dynamic_key", None):
+            dynamic_access[str(row.dynamic_key)] = config
+        elif row.user_id is not None:
+            access[str(row.user_id)] = config
+
+    # Los campos del diseño marcados como "este campo elige al recibidor",
+    # para que la pantalla pueda listarlos aunque todavía no tengan config.
+    selectores = field_access.receiver_selector_elements(form.form_design)
+
+    return {
+        "access": access,
+        "dynamic_access": dynamic_access,
+        "receiver_selectors": selectores,
+    }
 
 
 @router.put("/field-access/form/{form_id}")
@@ -2018,12 +2039,13 @@ def update_form_field_access(
             )
         incoming[user_id] = config.model_dump()
 
-    existing = {
-        row.user_id: row
-        for row in db.query(FormApprovalFieldAccess)
+    todas = (
+        db.query(FormApprovalFieldAccess)
         .filter(FormApprovalFieldAccess.form_id == form_id)
         .all()
-    }
+    )
+    existing = {row.user_id: row for row in todas if not getattr(row, "dynamic_key", None)}
+    existing_dynamic = {row.dynamic_key: row for row in todas if getattr(row, "dynamic_key", None)}
 
     for user_id, config in incoming.items():
         row = existing.get(user_id)
@@ -2039,6 +2061,42 @@ def update_form_field_access(
     for user_id, row in existing.items():
         if user_id not in incoming:
             db.delete(row)
+
+    # ── Participantes dinámicos ──────────────────────────────────────────────
+    # Solo se tocan si el payload los trae: la pantalla de aprobadores y la del
+    # campo guardan por separado, y omitirlos no puede significar "bórralos".
+    if data.dynamic_access is not None:
+        # Solo se acepta config para un campo que de verdad esté marcado como
+        # selector de recibidor, para no dejar reglas colgando de campos que ya
+        # no lo son.
+        marcados = {
+            s["element_id"]
+            for s in field_access.receiver_selector_elements(form.form_design)
+        }
+        entrantes_dyn = {}
+        for element_id, config in data.dynamic_access.items():
+            if element_id not in marcados:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"El campo {element_id} no está marcado como selector de recibidor"
+                )
+            entrantes_dyn[element_id] = config.model_dump()
+
+        for element_id, config in entrantes_dyn.items():
+            row = existing_dynamic.get(element_id)
+            if row:
+                row.config = config
+            else:
+                db.add(FormApprovalFieldAccess(
+                    form_id=form_id,
+                    user_id=None,
+                    dynamic_key=element_id,
+                    config=config
+                ))
+
+        for element_id, row in existing_dynamic.items():
+            if element_id not in entrantes_dyn:
+                db.delete(row)
 
     db.commit()
 
@@ -2115,7 +2173,8 @@ def save_approver_field_answers(
     if not form:
         raise HTTPException(status_code=404, detail="Formato no encontrado")
 
-    config = field_access.load_field_access(db, form.id).get(current_user.id)
+    # La suya, o la del participante dinámico si entró por un campo selector.
+    config = field_access.config_for_participant(db, form.id, response.id, current_user.id)
     if not config:
         raise HTTPException(
             status_code=422,
@@ -2681,7 +2740,8 @@ def get_my_participation_detail(
             "role": "receiver",
         }
 
-    config = field_access.load_field_access(db, form.id).get(ojos_de)
+    # La de ese participante, o la del dinámico si lo eligieron en un campo.
+    config = field_access.config_for_participant(db, form.id, response.id, ojos_de)
     design = field_access.collect_design(form.form_design)
 
     # Nombres de todos los que pudieron escribir algo en esta respuesta.

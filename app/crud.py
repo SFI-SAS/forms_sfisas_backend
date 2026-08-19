@@ -5647,6 +5647,13 @@ async def update_response_approval_status(
     # Es idempotente y no-op si el formato no usa filtros por aprobador.
     field_access.auto_resolve_empty_approvals(db, response_id)
 
+    # 0.b Crear los recibidores que alguien haya elegido en un campo selector.
+    # Va ANTES de tocar el estado: el que acaba de llenar el campo es justo el
+    # que está cerrando su paso ahora, así que su elección ya está guardada y el
+    # nuevo participante tiene que existir antes de decidir a quién le toca.
+    # Es idempotente y no-op si el formato no usa recibidores dinámicos.
+    field_access.resolve_dynamic_receivers(db, response_id)
+
     # 1. Buscar el ResponseApproval correspondiente
     response_approval = db.query(ResponseApproval).filter(
         ResponseApproval.response_id == response_id,

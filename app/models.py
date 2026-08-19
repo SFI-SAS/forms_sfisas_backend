@@ -1,7 +1,7 @@
 from datetime import datetime
 from sqlalchemy import (
     Boolean, Column, BigInteger, DateTime, Integer, SmallInteger, String, Text,
-    ForeignKey, TIMESTAMP, Enum, UniqueConstraint, func, text
+    ForeignKey, TIMESTAMP, Enum, UniqueConstraint, Index, func, text
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -515,13 +515,34 @@ class FormApprovalFieldAccess(Base):
     __tablename__ = 'form_approval_field_access'
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False)
-    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    # Nulo cuando la config NO es de un usuario concreto sino de un participante
+    # dinámico (ver dynamic_key). Exactamente uno de los dos tiene valor.
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=True)
+    # Participante dinámico: id del elemento del form_design marcado como
+    # "este campo elige al recibidor". Ese recibidor no se conoce al diseñar el
+    # formato —lo escoge alguien al diligenciar—, así que su config de campos se
+    # guarda contra el CAMPO y no contra una persona.
+    dynamic_key = Column(String(100), nullable=True)
     config = Column(AutoJSON, nullable=False, default=dict)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), onupdate=func.now(), nullable=True)
 
+    # Un UNIQUE (form_id, user_id) no basta: con user_id nulo dejaría entrar
+    # duplicados, porque dos NULL nunca chocan. Se parte en dos índices únicos
+    # parciales, uno por cada clase de dueño (ver la migración).
     __table_args__ = (
-        UniqueConstraint('form_id', 'user_id', name='uq_form_approval_field_access'),
+        Index(
+            'uq_form_approval_field_access_user',
+            'form_id', 'user_id',
+            unique=True,
+            postgresql_where=text('dynamic_key IS NULL'),
+        ),
+        Index(
+            'uq_form_approval_field_access_dynamic',
+            'form_id', 'dynamic_key',
+            unique=True,
+            postgresql_where=text('dynamic_key IS NOT NULL'),
+        ),
     )
 
     form = relationship("Form")
@@ -565,6 +586,12 @@ class ResponseApproval(Base):
     )
     # De quiénes recibe, heredado al enviar la respuesta.
     receives_from_user_ids = Column(AutoJSON, nullable=True)
+    # Si a este participante lo eligió alguien en un campo selector, aquí queda
+    # el id de ese elemento del form_design. Sirve para dos cosas: aplicarle la
+    # config de campos del participante dinámico (por user_id no la encontraría,
+    # no tiene una suya) y no volver a crearlo si el paso se guarda dos veces.
+    # NULL = participante fijo, venido de la plantilla del formato.
+    dynamic_source_element_id = Column(String(100), nullable=True)
     response = relationship("Response", back_populates="approvals")
     user = relationship("User", foreign_keys=[user_id])
     firm_answer = relationship("Answer", foreign_keys=[firm_answer_id])

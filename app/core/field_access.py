@@ -48,15 +48,66 @@ def load_field_access(db, form_id: int) -> Dict[int, dict]:
     """Devuelve {user_id: config} para todos los aprobadores del formato.
 
     Un aprobador sin fila no aparece: se comporta con el default (`read`).
+
+    Deja fuera las configs de participantes DINÁMICOS (las del recibidor que se
+    elige en un campo): esas no son de un usuario, van por `dynamic_key` y se
+    piden con `load_dynamic_field_access`.
     """
     from app.models import FormApprovalFieldAccess
 
     rows = (
         db.query(FormApprovalFieldAccess)
-        .filter(FormApprovalFieldAccess.form_id == form_id)
+        .filter(
+            FormApprovalFieldAccess.form_id == form_id,
+            FormApprovalFieldAccess.user_id.isnot(None),
+        )
         .all()
     )
     return {row.user_id: _as_dict(row.config) for row in rows}
+
+
+def load_dynamic_field_access(db, form_id: int) -> Dict[str, dict]:
+    """Devuelve {element_id: config} de los participantes dinámicos.
+
+    Son los "recibidores aleatorios": no hay un usuario al que colgar la config
+    porque se elige al diligenciar, así que va contra el campo que lo define.
+    """
+    from app.models import FormApprovalFieldAccess
+
+    rows = (
+        db.query(FormApprovalFieldAccess)
+        .filter(
+            FormApprovalFieldAccess.form_id == form_id,
+            FormApprovalFieldAccess.dynamic_key.isnot(None),
+        )
+        .all()
+    )
+    return {row.dynamic_key: _as_dict(row.config) for row in rows}
+
+
+def config_for_participant(db, form_id: int, response_id: int, user_id: int) -> Optional[dict]:
+    """Config de campos que le toca a un participante EN ESTA respuesta.
+
+    Casi siempre es la suya, la de (formato, usuario). Pero si entró a la cadena
+    porque alguien lo escogió en un campo selector, no tiene una propia: le
+    corresponde la del participante dinámico, que va contra ese campo. Sin esto
+    el recibidor elegido vería todo en solo lectura y nunca sus campos.
+    """
+    from app.models import ResponseApproval
+
+    participacion = (
+        db.query(ResponseApproval)
+        .filter(
+            ResponseApproval.response_id == response_id,
+            ResponseApproval.user_id == user_id,
+        )
+        .first()
+    )
+    origen = getattr(participacion, "dynamic_source_element_id", None) if participacion else None
+    if origen:
+        return load_dynamic_field_access(db, form_id).get(origen)
+
+    return load_field_access(db, form_id).get(user_id)
 
 
 def get_mode(config: Optional[dict], element_id: str) -> str:
@@ -731,3 +782,206 @@ def auto_resolve_empty_approvals(db, response_id: int) -> List[int]:
         db.commit()
 
     return skipped
+
+
+# ─── Recibidor dinámico ("recibidor aleatorio") ──────────────────────────────
+#
+# Un campo tipo lista puede marcarse en el diseño con `props.receiverSelector`.
+# Ese campo lo llena alguien de la cadena —no quien diligencia— y lo que escoge
+# es la PERSONA que va a recibir después de él. Como el usuario no se conoce
+# hasta ese momento, el participante no puede existir en la plantilla del
+# formato: se crea aquí, cuando ya hay una respuesta que leer.
+#
+# Cada campo marcado es un participante independiente, así que un formato puede
+# encadenar varios saltos, cada uno con su campo y su propia config.
+
+
+def receiver_selector_elements(form_design: Any) -> List[dict]:
+    """Campos del diseño marcados como "este campo elige al recibidor".
+
+    Devuelve [{element_id, question_id, label}], en el orden del diseño.
+    """
+    import json
+
+    if isinstance(form_design, str):
+        try:
+            form_design = json.loads(form_design)
+        except (ValueError, TypeError):
+            return []
+
+    if not isinstance(form_design, list):
+        return []
+
+    encontrados: List[dict] = []
+
+    def walk(items: Any) -> None:
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            props = item.get("props") or {}
+            if props.get("receiverSelector") and item.get("id"):
+                encontrados.append({
+                    "element_id": str(item["id"]),
+                    "question_id": item.get("id_question") or item.get("linkExternalId"),
+                    "label": props.get("label") or "Recibidor",
+                })
+            walk(item.get("children"))
+
+    walk(form_design)
+    return encontrados
+
+
+def resolve_receiver_user(db, valor: Any):
+    """Usuario que representa el valor elegido en un campo selector de recibidor.
+
+    El campo guarda texto, así que se busca por lo más identificable primero.
+    El frontend arma cada opción como "Nombre (correo)" y, cuando no puede ver
+    el correo —a un usuario normal el directorio le llega sin correos—, como
+    "Nombre (#id)". Se aceptan las dos formas, luego el texto entero como
+    correo, y por último el nombre exacto. Devuelve None si no se puede resolver
+    a una única persona: ante la duda es mejor no crear un participante
+    equivocado.
+    """
+    import re
+    from sqlalchemy import func
+    from app.models import User
+
+    if valor is None:
+        return None
+    texto = str(valor).strip()
+    if not texto:
+        return None
+
+    entre_parentesis = re.search(r"\(([^)]+)\)\s*$", texto)
+    candidatos = []
+    if entre_parentesis:
+        candidatos.append(entre_parentesis.group(1).strip())
+    candidatos.append(texto)
+
+    for candidato in candidatos:
+        # "#123" → id directo, la forma más fiable.
+        if candidato.startswith("#") and candidato[1:].isdigit():
+            usuario = db.query(User).filter(User.id == int(candidato[1:])).first()
+            if usuario:
+                return usuario
+        if "@" not in candidato:
+            continue
+        usuario = db.query(User).filter(func.lower(User.email) == candidato.lower()).first()
+        if usuario:
+            return usuario
+
+    # Último recurso: nombre exacto, y solo si no hay homónimos.
+    por_nombre = db.query(User).filter(User.name == texto).all()
+    if len(por_nombre) == 1:
+        return por_nombre[0]
+
+    return None
+
+
+def resolve_dynamic_receivers(db, response_id: int) -> List[int]:
+    """Crea los recibidores elegidos en campos selectores de esta respuesta.
+
+    Por cada campo marcado que ya tenga respuesta y cuyo participante todavía no
+    exista, añade su `ResponseApproval` con papel 'receiver'.
+
+    El nuevo entra al FINAL de la cadena. Se hizo así a propósito: la secuencia
+    es la clave con la que se localiza cada aprobación, y renumerar filas ya
+    creadas para colarlo en mitad del flujo es mucho más arriesgado que ponerlo
+    detrás. En el caso previsto —el último de la cadena escoge a quien le
+    recibe— es además la misma posición.
+
+    Es idempotente: si el participante de ese campo ya existe, no hace nada.
+    Devuelve los user_id creados.
+    """
+    from app.core import response_scope
+    from app.models import Answer, ApprovalStatus, Form, Response, ResponseApproval
+
+    response = db.query(Response).filter(Response.id == response_id).first()
+    if not response:
+        return []
+
+    form = db.query(Form).filter(Form.id == response.form_id).first()
+    if not form:
+        return []
+
+    selectores = receiver_selector_elements(form.form_design)
+    if not selectores:
+        return []
+
+    # Ya creados, para no duplicar si el paso se guarda dos veces.
+    existentes = {
+        ra.dynamic_source_element_id
+        for ra in db.query(ResponseApproval)
+        .filter(
+            ResponseApproval.response_id == response_id,
+            ResponseApproval.dynamic_source_element_id.isnot(None),
+        )
+        .all()
+    }
+    pendientes = [s for s in selectores if s["element_id"] not in existentes]
+    if not pendientes:
+        return []
+
+    # La respuesta del campo puede vivir en la respuesta hija del participante
+    # que lo llenó, no en la padre: hay que mirar el árbol completo.
+    answers = (
+        db.query(Answer)
+        .filter(Answer.response_id.in_(response_scope.response_tree_ids(db, response_id)))
+        .all()
+    )
+
+    ya_en_cadena = {
+        ra.user_id
+        for ra in db.query(ResponseApproval)
+        .filter(ResponseApproval.response_id == response_id)
+        .all()
+    }
+    siguiente_secuencia = max(
+        [
+            ra.sequence_number
+            for ra in db.query(ResponseApproval)
+            .filter(ResponseApproval.response_id == response_id)
+            .all()
+        ] or [0]
+    )
+
+    creados: List[int] = []
+    for selector in pendientes:
+        respuesta = next(
+            (
+                a for a in answers
+                if str(_get(a, "form_design_element_id") or "") == selector["element_id"]
+                and (_get(a, "answer_text") or "").strip()
+            ),
+            None,
+        )
+        if respuesta is None:
+            continue  # todavía nadie lo ha llenado
+
+        usuario = resolve_receiver_user(db, _get(respuesta, "answer_text"))
+        if usuario is None:
+            continue
+        # Ya está en la cadena (es el mismo que lo eligió, o un participante
+        # fijo): no se duplica, recibiría dos veces lo mismo.
+        if usuario.id in ya_en_cadena:
+            continue
+
+        siguiente_secuencia += 1
+        db.add(ResponseApproval(
+            response_id=response_id,
+            user_id=usuario.id,
+            sequence_number=siguiente_secuencia,
+            is_mandatory=True,
+            status=ApprovalStatus.pendiente,
+            participant_role="receiver",
+            dynamic_source_element_id=selector["element_id"],
+        ))
+        ya_en_cadena.add(usuario.id)
+        creados.append(usuario.id)
+
+    if creados:
+        db.commit()
+
+    return creados
