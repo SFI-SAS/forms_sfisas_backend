@@ -226,6 +226,24 @@ async def create_answer(
             relation_bitacora.id  # 👈 NUEVO
         )
 
+        # ── Recibidor elegido en un campo ────────────────────────────────────
+        # Si esta answer es la de un campo marcado como "elige al recibidor", ya
+        # se puede crear ese participante. Se hace aquí porque la respuesta se
+        # crea ANTES que sus answers: al crearla todavía no había nada que leer.
+        #
+        # Solo cuesta algo cuando la answer es justo la de uno de esos campos, y
+        # la función es idempotente, así que repetirla no duplica a nadie.
+        if element_id:
+            marcados = {
+                s["element_id"]
+                for s in field_access.receiver_selector_elements(form.form_design)
+            }
+            if element_id in marcados:
+                try:
+                    field_access.resolve_dynamic_receivers(db, response.id)
+                except Exception as e:
+                    logger.error(f"No se pudo crear el recibidor elegido: {e}")
+
     # Retornar respuesta
     if isinstance(payload, list):
         return {"message": f"{len(answers_list)} answers created", "count": len(answers_list)}

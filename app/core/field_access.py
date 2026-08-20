@@ -926,11 +926,18 @@ def resolve_dynamic_receivers(db, response_id: int) -> List[int]:
 
     # La respuesta del campo puede vivir en la respuesta hija del participante
     # que lo llenó, no en la padre: hay que mirar el árbol completo.
+    ids_arbol = response_scope.response_tree_ids(db, response_id)
     answers = (
         db.query(Answer)
-        .filter(Answer.response_id.in_(response_scope.response_tree_ids(db, response_id)))
+        .filter(Answer.response_id.in_(ids_arbol))
         .all()
     )
+    # Dueño de cada respuesta del árbol: sirve para saber QUIÉN eligió cuando la
+    # answer no trae autor (las del diligenciador no lo llevan).
+    dueno_de_respuesta = {
+        r.id: r.user_id
+        for r in db.query(Response).filter(Response.id.in_(ids_arbol)).all()
+    }
 
     ya_en_cadena = {
         ra.user_id
@@ -968,6 +975,18 @@ def resolve_dynamic_receivers(db, response_id: int) -> List[int]:
         if usuario.id in ya_en_cadena:
             continue
 
+        # De quién recibe: de quien lo eligió. Sin esto el recibidor no cuelga de
+        # nadie, y "Formatos por recibir → lo que envié" —que busca a los
+        # recibidores cuyo `receives_from_user_ids` contiene al aprobador— no se
+        # lo mostraría nunca a quien lo escogió.
+        #
+        # Las answers del participante llevan autor; las de quien diligencia no,
+        # y ahí el dueño es el de la respuesta donde vive la answer.
+        elector = (
+            _get(respuesta, "answered_by_user_id")
+            or dueno_de_respuesta.get(_get(respuesta, "response_id"))
+        )
+
         siguiente_secuencia += 1
         db.add(ResponseApproval(
             response_id=response_id,
@@ -976,6 +995,7 @@ def resolve_dynamic_receivers(db, response_id: int) -> List[int]:
             is_mandatory=True,
             status=ApprovalStatus.pendiente,
             participant_role="receiver",
+            receives_from_user_ids=[elector] if elector else None,
             dynamic_source_element_id=selector["element_id"],
         ))
         ya_en_cadena.add(usuario.id)

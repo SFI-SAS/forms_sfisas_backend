@@ -2741,7 +2741,7 @@ def get_my_participation_detail(
         }
 
     # La de ese participante, o la del dinámico si lo eligieron en un campo.
-    config = field_access.config_for_participant(db, form.id, response.id, ojos_de)
+    config = field_access.config_for_participant(db, form.id, original.id, ojos_de)
     design = field_access.collect_design(form.form_design)
 
     # Nombres de todos los que pudieron escribir algo en esta respuesta.

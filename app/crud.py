@@ -4254,14 +4254,63 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
         .all()
     )
 
+    # ── Participaciones que NO están en la plantilla del formato ─────────────
+    # El "recibidor aleatorio" entra a la cadena en marcha: alguien lo elige en
+    # un campo mientras se diligencia o se aprueba, así que nunca tuvo fila en
+    # `form_approvals`. Mirando solo la plantilla, su pendiente no existía para
+    # él y el formato no le llegaba nunca.
+    dinamicas = (
+        db.query(ResponseApproval)
+        .filter(
+            ResponseApproval.user_id == user_id,
+            ResponseApproval.dynamic_source_element_id.isnot(None),
+        )
+        .all()
+    )
+    if dinamicas:
+        from types import SimpleNamespace
+
+        ya_cubiertos = {fa.form.id for fa in form_approvals if fa.form}
+        formatos_de_respuesta = {
+            r.id: r.form_id
+            for r in db.query(Response)
+            .filter(Response.id.in_([ra.response_id for ra in dinamicas]))
+            .all()
+        }
+        for ra in dinamicas:
+            form_id_dinamico = formatos_de_respuesta.get(ra.response_id)
+            if not form_id_dinamico or form_id_dinamico in ya_cubiertos:
+                continue
+            form_obj = db.query(Form).filter(Form.id == form_id_dinamico).first()
+            if not form_obj:
+                continue
+            ya_cubiertos.add(form_id_dinamico)
+            # El plazo se hereda de la plantilla del formato, que es de donde
+            # sale para todos los demás participantes.
+            plantilla = (
+                db.query(FormApproval)
+                .filter(FormApproval.form_id == form_id_dinamico, FormApproval.is_active == True)
+                .first()
+            )
+            form_approvals.append(SimpleNamespace(
+                form=form_obj,
+                deadline_days=plantilla.deadline_days if plantilla else None,
+            ))
+
     for form_approval in form_approvals:
         form = form_approval.form
 
         # Config de campos/filas de ESTE aprobador en ESTE formato. Decide qué
         # answers se le envían y qué filas del repetidor le llegan.
         # Sin config → ve todo en solo lectura (comportamiento de siempre).
-        fa_config = field_access.load_field_access(db, form.id).get(user_id)
-        fa_design = field_access.collect_design(form.form_design) if fa_config else None
+        #
+        # Se resuelve por FORMATO; más abajo, ya dentro de cada respuesta, se
+        # sustituye por la del participante dinámico cuando toca (ese no tiene
+        # config propia: la suya va contra el campo que lo eligió).
+        fa_config_formato = field_access.load_field_access(db, form.id).get(user_id)
+        fa_design_formato = field_access.collect_design(form.form_design)
+        fa_config = fa_config_formato
+        fa_design = fa_design_formato if fa_config else None
 
         # Obtener requisitos de aprobación para este formulario y usuario
         approval_requirements = (
@@ -4461,6 +4510,18 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
                     }
                 
                 answers_data.append(answer_data)
+
+            # Si a este usuario lo eligieron en un campo, su configuración no es
+            # la del formato —no tiene una— sino la del participante dinámico,
+            # la que se ve en "Editar formato" como "Recibidor aleatorio".
+            if getattr(response_approval, "dynamic_source_element_id", None):
+                fa_config = field_access.load_dynamic_field_access(db, form.id).get(
+                    response_approval.dynamic_source_element_id
+                )
+                fa_design = fa_design_formato if fa_config else None
+            else:
+                fa_config = fa_config_formato
+                fa_design = fa_design_formato if fa_config else None
 
             # Recorte por aprobador: fuera los campos que no debe ver y fuera
             # las filas del repetidor que no pasan su filtro. Se hace aquí, en
