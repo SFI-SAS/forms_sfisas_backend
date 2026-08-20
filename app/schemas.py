@@ -414,8 +414,14 @@ class ApproverSchema(BaseModel):
     #   'receiver' → recibe lo que otro aprobó; mismo flujo, otra sección
     participant_role: Literal["approver", "receiver"] = Field(default="approver")
     # Solo para recibidores: user_id de los aprobadores de los que cuelgan.
-    # Varios aprobadores pueden compartir el mismo recibidor.
+    # Varios aprobadores pueden compartir el mismo recibidor. Vacío = recibidor
+    # SUELTO, que cuelga del diligenciador y no de un aprobador.
     receives_from_user_ids: Optional[List[int]] = None
+    # Cuándo le llega al recibidor suelto: 'on_submit' (al enviarse la respuesta)
+    # o 'after_approvals' (cuando aprueben todos los obligatorios, default).
+    receive_timing: Literal["on_submit", "after_approvals"] = Field(
+        default="after_approvals"
+    )
 
     @model_validator(mode="after")
     def _validate_firm_source(self) -> "ApproverSchema":
@@ -514,8 +520,10 @@ class FormApprovalInfo(BaseModel):
     firm_source_question_id: Optional[int] = None
     # 'approver' (default) | 'receiver': quien recibe lo que otro aprobó.
     participant_role: str = "approver"
-    # De quién recibe (solo recibidores).
+    # De quién recibe (solo recibidores). Vacío = suelto.
     receives_from_user_ids: Optional[List[int]] = None
+    # Cuándo le llega al recibidor suelto.
+    receive_timing: str = "after_approvals"
     user: UserInfo
 
     class Config:
@@ -546,6 +554,7 @@ class FormApprovalUpdate(BaseModel):
     firm_source_question_id: Optional[int] = None
     participant_role: Optional[Literal["approver", "receiver"]] = None
     receives_from_user_ids: Optional[List[int]] = None
+    receive_timing: Optional[Literal["on_submit", "after_approvals"]] = None
 
 class BulkUpdateFormApprovals(BaseModel):
     updates: List[FormApprovalUpdate]

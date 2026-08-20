@@ -1095,6 +1095,8 @@ async def post_create_response(
                     # Aprobador o recibidor: se congela al enviar.
                     participant_role=getattr(approver, "participant_role", "approver") or "approver",
                     receives_from_user_ids=getattr(approver, "receives_from_user_ids", None),
+                    # Cuándo le toca al recibidor suelto: también se congela.
+                    receive_timing=getattr(approver, "receive_timing", None) or "after_approvals",
                 )
                 db.add(response_approval)
                 approvers_created += 1
@@ -4183,6 +4185,7 @@ def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
                     # Aprobador o recibidor.
                     participant_role=getattr(approver, "participant_role", "approver") or "approver",
                     receives_from_user_ids=getattr(approver, "receives_from_user_ids", None),
+                    receive_timing=getattr(approver, "receive_timing", None) or "after_approvals",
                 )
                 db.add(new_approval)
                 newly_created_user_ids.append(approver.user_id)
@@ -4199,7 +4202,8 @@ def save_form_approvals(data: FormApprovalCreateSchema, db: Session):
                 firm_source_question_id=getattr(approver, "firm_source_question_id", None),
                 # Aprobador o recibidor.
                 participant_role=getattr(approver, "participant_role", "approver") or "approver",
-                    receives_from_user_ids=getattr(approver, "receives_from_user_ids", None),
+                receives_from_user_ids=getattr(approver, "receives_from_user_ids", None),
+                receive_timing=getattr(approver, "receive_timing", None) or "after_approvals",
             )
             db.add(new_approval)
             newly_created_user_ids.append(approver.user_id)
@@ -4369,14 +4373,37 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
             # Si alguno de sus aprobadores rechaza, no hay nada que recibir y
             # el pendiente no le aparece nunca.
             #
+            # RECIBIDOR SUELTO (sin `receives_from_user_ids`): no cuelga de un
+            # aprobador sino del DILIGENCIADOR, así que no hace fila con nadie.
+            # Su `receive_timing` decide a qué espera:
+            #   'on_submit'       → a nada: le llega al enviarse la respuesta.
+            #   'after_approvals' → a todos los APROBADORES obligatorios (no a
+            #                       los otros recibidores: dos sueltos reciben a
+            #                       la vez, y si el formato no tiene aprobadores
+            #                       le llega al enviarse igual que con
+            #                       'on_submit').
+            #
             # APROBADOR: en modo SECUENCIAL espera a todos los obligatorios que
             # van antes. En modo PARALELO no hay turno y ve su pendiente desde
             # el inicio.
             recibe_de = getattr(response_approval, "receives_from_user_ids", None) or []
             approval_mode = getattr(form, "approval_mode", "sequential")
+            soy_recibidor = (
+                getattr(response_approval, "participant_role", None) or "approver"
+            ) == "receiver"
 
             if recibe_de:
                 previos = [ra for ra in all_ra_sorted if ra.user_id in recibe_de]
+            elif soy_recibidor:
+                espera = getattr(response_approval, "receive_timing", None) or "after_approvals"
+                if espera == "on_submit":
+                    previos = []
+                else:
+                    previos = [
+                        ra for ra in all_ra_sorted
+                        if ra.is_mandatory
+                        and (getattr(ra, "participant_role", None) or "approver") == "approver"
+                    ]
             elif approval_mode != "parallel":
                 previos = [
                     ra for ra in all_ra_sorted
@@ -4937,14 +4964,23 @@ def get_next_mandatory_approver(response_id: int, db: Session):
     # ✅ NUEVO: detectar modo de aprobación
     approval_mode = getattr(form, "approval_mode", "sequential")
  
-    # Obtener la plantilla de aprobadores activa
-    form_approval_template = (
-        db.query(FormApproval)
-        .filter(FormApproval.form_id == form.id, FormApproval.is_active == True)
-        .order_by(FormApproval.sequence_number)
-        .all()
-    )
- 
+    # Obtener la plantilla de aprobadores activa.
+    #
+    # Solo APROBADORES: a los recibidores se les avisa en el bloque de más abajo,
+    # que sabe a qué espera cada uno y les pone su propio asunto. Colados aquí,
+    # un recibidor recibía el correo de "Pendiente aprobación" y, en el modo
+    # secuencial, el `break` del primer obligatorio se comía a los que venían
+    # detrás.
+    form_approval_template = [
+        fa for fa in (
+            db.query(FormApproval)
+            .filter(FormApproval.form_id == form.id, FormApproval.is_active == True)
+            .order_by(FormApproval.sequence_number)
+            .all()
+        )
+        if (getattr(fa, "participant_role", None) or "approver") == "approver"
+    ]
+
     # Obtener aprobaciones realizadas
     response_approvals = (
         db.query(ResponseApproval)
@@ -5018,14 +5054,31 @@ def get_next_mandatory_approver(response_id: int, db: Session):
     }
     ya_en_lista = {s["email"] for s in siguientes_aprobadores}
 
+    # Los aprobadores obligatorios de la cadena: a ellos espera el recibidor
+    # suelto que no recibe al enviarse.
+    obligatorios_pendientes = [
+        ra for ra in response_approvals
+        if (getattr(ra, "participant_role", None) or "approver") == "approver"
+        and ra.is_mandatory
+        and ra.status != ApprovalStatus.aprobado
+    ]
+
     for ra in response_approvals:
         if (getattr(ra, "participant_role", None) or "approver") != "receiver":
             continue
         if ra.status != ApprovalStatus.pendiente or not ra.user:
             continue
         recibe_de = getattr(ra, "receives_from_user_ids", None) or []
-        if not recibe_de or not all(uid in ya_aprobaron for uid in recibe_de):
-            continue  # todavía falta que alguno de sus aprobadores apruebe
+        if recibe_de:
+            if not all(uid in ya_aprobaron for uid in recibe_de):
+                continue  # todavía falta que alguno de sus aprobadores apruebe
+        else:
+            # Recibidor SUELTO: cuelga del diligenciador. Le toca al enviarse la
+            # respuesta, o cuando ya no quede ningún aprobador obligatorio
+            # pendiente —que en un formato sin aprobadores es lo mismo—.
+            espera = getattr(ra, "receive_timing", None) or "after_approvals"
+            if espera != "on_submit" and obligatorios_pendientes:
+                continue
         if ra.user.email in ya_en_lista:
             continue
         siguientes_aprobadores.append({

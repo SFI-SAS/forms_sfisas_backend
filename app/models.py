@@ -490,7 +490,22 @@ class FormApproval(Base):
     #
     # Su lugar en la cadena es después del ÚLTIMO de sus aprobadores: no puede
     # recibir algo que todavía no han aprobado todos.
+    #
+    # Vacío = recibidor SUELTO: no cuelga de ningún aprobador sino del
+    # diligenciador. Su turno lo decide `receive_timing`.
     receives_from_user_ids = Column(AutoJSON, nullable=True)
+    # Cuándo le llega el pendiente a un recibidor SUELTO (CHECK en BD):
+    #   'on_submit'       → apenas se envía la respuesta, en paralelo con la
+    #                       cadena de aprobación si es que hay alguna.
+    #   'after_approvals' → cuando todos los aprobadores obligatorios aprueben
+    #                       (DEFAULT). En un formato sin aprobadores es lo mismo
+    #                       que 'on_submit': no hay a quién esperar.
+    # No aplica a los recibidores que cuelgan de un aprobador: para esos manda
+    # `receives_from_user_ids` y esto se ignora.
+    receive_timing = Column(
+        String(20), nullable=False, default='after_approvals',
+        server_default='after_approvals'
+    )
     form = relationship("Form", backref="approval_template")
     user = relationship("User", backref="forms_to_approve", foreign_keys=[user_id])
     firm_source_question = relationship("Question", foreign_keys=[firm_source_question_id])
@@ -584,8 +599,15 @@ class ResponseApproval(Base):
     participant_role = Column(
         String(20), nullable=False, default='approver', server_default='approver'
     )
-    # De quiénes recibe, heredado al enviar la respuesta.
+    # De quiénes recibe, heredado al enviar la respuesta. Vacío = recibidor
+    # suelto (cuelga del diligenciador).
     receives_from_user_ids = Column(AutoJSON, nullable=True)
+    # Cuándo le toca al recibidor suelto, heredado al enviar la respuesta:
+    # 'on_submit' | 'after_approvals'. Ver FormApproval.receive_timing.
+    receive_timing = Column(
+        String(20), nullable=False, default='after_approvals',
+        server_default='after_approvals'
+    )
     # Si a este participante lo eligió alguien en un campo selector, aquí queda
     # el id de ese elemento del form_design. Sirve para dos cosas: aplicarle la
     # config de campos del participante dinámico (por user_id no la encontraría,

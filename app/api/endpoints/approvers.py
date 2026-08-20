@@ -480,6 +480,14 @@ def bulk_update_form_approvals(
             recibe_de = getattr(existing, "receives_from_user_ids", None)
         recibe_changed = (getattr(existing, "receives_from_user_ids", None) or []) != (recibe_de or [])
 
+        # Cuándo le llega al recibidor suelto. Misma resolución.
+        timing = getattr(update, "receive_timing", None) or (
+            getattr(existing, "receive_timing", None) or "after_approvals"
+        )
+        timing_changed = (
+            getattr(existing, "receive_timing", None) or "after_approvals"
+        ) != timing
+
         # Coherencia: si el modo final no es 'button', exigir pregunta fuente.
         if firm_mode != "button" and firm_source_qid is None:
             raise HTTPException(
@@ -489,7 +497,7 @@ def bulk_update_form_approvals(
                 )
             )
 
-        if user_changed or seq_changed or mandatory_changed or firm_changed or firm_source_changed or rol_changed or recibe_changed:
+        if user_changed or seq_changed or mandatory_changed or firm_changed or firm_source_changed or rol_changed or recibe_changed or timing_changed:
             # Desactivar el actual
             existing.is_active = False
 
@@ -505,6 +513,7 @@ def bulk_update_form_approvals(
                 firm_source_question_id=firm_source_qid,
                 participant_role=rol,
                 receives_from_user_ids=recibe_de,
+                receive_timing=timing,
             )
             db.add(new_approval)
 
@@ -534,6 +543,7 @@ def bulk_update_form_approvals(
                 # se mueve de sección sin tener que reenviar la respuesta.
                 ra.participant_role = rol
                 ra.receives_from_user_ids = recibe_de
+                ra.receive_timing = timing
 
         else:
             # Si no hubo cambio crítico, solo actualiza campos simples
@@ -2390,6 +2400,7 @@ def normalize_chain_sequence(
             posicion,
             getattr(fa, "participant_role", None) or "approver",
             getattr(fa, "receives_from_user_ids", None),
+            getattr(fa, "receive_timing", None) or "after_approvals",
         )
 
     # Propagar a las aprobaciones que siguen pendientes, para que el cambio
@@ -2407,10 +2418,11 @@ def normalize_chain_sequence(
         destino = nuevo_por_usuario.get(ra.user_id)
         if not destino:
             continue
-        secuencia, rol, recibe_de = destino
+        secuencia, rol, recibe_de, timing = destino
         ra.sequence_number = secuencia
         ra.participant_role = rol
         ra.receives_from_user_ids = recibe_de
+        ra.receive_timing = timing
 
     db.commit()
     return {"ok": True, "reordenados": cambios, "total": len(activos)}
@@ -2566,24 +2578,33 @@ def get_receipts_of_my_approvals(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Lo que envié: respuestas que aprobé y que le tocan a un recibidor MÍO.
+    """Lo que envié: lo que mandé cadena abajo y quién me lo recibió.
 
-    Salen las DOS caras: las que ya me recibieron y las que siguen esperando
+    Salen las DOS caras: lo que ya me recibieron y lo que sigue esperando
     recepción. El campo `status` las distingue ('recibido' | 'sin_recibir').
 
-    "Mío" es literal: solo cuentan los recibidores que cuelgan de mí
-    (`receives_from_user_ids` incluye mi id). Si un recibidor cuelga de otro
-    aprobador de la misma cadena, lo suyo no me aparece — no me recibió a mí.
+    Hay dos maneras de haber enviado algo, y `sent_as` dice cuál es cada una:
 
-    Solo entran las respuestas que YO ya aprobé: mientras no apruebe, no he
-    enviado nada y no hay nada que esperar.
+    - `approver`: aprobé una respuesta y detrás de mí hay un recibidor MÍO.
+      "Mío" es literal: solo cuentan los que cuelgan de mí
+      (`receives_from_user_ids` incluye mi id). Si un recibidor cuelga de otro
+      aprobador de la misma cadena, lo suyo no me aparece — no me recibió a mí.
+      Y solo entran las respuestas que YA aprobé: mientras no apruebe, no he
+      enviado nada.
+
+    - `filler`: yo diligencié la respuesta y el formato tiene recibidores
+      SUELTOS (sin `receives_from_user_ids`), que no cuelgan de ningún aprobador
+      sino de mí. Así el diligenciador se entera de que su formato llegó a
+      destino, aunque no haya cadena de aprobación de por medio.
 
     Cada elemento trae el formato, quién lo diligenció, quién lo recibió (o a
     quién le toca) y cuándo. El detalle se abre aparte con
     `/my-participations/{response_id}`, que devuelve la respuesta tal como YO
     la veo (con mis campos y mis filas).
     """
-    # 1. Las respuestas que ya APROBÉ. Acota todo lo demás.
+    TOPE = 1000  # techo de seguridad de cada consulta, antes de recortar a `limit`
+
+    # ── 1. Como APROBADOR: las respuestas que ya aprobé acotan todo lo demás ──
     mis_aprobaciones = (
         db.query(ResponseApproval)
         .filter(
@@ -2593,35 +2614,57 @@ def get_receipts_of_my_approvals(
         )
         .all()
     )
-    if not mis_aprobaciones:
-        return {"receipts": []}
-
-    response_ids = [ra.response_id for ra in mis_aprobaciones]
     mi_estado = {ra.response_id: ra for ra in mis_aprobaciones}
 
-    # 2. Los recibidores de esas respuestas, hayan confirmado o no.
-    recepciones = (
-        db.query(ResponseApproval)
-        .options(joinedload(ResponseApproval.user))
-        .filter(
-            ResponseApproval.response_id.in_(response_ids),
-            ResponseApproval.participant_role == "receiver",
-        )
-        .all()
-    )
-    if not recepciones:
-        return {"receipts": []}
+    # Los recibidores de esas respuestas, hayan confirmado o no. El filtro de
+    # "recibe de mí" va en Python porque la lista se guarda como JSON en texto
+    # (AutoJSON), no como columna consultable.
+    como_aprobador = []
+    if mis_aprobaciones:
+        como_aprobador = [
+            ra for ra in (
+                db.query(ResponseApproval)
+                .options(joinedload(ResponseApproval.user))
+                .filter(
+                    ResponseApproval.response_id.in_([ra.response_id for ra in mis_aprobaciones]),
+                    ResponseApproval.participant_role == "receiver",
+                )
+                .all()
+            )
+            if current_user.id in (getattr(ra, "receives_from_user_ids", None) or [])
+        ]
 
-    # 3. Solo las de quien recibe DE MÍ. El filtro va en Python porque la lista
-    #    se guarda como JSON en texto (AutoJSON), no como columna consultable.
-    mias = [
-        ra for ra in recepciones
-        if current_user.id in (getattr(ra, "receives_from_user_ids", None) or [])
+    # ── 2. Como DILIGENCIADOR: los recibidores sueltos de MIS respuestas ─────
+    # El recibidor suelto no cuelga de ningún aprobador: cuelga de quien
+    # diligenció, o sea de mí.
+    como_diligenciador = [
+        ra for ra in (
+            db.query(ResponseApproval)
+            .options(joinedload(ResponseApproval.user))
+            .join(Response, ResponseApproval.response_id == Response.id)
+            .filter(
+                Response.user_id == current_user.id,
+                Response.parent_response_id.is_(None),
+                ResponseApproval.participant_role == "receiver",
+            )
+            .order_by(ResponseApproval.id.desc())
+            .limit(TOPE)
+            .all()
+        )
+        if not (getattr(ra, "receives_from_user_ids", None) or [])
+    ]
+
+    # Una misma recepción no puede salir dos veces (si diligencié Y aprobé, la
+    # cara de aprobador es la que manda: es la que dice desde cuándo espera).
+    vistos = {(ra.response_id, ra.user_id) for ra in como_aprobador}
+    mias = como_aprobador + [
+        ra for ra in como_diligenciador
+        if (ra.response_id, ra.user_id) not in vistos
     ]
     if not mias:
         return {"receipts": []}
 
-    # 4. Formato y diligenciador de cada respuesta, en una sola consulta.
+    # ── 3. Formato y diligenciador de cada respuesta, en una sola consulta ───
     originales = (
         db.query(Response)
         .options(joinedload(Response.form), joinedload(Response.user))
@@ -2629,6 +2672,7 @@ def get_receipts_of_my_approvals(
         .all()
     )
     original_by_id = {r.id: r for r in originales}
+    ids_como_aprobador = {(ra.response_id, ra.user_id) for ra in como_aprobador}
 
     result = []
     for ra in mias:
@@ -2637,6 +2681,7 @@ def get_receipts_of_my_approvals(
             continue
         yo = mi_estado.get(ra.response_id)
         recibido = ra.status == ApprovalStatus.aprobado
+        como = "approver" if (ra.response_id, ra.user_id) in ids_como_aprobador else "filler"
         result.append({
             "response_id": ra.response_id,
             "form_id": original.form.id,
@@ -2655,8 +2700,14 @@ def get_receipts_of_my_approvals(
             "receipt_message": ra.message if recibido else None,
             # 'recibido' o 'sin_recibir'. Es lo que separa las dos caras.
             "status": "recibido" if recibido else "sin_recibir",
-            # Desde cuándo está esperando: el momento en que YO aprobé.
-            "sent_at": yo.reviewed_at.isoformat() if yo and yo.reviewed_at else None,
+            # Con qué sombrero lo envié: aprobándolo o diligenciándolo.
+            "sent_as": como,
+            # Desde cuándo está esperando: cuando aprobé yo, o cuando envié la
+            # respuesta si lo que hice fue diligenciarla.
+            "sent_at": (
+                yo.reviewed_at.isoformat() if como == "approver" and yo and yo.reviewed_at
+                else (original.submitted_at.isoformat() if original.submitted_at else None)
+            ),
             "my_sequence_number": yo.sequence_number if yo else None,
         })
 
@@ -2680,12 +2731,15 @@ def get_my_participation_detail(
     —las de quien diligenció y las de cada aprobador— con el autor de cada una,
     para poder mostrar en el mismo formato quién respondió qué y qué respondí yo.
 
-    Solo se puede pedir si soy aprobador de esa respuesta.
+    Solo se puede pedir si soy aprobador de esa respuesta, o si la diligencié yo
+    (el dueño de la respuesta ve lo suyo).
 
     `as_user_id`: mirarlo con los ojos de un RECIBIDOR MÍO, o sea ver exactamente
     lo que a él le llegó —sus campos y sus filas— y no todo el registro. Se usa
     desde "Lo que envié", donde cada tarjeta es un recibidor concreto. Solo se
-    permite con recibidores que cuelgan de mí: la vista de otro no es asunto mío.
+    permite con recibidores que cuelgan de mí: los que me nombran en
+    `receives_from_user_ids` si soy aprobador, y los SUELTOS de mi propia
+    respuesta si la diligencié yo. La vista de otro no es asunto mío.
     """
     original = db.query(Response).filter(Response.id == response_id).first()
     if not original or original.parent_response_id is not None:
@@ -2699,7 +2753,10 @@ def get_my_participation_detail(
         )
         .first()
     )
-    if not approval:
+    # El diligenciador no está en la cadena, pero la respuesta es suya: entra
+    # para poder ver a quién le llegó lo que envió.
+    soy_diligenciador = original.user_id == current_user.id
+    if not approval and not soy_diligenciador:
         raise HTTPException(
             status_code=403, detail="No estás en la cadena de esta respuesta"
         )
@@ -2728,7 +2785,14 @@ def get_my_participation_detail(
                 status_code=404,
                 detail="Esa persona no es recibidora de esta respuesta",
             )
-        if current_user.id not in (getattr(destino, "receives_from_user_ids", None) or []):
+        recibe_de = getattr(destino, "receives_from_user_ids", None) or []
+        # Recibe de mí si me nombra (soy su aprobador) o si es SUELTO y la
+        # respuesta la diligencié yo: el recibidor suelto cuelga de quien envía.
+        recibe_de_mi = (
+            current_user.id in recibe_de
+            or (not recibe_de and soy_diligenciador)
+        )
+        if not recibe_de_mi:
             raise HTTPException(
                 status_code=403,
                 detail="Ese recibidor no recibe de ti",
@@ -2795,7 +2859,8 @@ def get_my_participation_detail(
                 "name": original.user.name,
             } if original.user else None,
         },
-        "my_approval_status": approval.status.value,
+        # Nulo para el diligenciador: no está en la cadena, no aprueba nada.
+        "my_approval_status": approval.status.value if approval else None,
         "form_design": diseno,
         "answers": visibles,
         "condition_visibility": veredictos,
