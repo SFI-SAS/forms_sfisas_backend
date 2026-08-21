@@ -74,7 +74,21 @@ def create_form_approvals(
 
         # Información adicional sobre la configuración creada
         total_approvers = len(data.approvers)
-        
+
+        # Quién pidió entrar y NO entró. Pasa cuando esa persona ya ocupa un
+        # puesto activo en la cadena de este formato: una sola fila por persona,
+        # así que la petición se descarta. Antes se descartaba en silencio y el
+        # admin creía haber añadido a alguien que nunca estuvo — y luego el
+        # pendiente no le llegaba a nadie.
+        pedidos = {a.user_id for a in data.approvers}
+        omitidos = [uid for uid in pedidos if uid not in set(new_ids)]
+        nombres_omitidos = []
+        if omitidos:
+            nombres_omitidos = [
+                nombre for (nombre,) in db.query(User.name)
+                .filter(User.id.in_(omitidos)).all()
+            ]
+
         return {
             "success": True,
             "message": "Aprobaciones creadas exitosamente",
@@ -82,6 +96,8 @@ def create_form_approvals(
             "summary": {
                 "total_approvers_configured": total_approvers,
                 "new_approvers_added": len(new_ids),
+                "skipped_user_ids": omitidos,
+                "skipped_names": nombres_omitidos,
                 "form_id": data.form_id
             }
         }
