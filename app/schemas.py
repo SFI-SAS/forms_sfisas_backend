@@ -1001,6 +1001,9 @@ class ApproverInfo(BaseModel):
     firm_answer_id: Optional[int] = None
     # Pregunta regisfacial fuente configurada por el admin.
     firm_source_question_id: Optional[int] = None
+    # Papel en la cadena: 'approver' (default) | 'receiver'. Lo necesita el
+    # cliente para no llamar "aprobador" a quien solo recibe.
+    participant_role: str = "approver"
     user: dict
 
 class ResponseDetailInfo(BaseModel):

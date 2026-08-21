@@ -1176,6 +1176,14 @@ async def get_response_approval_details(
                 if response_approval and response_approval.firm_source_question_id is not None
                 else getattr(form_approval, "firm_source_question_id", None)
             ),
+            # Aprobador o recibidor. Prioriza el papel congelado en la
+            # ResponseApproval; si la respuesta aún no existe, el de la
+            # plantilla. Sin esto el cliente los pinta a todos como aprobadores.
+            "participant_role": (
+                getattr(response_approval, "participant_role", None)
+                if response_approval and getattr(response_approval, "participant_role", None)
+                else getattr(form_approval, "participant_role", None) or "approver"
+            ),
             "user": {
                 "name": form_approval.user.name,
                 "email": form_approval.user.email,
@@ -2877,6 +2885,12 @@ def get_my_participation_detail(
         },
         # Nulo para el diligenciador: no está en la cadena, no aprueba nada.
         "my_approval_status": approval.status.value if approval else None,
+        # Mi papel en ESTA respuesta, para que la pantalla me hable de lo mío:
+        # el recibidor no tiene "mi aprobación" sino "mi recepción".
+        "my_participant_role": (
+            (getattr(approval, "participant_role", None) or "approver")
+            if approval else None
+        ),
         "form_design": diseno,
         "answers": visibles,
         "condition_visibility": veredictos,

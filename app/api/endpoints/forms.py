@@ -5810,6 +5810,14 @@ def get_form_diligenciar_context(
             "user_email": t.user.email if t.user else None,
             "deadline_days": t.deadline_days,
             "avg_days": avg_days_for_approver(t.user_id),
+            # Aprobador o recibidor: en esta lista conviven los dos y quien
+            # diligencia tiene que poder distinguirlos. El recibidor no revisa
+            # nada, solo confirma que le llegó.
+            "participant_role": getattr(t, "participant_role", None) or "approver",
+            # Solo recibidores: de quién recibe. Vacío = del diligenciador.
+            "receives_from_user_ids": getattr(t, "receives_from_user_ids", None) or [],
+            # Solo recibidores sueltos: 'on_submit' | 'after_approvals'.
+            "receive_timing": getattr(t, "receive_timing", None) or "after_approvals",
         }
         for t in template
     ]
