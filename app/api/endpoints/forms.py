@@ -1504,6 +1504,9 @@ def get_responses_with_answers(
                     "firm_mode": getattr(ap, "firm_mode", "button") or "button",
                     "firm_answer_id": getattr(ap, "firm_answer_id", None),
                     "firm_source_question_id": getattr(ap, "firm_source_question_id", None),
+                    # Aprobador o recibidor: en la misma cadena van los dos, y a
+                    # quien recibe no se le dice que "aprobó".
+                    "participant_role": getattr(ap, "participant_role", None) or "approver",
                     "user": {
                         "id": ap.user.id,
                         "name": ap.user.name,

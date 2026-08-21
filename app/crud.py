@@ -5145,7 +5145,13 @@ def get_next_mandatory_approver(response_id: int, db: Session):
         "approval_mode": approval_mode,
     }
  
-def build_email_html_approvers(aprobacion_info: dict) -> str:
+def build_email_html_approvers(aprobacion_info: dict, es_recibidor: bool = False) -> str:
+    """Cuerpo del correo del pendiente.
+
+    `es_recibidor`: al que solo RECIBE no se le habla de aprobar. Se le dice que
+    le entregaron el formato y que confirme la recepción. El resto del correo
+    (quién lo diligenció, la tabla de la cadena) es igual para los dos.
+    """
     nombre_formato = aprobacion_info["formato"]["titulo"]
     usuario_respondio = aprobacion_info["usuario_respondio"]
     ultima_aprobacion = aprobacion_info.get("ultima_aprobacion")
@@ -5196,13 +5202,31 @@ def build_email_html_approvers(aprobacion_info: dict) -> str:
         </tr>
         """
 
+    # A cada quien lo suyo: el recibidor no aprueba, confirma que le llegó.
+    if es_recibidor:
+        titulo_correo = "Formato recibido - Notificación"
+        intro_correo = (
+            "Le han entregado el siguiente formato para que confirme su "
+            "<strong>recepción</strong>:"
+        )
+        titulo_tabla = "Participantes del formato:"
+        texto_boton = "Ingresar a Formatos por recibir"
+    else:
+        titulo_correo = "Proceso de Aprobación - Notificación"
+        intro_correo = (
+            "Usted ha sido designado como el próximo <strong>aprobador</strong> "
+            "en el proceso de revisión del siguiente formato:"
+        )
+        titulo_tabla = "Detalles del proceso de aprobación:"
+        texto_boton = "Ingresar al Portal de Aprobaciones"
+
     html = f"""
     <html>
     <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f7f9fc; padding: 30px; color: #2c3e50;">
         <table width="100%" style="max-width: 800px; margin: auto; background-color: #ffffff; border: 1px solid #dce3ea; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
             <tr>
                 <td style="background-color: #002f6c; color: #ffffff; padding: 25px; text-align: center; border-radius: 8px 8px 0 0;">
-                    <h2 style="margin: 0;">Proceso de Aprobación - Notificación</h2>
+                    <h2 style="margin: 0;">{titulo_correo}</h2>
                 </td>
             </tr>
             <tr>
@@ -5210,7 +5234,7 @@ def build_email_html_approvers(aprobacion_info: dict) -> str:
                     <p style="font-size: 16px; line-height: 1.6;">Estimado/a,</p>
 
                     <p style="font-size: 16px; line-height: 1.6;">
-                        Usted ha sido designado como el próximo <strong>aprobador</strong> en el proceso de revisión del siguiente formato:
+                        {intro_correo}
                     </p>
 
                     <p style="font-size: 18px; font-weight: bold; color: #002f6c; margin-top: 10px;">{nombre_formato}</p>
@@ -5224,7 +5248,7 @@ def build_email_html_approvers(aprobacion_info: dict) -> str:
             <tr>
                 <td style="padding: 25px;">
 
-                    <p style="font-size: 16px;"><strong>Detalles del proceso de aprobación:</strong></p>
+                    <p style="font-size: 16px;"><strong>{titulo_tabla}</strong></p>
                     <table width="100%" style="border-collapse: collapse; font-size: 14px; margin-top: 10px;">
                         <thead>
                             <tr style="background-color: #eef2f7;">
@@ -5244,7 +5268,7 @@ def build_email_html_approvers(aprobacion_info: dict) -> str:
 
                     <div style="text-align: center; margin: 30px 0;">
                         <a href="https://safemetrics-sfi-dev.service.saferut.com/" style="display: inline-block; padding: 14px 28px; background-color: #002f6c; color: white; text-decoration: none; border-radius: 5px; font-size: 15px;">
-                            Ingresar al Portal de Aprobaciones
+                            {texto_boton}
                         </a>
                     </div>
                 </td>
@@ -5265,9 +5289,13 @@ def send_mails_to_next_supporters(response_id: int, db: Session):
  
         return False
 
-    html_content = build_email_html_approvers(aprobacion_info)
     titulo = aprobacion_info['formato']['titulo']
     asunto = f"Pendiente aprobación - {titulo}"
+
+    # El cuerpo cambia según a quién se le manda: al recibidor no se le dice que
+    # es el próximo aprobador. Se arma uno por clase y se reutiliza, que en una
+    # cadena típica son dos como mucho.
+    cuerpos = {}
 
     enviado_todos = True
 
@@ -5275,16 +5303,22 @@ def send_mails_to_next_supporters(response_id: int, db: Session):
         nombre = aprobador["nombre"]
         email = aprobador["email"]
         obligatorio = "Obligatorio" if aprobador["es_obligatorio"] else "Opcional"
+        es_recibidor = bool(aprobador.get("es_recibidor"))
+
+        if es_recibidor not in cuerpos:
+            cuerpos[es_recibidor] = build_email_html_approvers(
+                aprobacion_info, es_recibidor=es_recibidor
+            )
 
         exito = send_email_plain_approval_status_vencidos(
             to_email=email,
             name_form=titulo,
             to_name=nombre,
-            body_html=html_content,
+            body_html=cuerpos[es_recibidor],
             # El recibidor no aprueba nada: se le avisa que tiene algo por recibir.
             subject=(
                 f"Pendiente por recibir - {titulo}"
-                if aprobador.get("es_recibidor")
+                if es_recibidor
                 else asunto
             )
         )
@@ -7488,6 +7522,9 @@ def process_responses_with_history(responses: List[Response], db: Session) -> Li
                     "status": ap.status.value,
                     "reviewed_at": ap.reviewed_at,
                     "message": ap.message,
+                    # Aprobador o recibidor: a quien recibe no se le dice que
+                    # "aprobó".
+                    "participant_role": getattr(ap, "participant_role", None) or "approver",
                     "user": {
                         "id": ap.user.id,
                         "name": ap.user.name,
