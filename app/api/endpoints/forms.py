@@ -17,7 +17,7 @@ from app.redis_client import redis_client
 from app.database import get_db
 from app.models import Answer, AnswerHistory, ApprovalStatus, CategoryApproval, FormatType, Form, FormAnswer, FormAnswerEditor, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, GenericActivity, GenericActivityForm, PalabrasClave, Profile, ProfileCategory, ProfileForm, ProfileUser, Question, QuestionTableRelation, QuestionType, RelationQuestionRule, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
 from app.crud import  _extract_style_config, _serialize_answers, add_category_approver, analyze_form_relations, apply_template_service, bulk_save_category_approvers, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, create_template_service, delete_form, delete_form_category, delete_template_service, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_categories_with_approvers, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_approvals, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_template_detail_service, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, list_templates_service, move_category, process_regisfacial_answer, remove_category_approver, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, sync_form_approvals_from_category, toggle_form_status, update_category_approver, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status, update_template_service, update_form_movimiento
-from app.schemas import AlertMessageRequest, AnswerEditorsConfigOut, AnswerEditorsConfigUpdate, AnswerEditorUserOut, CategoryApprovalBulkSave, CategoryApprovalCreate, CategoryApprovalResponse, CategoryApprovalUpdate, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, FormTemplateCreate, FormTemplateDetail, FormTemplateResponse, FormTemplateUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
+from app.schemas import AlertMessageRequest, AnswerEditorsConfigOut, AnswerEditorsConfigUpdate, AnswerEditorUserOut, CategoryApprovalBulkSave, CategoryApprovalCreate, CategoryApprovalResponse, CategoryApprovalUpdate, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormDraftUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, FormTemplateCreate, FormTemplateDetail, FormTemplateResponse, FormTemplateUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user, require_roles
 from app.core import field_access, response_scope
 from io import BytesIO
@@ -4221,6 +4221,80 @@ def update_form_status(
         )
     
     return toggle_form_status(db, form_id, status_update.is_enabled)
+
+
+@router.get("/{form_id}/draft")
+def get_form_draft(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """¿Este formato está en borrador?
+
+    Consulta barata para pintar el interruptor sin traerse el formato entero.
+    """
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+    return {
+        "id": form.id,
+        "is_draft": not form.is_enabled,
+        "is_enabled": bool(form.is_enabled),
+        # Solo el dueño (o un admin) puede cambiarlo, así el cliente sabe si
+        # mostrar el interruptor o solo el estado.
+        "can_edit": (
+            form.user_id == current_user.id
+            or current_user.user_type.name == UserType.admin.name
+        ),
+    }
+
+
+@router.patch("/{form_id}/draft")
+def set_form_draft(
+    form_id: int,
+    payload: FormDraftUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Dejar el formato en BORRADOR, o sacarlo de borrador.
+
+    Borrador = `is_enabled = false`: el formato existe y se puede seguir
+    diseñando, pero nadie lo puede diligenciar. Es el estado en el que el
+    creador lo deja mientras espera que el administrador le cree los campos que
+    solicitó.
+
+    A diferencia de `/forms/{id}/status` —que es una acción administrativa sobre
+    cualquier formato—, aquí el CREADOR puede hacerlo sobre lo SUYO, que es la
+    única forma de que el flujo de solicitud de campos funcione sin depender del
+    administrador para cada paso.
+    """
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    es_admin = current_user.user_type.name == UserType.admin.name
+    if form.user_id != current_user.id and not es_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo el creador del formato (o un administrador) puede dejarlo en borrador"
+        )
+
+    form.is_enabled = not payload.is_draft
+    db.commit()
+    db.refresh(form)
+
+    return {
+        "id": form.id,
+        "title": form.title,
+        "is_draft": not form.is_enabled,
+        "is_enabled": form.is_enabled,
+        "message": (
+            "El formato quedó en borrador: nadie puede diligenciarlo por ahora"
+            if not form.is_enabled
+            else "El formato salió de borrador y ya se puede diligenciar"
+        ),
+    }
+
 
 @router.get("/by-question/{question_id}", response_model=List[FormResponseBitacora])
 def get_forms_by_question(question_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

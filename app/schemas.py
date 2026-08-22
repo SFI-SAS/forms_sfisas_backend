@@ -1025,13 +1025,26 @@ class RequiredFormsResponse(BaseModel):
     
 class FormStatusUpdate(BaseModel):
     is_enabled: bool
-    
+
     class Config:
         json_schema_extra = {
             "example": {
                 "is_enabled": False
             }
         }
+
+
+class FormDraftUpdate(BaseModel):
+    """Dejar el formato en borrador, o sacarlo.
+
+    Se expresa en positivo (`is_draft`) y no como `is_enabled` invertido para
+    que el cliente no tenga que acordarse de negar el valor; por dentro es la
+    misma columna.
+    """
+    is_draft: bool
+
+    class Config:
+        json_schema_extra = {"example": {"is_draft": True}}
         
 class BitacoraLogsSimpleCreate(BaseModel):
     clasificacion: str
