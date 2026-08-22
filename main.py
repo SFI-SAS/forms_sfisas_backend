@@ -19,7 +19,7 @@ from app.database import SessionLocal, engine
 from app.models import Base, EmailConfig
 import app.models_audit  # noqa: F401  — registra NotificationSendLog en Base
 from app.api.endpoints import (
-    alias, approvers, consultants, download_template, home_dashboard, integrations, list_form, pdf_router, profiles, projects, responses,
+    alias, approvers, consultants, download_template, form_alerts, home_dashboard, integrations, list_form, pdf_router, profiles, projects, responses,
     responsibilitytransfer, users, forms, auth, questions, generic_activities, security, question_requests, rut,
     tokens
 )
@@ -168,6 +168,8 @@ app.include_router(question_requests.router, prefix="/question-requests", tags=[
 app.include_router(rut.router, prefix="/rut", tags=["RUT"])
 # Tokens — fase de medición: solo mide y muestra, no bloquea nada.
 app.include_router(tokens.router, prefix="/tokens", tags=["tokens"])
+# Feature #55: avisos emergentes configurables por el disenador.
+app.include_router(form_alerts.router, tags=["Form Alerts"])
 
 # ========================================
 # CREAR TABLAS

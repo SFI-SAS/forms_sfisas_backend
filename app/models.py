@@ -1338,3 +1338,70 @@ class TokenEvent(Base):
     detalle         = Column(Text, nullable=True)
 
     actor = relationship('User', foreign_keys=[actor_user_id])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AVISOS EMERGENTES CONFIGURABLES (Feature #55)
+# Un formato puede tener hasta 5 avisos que se disparan en distintos momentos
+# y con distintos comportamientos (informativo, advertencia, bloqueante, con
+# confirmación obligatoria). El diseñador los configura; el sistema los muestra
+# al usuario en el momento preciso.
+# Migración: scripts/db_migrations/2026-08-21_form_alerts.sql
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AlertTriggerType(str, enum.Enum):
+    on_open = "on_open"              # Al abrir el formato
+    on_value = "on_value"            # Al responder cierto valor en un campo
+    on_threshold = "on_threshold"    # Al superar un límite numérico
+    before_submit = "before_submit"  # Antes de enviar
+    on_approve = "on_approve"        # Al aprobar
+
+class AlertDisplayType(str, enum.Enum):
+    informative = "informative"                    # Se muestra y se cierra
+    warning = "warning"                            # Exige leer antes de seguir
+    blocking = "blocking"                          # No deja continuar hasta cumplir condición
+    confirmation_required = "confirmation_required"  # Exige marcar «entendido» con registro
+
+
+class FormAlert(Base):
+    """Aviso emergente configurable por el diseñador del formato."""
+    __tablename__ = 'form_alerts'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False, index=True)
+    trigger_type = Column(String(20), nullable=False)   # AlertTriggerType
+    display_type = Column(String(25), nullable=False)    # AlertDisplayType
+    title = Column(String(255), nullable=False)
+    message = Column(Text, nullable=False)
+    # Campo objetivo (solo para on_value y on_threshold): element_id del form_design
+    target_field_id = Column(String(100), nullable=True)
+    # Para on_value: valor que dispara el aviso (puede ser texto, opción de select, etc.)
+    trigger_value = Column(String(500), nullable=True)
+    # Para on_threshold: valor numérico límite y operador de comparación
+    threshold_value = Column(String(50), nullable=True)
+    threshold_operator = Column(String(5), nullable=True)  # >, <, >=, <=, ==, !=
+    is_active = Column(Boolean, nullable=False, default=True)
+    # Orden de aparición (si hay varios del mismo trigger_type)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    form = relationship('Form', backref='alerts')
+
+
+class FormAlertConfirmation(Base):
+    """Registro de quién leyó y confirmó un aviso de tipo confirmation_required.
+    Es evidencia legal: nombre, hora y qué aviso confirmó."""
+    __tablename__ = 'form_alert_confirmations'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    alert_id = Column(BigInteger, ForeignKey('form_alerts.id', ondelete='CASCADE'), nullable=False, index=True)
+    response_id = Column(BigInteger, ForeignKey('responses.id', ondelete='CASCADE'), nullable=True, index=True)
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    user_name = Column(String(255), nullable=False)
+    user_email = Column(String(255), nullable=True)
+    confirmed_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    alert = relationship('FormAlert', backref='confirmations')
+    response = relationship('Response')
+    user = relationship('User')

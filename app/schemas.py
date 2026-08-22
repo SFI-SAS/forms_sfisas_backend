@@ -1909,3 +1909,100 @@ class AnswerEditorsConfigOut(BaseModel):
 class AnswerEditorsConfigUpdate(BaseModel):
     mode: AnswerEditorsModeLiteral
     user_ids: List[int] = []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AVISOS EMERGENTES CONFIGURABLES (Feature #55)
+# ─────────────────────────────────────────────────────────────────────────────
+
+AlertTriggerLiteral = Literal[
+    'on_open', 'on_value', 'on_threshold', 'before_submit', 'on_approve'
+]
+AlertDisplayLiteral = Literal[
+    'informative', 'warning', 'blocking', 'confirmation_required'
+]
+
+
+class FormAlertCreate(BaseModel):
+    trigger_type: AlertTriggerLiteral
+    display_type: AlertDisplayLiteral
+    title: str = Field(..., min_length=1, max_length=255)
+    message: str = Field(..., min_length=1)
+    target_field_id: Optional[str] = None
+    trigger_value: Optional[str] = None
+    threshold_value: Optional[str] = None
+    threshold_operator: Optional[Literal['>', '<', '>=', '<=', '==', '!=']] = None
+    is_active: bool = True
+    sort_order: int = 0
+
+    @model_validator(mode="after")
+    def _validate_trigger_fields(self) -> "FormAlertCreate":
+        if self.trigger_type == 'on_value':
+            if not self.target_field_id:
+                raise ValueError("target_field_id es obligatorio para trigger on_value")
+            if not self.trigger_value:
+                raise ValueError("trigger_value es obligatorio para trigger on_value")
+        if self.trigger_type == 'on_threshold':
+            if not self.target_field_id:
+                raise ValueError("target_field_id es obligatorio para trigger on_threshold")
+            if not self.threshold_value:
+                raise ValueError("threshold_value es obligatorio para trigger on_threshold")
+            if not self.threshold_operator:
+                raise ValueError("threshold_operator es obligatorio para trigger on_threshold")
+        return self
+
+
+class FormAlertUpdate(BaseModel):
+    trigger_type: Optional[AlertTriggerLiteral] = None
+    display_type: Optional[AlertDisplayLiteral] = None
+    title: Optional[str] = Field(None, max_length=255)
+    message: Optional[str] = None
+    target_field_id: Optional[str] = None
+    trigger_value: Optional[str] = None
+    threshold_value: Optional[str] = None
+    threshold_operator: Optional[Literal['>', '<', '>=', '<=', '==', '!=']] = None
+    is_active: Optional[bool] = None
+    sort_order: Optional[int] = None
+
+
+class FormAlertOut(BaseModel):
+    id: int
+    form_id: int
+    trigger_type: str
+    display_type: str
+    title: str
+    message: str
+    target_field_id: Optional[str] = None
+    trigger_value: Optional[str] = None
+    threshold_value: Optional[str] = None
+    threshold_operator: Optional[str] = None
+    is_active: bool
+    sort_order: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class FormAlertConfirmationCreate(BaseModel):
+    alert_id: int
+    response_id: Optional[int] = None
+
+
+class FormAlertConfirmationOut(BaseModel):
+    id: int
+    alert_id: int
+    response_id: Optional[int] = None
+    user_id: Optional[int] = None
+    user_name: str
+    user_email: Optional[str] = None
+    confirmed_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class FormAlertsBulkSave(BaseModel):
+    """Guarda todos los avisos de un formato de una vez (reemplaza los existentes)."""
+    alerts: List[FormAlertCreate] = Field(..., max_length=5)
