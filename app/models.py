@@ -1232,6 +1232,16 @@ class QuestionRequest(Base):
     reviewed_by = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
     rejection_reason = Column(Text, nullable=True)
+    # ── Modelo del formato ───────────────────────────────────────────────────
+    # El creador puede enviar, junto con la solicitud, el diseño del formato en
+    # el que trabaja, para que el administrador vea DÓNDE se van a usar los
+    # campos que le está pidiendo.
+    #
+    # Va por invitación: sin esta marca el administrador no puede ver el diseño
+    # desde la solicitud. Por eso es un permiso de ESTA solicitud y no un acceso
+    # general al formato.
+    design_shared = Column(Boolean, nullable=False, default=False, server_default='false')
+    design_shared_at = Column(TIMESTAMP(timezone=True), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 

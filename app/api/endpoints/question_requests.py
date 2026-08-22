@@ -67,6 +67,9 @@ class BulkQuestionRequestCreate(BaseModel):
     form_id: int
     fields: List[FieldCreate] = Field(..., min_length=1)
     requester_message: Optional[str] = None
+    # Enviar junto con la solicitud el diseño del formato, para que el
+    # administrador vea dónde se van a usar los campos que se le piden.
+    share_design: bool = False
 
 
 class FieldApproveOverrides(BaseModel):
@@ -106,6 +109,8 @@ def create_question_request(
         question_type=payload.fields[0].question_type,
         requester_message=payload.requester_message.upper().strip() if payload.requester_message else payload.requester_message,
         status='pending',
+        design_shared=payload.share_design,
+        design_shared_at=datetime.now(timezone.utc) if payload.share_design else None,
     )
     db.add(req)
     db.flush()
@@ -189,7 +194,17 @@ def get_pending_requests(
             "form": {
                 "id": r.form.id,
                 "title": r.form.title,
+                # En borrador = nadie lo puede diligenciar todavía; el creador
+                # lo está armando y por eso pide los campos.
+                "is_enabled": bool(r.form.is_enabled),
             } if r.form else None,
+            # ¿El creador envió el modelo del formato? Decide si se puede abrir
+            # "Modelo del formato" desde el panel.
+            "design_shared": bool(getattr(r, "design_shared", False)),
+            "design_shared_at": (
+                r.design_shared_at.isoformat()
+                if getattr(r, "design_shared_at", None) else None
+            ),
             "fields_total": len(r.fields),
             "fields_pending": len(pending_fields),
             "fields": [
@@ -237,6 +252,8 @@ def get_my_requests(
             "requester_message": r.requester_message,
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "form": {"id": r.form.id, "title": r.form.title} if r.form else None,
+            # Para poder enviar el modelo después, desde "Mis solicitudes".
+            "design_shared": bool(getattr(r, "design_shared", False)),
             "fields": [
                 {
                     "id": f.id,
@@ -251,6 +268,120 @@ def get_my_requests(
         }
         for r in requests
     ]
+
+
+@router.post("/{request_id}/share-design")
+def share_form_design(
+    request_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Enviar al administrador el modelo del formato de esta solicitud.
+
+    Sirve para que el administrador vea DÓNDE se van a usar los campos que se
+    le están pidiendo, en vez de decidir solo con el nombre y el tipo.
+
+    Solo lo puede hacer quien envió la solicitud. Es idempotente: reenviarlo no
+    cambia la fecha del primer envío.
+    """
+    req = db.query(QuestionRequest).filter(QuestionRequest.id == request_id).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+
+    if req.requester_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Solo quien envió la solicitud puede compartir el modelo del formato",
+        )
+
+    if not req.design_shared:
+        req.design_shared = True
+        req.design_shared_at = datetime.now(timezone.utc)
+        db.commit()
+
+    return {
+        "id": req.id,
+        "design_shared": True,
+        "design_shared_at": req.design_shared_at.isoformat() if req.design_shared_at else None,
+        "message": "El administrador ya puede ver el modelo del formato",
+    }
+
+
+@router.get("/{request_id}/form-design")
+def get_request_form_design(
+    request_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """El diseño del formato de esta solicitud, para revisarlo antes de crear
+    los campos.
+
+    Se sirve SOLO si el creador lo envió (`design_shared`). No es un permiso
+    general sobre el formato: es lo que esa persona decidió mostrar en ESTA
+    solicitud, y por eso no se apoya en los permisos normales del formato.
+
+    Lo puede ver el administrador (que es quien revisa) y el propio solicitante.
+    """
+    req = (
+        db.query(QuestionRequest)
+        .options(
+            joinedload(QuestionRequest.form),
+            joinedload(QuestionRequest.requester),
+            joinedload(QuestionRequest.fields),
+        )
+        .filter(QuestionRequest.id == request_id)
+        .first()
+    )
+    if not req:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+
+    es_admin = current_user.user_type == UserType.admin
+    es_solicitante = req.requester_id == current_user.id
+    if not (es_admin or es_solicitante):
+        raise HTTPException(status_code=403, detail="No autorizado")
+
+    if not req.design_shared:
+        raise HTTPException(
+            status_code=404,
+            detail="El creador no envió el modelo del formato con esta solicitud",
+        )
+
+    if not req.form:
+        raise HTTPException(status_code=404, detail="El formato ya no existe")
+
+    diseno = req.form.form_design
+    if isinstance(diseno, dict):
+        # El diseño se guarda como lista; un dict suelto no lo sabe pintar el
+        # renderer, así que se normaliza en vez de reventar en el cliente.
+        diseno = diseno.get("form_design", []) or []
+
+    return {
+        "request_id": req.id,
+        "form": {
+            "id": req.form.id,
+            "title": req.form.title,
+            "description": req.form.description,
+            # False = está en borrador: nadie lo puede diligenciar todavía.
+            "is_enabled": bool(req.form.is_enabled),
+        },
+        "requester": {
+            "id": req.requester.id,
+            "name": req.requester.name,
+        } if req.requester else None,
+        "form_design": diseno if isinstance(diseno, list) else [],
+        "shared_at": req.design_shared_at.isoformat() if req.design_shared_at else None,
+        # Los campos que se están pidiendo, para poder cotejarlos contra el
+        # diseño sin cambiar de pantalla.
+        "requested_fields": [
+            {
+                "id": f.id,
+                "question_text": f.question_text,
+                "question_type": f.question_type,
+                "status": f.status,
+            }
+            for f in req.fields
+        ],
+    }
 
 
 @router.post("/fields/{field_id}/approve")

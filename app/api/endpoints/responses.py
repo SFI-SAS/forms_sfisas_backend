@@ -56,6 +56,19 @@ async def save_response(  # 🆕 Ahora es async
     if not form:
         raise HTTPException(status_code=404, detail="Form not found")
 
+    # Un formato deshabilitado (o en BORRADOR, que es lo mismo por dentro) no se
+    # puede diligenciar. Antes esto solo lo ocultaba de los listados: el
+    # endpoint aceptaba la respuesta igual si alguien llegaba por un enlace
+    # viejo o con la página ya abierta.
+    if not form.is_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Este formato está en borrador y todavía no se puede diligenciar. "
+                "Su creador lo está terminando de armar."
+            ),
+        )
+
     # Determinar estado y si crear aprobaciones
     if form.format_type == FormatType.cerrado:
         # Formato cerrado siempre se envía para aprobación
