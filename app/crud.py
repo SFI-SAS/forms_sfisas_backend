@@ -2325,7 +2325,7 @@ def link_moderator_to_form(form_id: int, user_id: int, db: Session):
     ).first()
     
     if existing_relation:
-        raise HTTPException(status_code=400, detail="El usuario ya es moderador de este formulario")
+        raise HTTPException(status_code=400, detail="El usuario ya está asignado como quien diligencia en este formulario")
 
     # Crear la nueva relación
     new_relation = FormModerators(form_id=form_id, user_id=user_id)
@@ -2333,7 +2333,7 @@ def link_moderator_to_form(form_id: int, user_id: int, db: Session):
     db.commit()
     db.refresh(new_relation)
 
-    return {"message": "Moderador agregado al formulario correctamente", "relation": new_relation.id}
+    return {"message": "Quien diligencia agregado al formulario correctamente", "relation": new_relation.id}
 
 
 def remove_question_from_form(form_id: int, question_id: int, db: Session):
@@ -2377,13 +2377,13 @@ def remove_moderator_from_form(form_id: int, user_id: int, db: Session):
     ).first()
     
     if not form_moderator:
-        raise HTTPException(status_code=404, detail="El usuario no es moderador de este formulario")
+        raise HTTPException(status_code=404, detail="El usuario no está asignado como quien diligencia en este formulario")
 
     # Eliminar la relación
     db.delete(form_moderator)
     db.commit()
 
-    return {"message": "Moderador eliminado del formulario correctamente"}
+    return {"message": "Quien diligencia eliminado del formulario correctamente"}
 
 def get_filtered_questions(db: Session, id_user: int):
     """Obtiene preguntas con root=True, sus respuestas únicas con sus IDs y formularios asignados al usuario con is_root=False"""
@@ -7133,8 +7133,8 @@ def analyze_form_relations(db: Session, form_id: int):
         {
             "query": db.query(FormModerators).filter(FormModerators.form_id == form_id),
             "key": "form_moderators",
-            "name": "Moderadores asignados",
-            "description": "Usuarios con permisos de moderación en este formulario",
+            "name": "Quien diligencia (asignados)",
+            "description": "Usuarios asignados para diligenciar este formulario",
             "icon": "👥",
             "category": "permissions"
         },
