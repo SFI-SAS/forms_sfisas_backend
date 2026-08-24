@@ -21,7 +21,7 @@ import app.models_audit  # noqa: F401  — registra NotificationSendLog en Base
 from app.api.endpoints import (
     alias, approvers, consultants, download_template, form_alerts, home_dashboard, integrations, list_form, pdf_router, profiles, projects, responses,
     responsibilitytransfer, users, forms, auth, questions, generic_activities, security, question_requests, rut,
-    tokens
+    tokens, support
 )
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -166,6 +166,7 @@ app.include_router(home_dashboard.router, prefix="/home", tags=["home"])
 app.include_router(security.router, prefix="/security", tags=["security"])
 app.include_router(question_requests.router, prefix="/question-requests", tags=["Question Requests"])
 app.include_router(rut.router, prefix="/rut", tags=["RUT"])
+app.include_router(support.router, prefix="/support", tags=["Soporte"])
 # Tokens — fase de medición: solo mide y muestra, no bloquea nada.
 app.include_router(tokens.router, prefix="/tokens", tags=["tokens"])
 # Feature #55: avisos emergentes configurables por el disenador.

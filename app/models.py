@@ -1415,3 +1415,92 @@ class FormAlertConfirmation(Base):
     alert = relationship('FormAlert', backref='confirmations')
     response = relationship('Response')
     user = relationship('User')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CHAT DE SOPORTE
+#
+# La conversación vive aquí, en la base de SafeMetrics. WhatsApp solo se usa
+# para avisarle al agente que hay algo nuevo (app/services/whatsapp.py), nunca
+# para transportar la conversación: si Meta no está configurado o se cae, el
+# chat sigue funcionando y el agente ve los tickets al entrar a su bandeja.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class SupportTicketStatus(enum.Enum):
+    """En qué va la solicitud.
+
+    open      → el usuario escribió y nadie ha respondido todavía.
+    answered  → un agente ya respondió; se espera al usuario.
+    closed    → resuelta. El usuario puede reabrirla escribiendo de nuevo.
+    """
+    open = "open"
+    answered = "answered"
+    closed = "closed"
+
+
+class SupportTicket(Base):
+    """Una conversación de soporte entre un usuario y los agentes."""
+    __tablename__ = 'support_tickets'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    # Resumen corto para la bandeja: las primeras palabras del primer mensaje.
+    subject = Column(String(255), nullable=False)
+    status = Column(
+        Enum(SupportTicketStatus, name='support_ticket_status'),
+        nullable=False,
+        default=SupportTicketStatus.open,
+        index=True,
+    )
+    # Dónde estaba el usuario cuando pidió ayuda: url, formato abierto,
+    # navegador. Le ahorra a soporte las tres preguntas de siempre.
+    context = Column(AutoJSON, nullable=True)
+
+    assigned_agent_id = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    # Última vez que un agente abrió esta conversación. De aquí sale la regla
+    # antiplaga de los avisos: no se manda WhatsApp si el agente está adentro.
+    agent_last_seen_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    # Última vez que se avisó por WhatsApp. Evita un mensaje por cada línea
+    # que escriba el usuario.
+    whatsapp_notified_at = Column(TIMESTAMP(timezone=True), nullable=True)
+
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    # Se mueve con cada mensaje: es el orden natural de la bandeja.
+    last_message_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False, index=True)
+    closed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+
+    user = relationship('User', foreign_keys=[user_id])
+    agent = relationship('User', foreign_keys=[assigned_agent_id])
+    messages = relationship(
+        'SupportMessage',
+        back_populates='ticket',
+        cascade='all, delete-orphan',
+        order_by='SupportMessage.created_at',
+    )
+
+
+class SupportMessage(Base):
+    """Un mensaje dentro de una conversación de soporte."""
+    __tablename__ = 'support_messages'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    ticket_id = Column(BigInteger, ForeignKey('support_tickets.id', ondelete='CASCADE'), nullable=False, index=True)
+    sender_user_id = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    # 'user' o 'agent'. Se guarda aparte del rol del usuario porque un admin
+    # también puede abrir un ticket como usuario, y entonces escribe de su lado.
+    sender_role = Column(String(10), nullable=False)
+    # Nombre congelado al momento de escribir: si el usuario se borra, el
+    # historial sigue siendo legible.
+    sender_name = Column(String(255), nullable=False)
+    body = Column(Text, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    # Cuándo lo leyó el otro lado. Alimenta el contador de no leídos.
+    read_at = Column(TIMESTAMP(timezone=True), nullable=True)
+
+    ticket = relationship('SupportTicket', back_populates='messages')
+    sender = relationship('User')
+
+    __table_args__ = (
+        Index('ix_support_messages_ticket_created', 'ticket_id', 'created_at'),
+    )
