@@ -46,7 +46,6 @@ _AGENTES_EXTRA = {
 
 MAX_LARGO_MENSAJE = 4000
 
-
 # ── Permisos ─────────────────────────────────────────────────────────────────
 
 def es_agente(user: User) -> bool:
