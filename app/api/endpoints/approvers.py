@@ -835,13 +835,14 @@ def save_response_approval_requirements(
             db.flush()  # Para obtener el ID
             created_ids.append(new_requirement.id)
             
-            # Auto-aprobar ResponseApproval si hay fulfilling_response_id
-            if fulfilling_response:
-                auto_approve_response_approvals(
-                    db=db,
-                    fulfilling_response_id=req_data.fulfilling_response_id,
-                    original_response_user_id=response.user_id  # Usuario de la respuesta original
-                )
+            # DESACTIVADO: los aprobadores siempre deben aprobar manualmente,
+            # incluso si son la misma persona que envio la respuesta.
+            # if fulfilling_response:
+            #     auto_approve_response_approvals(
+            #         db=db,
+            #         fulfilling_response_id=req_data.fulfilling_response_id,
+            #         original_response_user_id=response.user_id
+            #     )
                  
         db.commit()
         return created_ids
@@ -918,27 +919,6 @@ def create_response_approval_requirements(
     try:
         created_ids = save_response_approval_requirements(data, db)
         
-        # Contar auto-aprobaciones realizadas
-        auto_approved_count = 0
-        for req_data in data.requirements:
-            if req_data.fulfilling_response_id:
-                # Obtener la respuesta original para saber su user_id
-                original_response = db.query(Response).filter(
-                    Response.id == req_data.response_id
-                ).first()
-                
-                if original_response:
-                    # Contar cuántas se auto-aprobaron para la fulfilling_response
-                    count = db.query(ResponseApproval).filter(
-                        and_(
-                            ResponseApproval.response_id == req_data.fulfilling_response_id,  # Cambio aquí
-                            ResponseApproval.user_id == original_response.user_id,           # Cambio aquí
-                            ResponseApproval.status == ApprovalStatus.aprobado,
-                            ResponseApproval.message.like("Auto-aprobado:%")
-                        )
-                    ).count()
-                    auto_approved_count += count
-                 
         return {
             "success": True,
             "message": "Requisitos de aprobación de respuestas creados exitosamente",
@@ -951,7 +931,6 @@ def create_response_approval_requirements(
                 "pending_requirements": len([
                     req for req in data.requirements if not req.is_fulfilled
                 ]),
-                "auto_approved_responses": auto_approved_count
             }
         }
          
