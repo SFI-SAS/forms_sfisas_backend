@@ -9296,6 +9296,16 @@ def _serialize_answers(answers_orm, db, form_id: int, form_design: list) -> list
             "file_path":              ans.file_path or "",
             "repeated_id":            None,  # Se reconstruye abajo
             "form_design_element_id": getattr(ans, "form_design_element_id", None),
+            # Estas dos columnas existen en la tabla y los exportadores YA las
+            # saben usar, pero nadie se las pasaba:
+            #   - repeater_row_index dice a que fila pertenece cada dato. Sin
+            #     ella las filas se arman contando entradas por columna, asi
+            #     que una columna con una entrada de mas inventa filas y corre
+            #     los datos.
+            #   - parent_repeated_id marca lo que pertenece a un sub-repetidor.
+            #     Sin ella esas respuestas se colaban como filas del padre.
+            "repeater_row_index":     getattr(ans, "repeater_row_index", None),
+            "parent_repeated_id":     getattr(ans, "parent_repeated_id", None),
         })
 
     # Reconstruir repeated_id

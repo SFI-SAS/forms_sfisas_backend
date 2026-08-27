@@ -6,8 +6,32 @@ import shutil
 
 logger = logging.getLogger(__name__)
 
+# ── Aviso por correo al asignar un formato ───────────────────────────────────
+# Modulo aparte: no toca mail.py, aunque reusa sus ayudantes de plantilla y envio.
+from app.core.aviso_asignacion import avisar_formato_asignado
+
+
+def _tiene_estructura(formato) -> bool:
+    """¿El formato ya tiene campos, o sigue siendo una cascara?
+
+    Un formato recien creado existe pero no tiene form_design: no se puede
+    diligenciar. El aviso de asignacion depende de esto, no de que la fila
+    exista, porque avisar antes seria mandar a llenar algo que no esta.
+    """
+    if formato is None:
+        return False
+    diseno = getattr(formato, "form_design", None)
+    if isinstance(diseno, str):
+        import json as _json
+        try:
+            diseno = _json.loads(diseno)
+        except (ValueError, TypeError):
+            return False
+    return bool(diseno)
+
+
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, Query, File, status, Form as FastAPIForm
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, Query, File, status, Form as FastAPIForm
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload, defer
 from typing import List, Optional
@@ -166,6 +190,7 @@ def create_form_endpoint(
         )
 
     return create_form(db=db, form=form, user_id=current_user.id)
+
 
 
 # ── F2 (SM-F2-02): creación ATÓMICA de formato ──────────────────────────────
@@ -1881,7 +1906,7 @@ def get_form_users(form_id: int, db: Session = Depends(get_db),current_user: Use
     return fetch_form_users(form_id, db)
 
 @router.post("/{form_id}/form_moderators/{user_id}")
-def add_user_to_form_schedule(form_id: int, user_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
+def add_user_to_form_schedule(form_id: int, user_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Asocia un usuario como moderador de un formulario.
     Solo los usuarios con rol 'creator' o 'admin' pueden acceder.
@@ -1904,7 +1929,43 @@ def add_user_to_form_schedule(form_id: int, user_id: int, db: Session = Depends(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create forms"
         )
-    return link_moderator_to_form(form_id, user_id, db)
+
+    resultado = link_moderator_to_form(form_id, user_id, db)
+
+    # ── Aviso por correo ────────────────────────────────────────────────────
+    #
+    # Va DESPUES de que la asignacion quedo guardada, y en segundo plano: el
+    # correo no puede demorar la respuesta ni, mucho menos, impedir la
+    # asignacion si el servidor SMTP no contesta.
+    #
+    # Se lee aqui y no dentro de link_moderator_to_form para no tocar crud.py.
+    try:
+        usuario = db.query(User).filter(User.id == user_id).first()
+        formato = db.query(Form).filter(Form.id == form_id).first()
+        # Solo si el formato YA tiene estructura. Si todavia es un borrador sin
+        # campos, el aviso sale despues, cuando se guarde el diseno (ver
+        # update_form_design): avisar antes seria mandar a diligenciar algo
+        # que aun no existe.
+        if usuario and formato and getattr(usuario, "email", None) and _tiene_estructura(formato):
+            categoria = formato.category.name if getattr(formato, "category", None) else None
+            background_tasks.add_task(
+                avisar_formato_asignado,
+                nombre_usuario=usuario.name,
+                correo_usuario=usuario.email,
+                titulo_formato=formato.title,
+                descripcion_formato=formato.description,
+                categoria=categoria,
+                asignado_por=current_user.name,
+                form_design=formato.form_design,
+            )
+    except Exception:
+        # Ni siquiera preparar el aviso puede romper la asignacion.
+        logger.warning(
+            "No se pudo preparar el aviso de asignacion",
+            extra={"event": "aviso_asignacion_preparacion"},
+        )
+
+    return resultado
 
 
 @router.delete("/{form_id}/questions/{question_id}/delete")
@@ -2925,6 +2986,7 @@ def get_form_details(form_id: int, db: Session = Depends(get_db), current_user: 
 def update_form_design(
     form_id: int,
     payload: FormDesignUpdate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -2977,11 +3039,48 @@ def update_form_design(
             detail="No autorizado para modificar este formato"
         )
 
+    # ¿Tenia estructura ANTES de este guardado? De eso depende si hay que
+    # avisar: el aviso sale una sola vez, cuando el formato deja de ser una
+    # cascara y pasa a ser diligenciable. Se lee antes de sobrescribir.
+    formato_previo = db.query(Form).filter(Form.id == form_id).first()
+    tenia_estructura = _tiene_estructura(formato_previo)
+
     updated_form = update_form_design_service(db, form_id, payload.form_design)
-    
+
     # 🔥 INVALIDAR CACHÉ DE REDIS
     invalidate_form_cache(form_id)
-    
+
+    # ── Aviso a los asignados ───────────────────────────────────────────────
+    #
+    # Solo en la TRANSICION de "sin estructura" a "con estructura". Sin esa
+    # condicion, cada Ctrl+S del disenador dispararia una tanda de correos.
+    if not tenia_estructura and _tiene_estructura(updated_form):
+        try:
+            asignados = (
+                db.query(User)
+                .join(FormModerators, FormModerators.user_id == User.id)
+                .filter(FormModerators.form_id == form_id)
+                .all()
+            )
+            categoria = updated_form.category.name if getattr(updated_form, "category", None) else None
+            for u in asignados:
+                if getattr(u, "email", None):
+                    background_tasks.add_task(
+                        avisar_formato_asignado,
+                        nombre_usuario=u.name,
+                        correo_usuario=u.email,
+                        titulo_formato=updated_form.title,
+                        descripcion_formato=updated_form.description,
+                        categoria=categoria,
+                        asignado_por=current_user.name,
+                        form_design=updated_form.form_design,
+                    )
+        except Exception:
+            logger.warning(
+                "No se pudieron preparar los avisos al terminar la estructura",
+                extra={"event": "aviso_asignacion_estructura"},
+            )
+
     return [{
         "message": "Form design updated successfully",
         "form_id": updated_form.id

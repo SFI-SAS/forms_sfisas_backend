@@ -241,7 +241,11 @@ def _build_sub_rows(filtered: list, sub_normal: list) -> List[Dict]:
             rd: Dict[str, Any] = {}
             for c in sub_normal:
                 cid = c.get("id", "")
-                m   = next((a for a in by_ri[ri] if a.get("form_design_element_id") == cid), None)
+                # La más reciente, no la primera: una celda re-escrita (por
+                # ejemplo una firma sobre el documento del firmante) tiene
+                # varias respuestas y la buena es la última.
+                _cands = [a for a in by_ri[ri] if a.get("form_design_element_id") == cid]
+                m = max(_cands, key=lambda a: (a.get("id_answer") or 0)) if _cands else None
                 if m:
                     rd[cid] = {"answer_text": m.get("answer_text"),
                                "file_path":   m.get("file_path"),
@@ -600,6 +604,22 @@ class FormPdfExporter:
 
         parent_rows: List[Dict] = []
 
+        def _celda(candidatas: List[dict]) -> Optional[dict]:
+            """De varias respuestas para la misma celda, gana la más reciente.
+
+            Una celda puede tener más de una respuesta porque /save-answers/
+            siempre inserta: al firmar quedaba el documento de quien iba a
+            firmar y encima el certificado. La última escrita es la buena.
+            """
+            if not candidatas:
+                return None
+            a = max(candidatas, key=lambda x: (x.get("id_answer") or 0))
+            return {
+                "answer_text":   a.get("answer_text"),
+                "file_path":     a.get("file_path"),
+                "question_type": a.get("question_type"),
+            }
+
         for repeated_id, grp in grouped.items():
             # answersByColumn: igual que frontend línea 763
             by_col: Dict[str, List] = {}
@@ -613,6 +633,37 @@ class FormPdfExporter:
                 has_idx = any(a.get("repeater_row_index") is not None for a in col)
                 col = sorted(col, key=lambda a: ((a.get("repeater_row_index") or 0) if has_idx else (a.get("id_answer") or 0)))
                 by_col[cid] = col
+
+            # La fila la manda repeater_row_index, igual que en el sub-repeater
+            # (_build_sub_rows). Contar entradas por columna solo vale cuando el
+            # dato no trae índice: si una columna tiene una entrada de más se
+            # inventan filas y el resto queda corrido.
+            hay_indice = any(a.get("repeater_row_index") is not None for a in grp)
+
+            if hay_indice:
+                por_fila: Dict[int, List] = {}
+                for ans in grp:
+                    por_fila.setdefault(ans.get("repeater_row_index") or 0, []).append(ans)
+
+                for fila in sorted(por_fila):
+                    del_grupo = por_fila[fila]
+                    row_data: Dict[str, Any] = {}
+                    for child in normal_ch:
+                        cid = child.get("id", "")
+                        qid = str(child.get("linkExternalId") or (child.get("props") or {}).get("sourceQuestionId", "") or "")
+                        cands = [a for a in del_grupo if a.get("form_design_element_id") == cid]
+                        if not cands and qid:
+                            cands = [a for a in del_grupo if str(a.get("question_id", "")) == qid]
+                        celda = _celda(cands)
+                        if celda is not None:
+                            row_data[cid] = celda
+                    if row_data:
+                        parent_rows.append({
+                            "rowIndex":   fila,
+                            "repeatedId": repeated_id,
+                            "rowData":    row_data,
+                        })
+                continue
 
             max_r = max((len(v) for v in by_col.values()), default=1)
 
