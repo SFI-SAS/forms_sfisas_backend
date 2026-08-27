@@ -7,6 +7,12 @@ son puerto directo del frontend.
 from io import BytesIO
 from typing import Any, Dict, List, Optional
 import json
+import os
+import hashlib
+import hmac
+import time
+import struct
+import base64
 import html as _html
 from urllib.parse import quote as _url_quote
 
@@ -997,6 +1003,44 @@ class FormPdfExporter:
 
     # ── HTML completo ─────────────────────────────────────────────────────────
 
+    def _qr_html(self) -> str:
+        """Genera QR de verificacion para el PDF."""
+        if not self.response_id:
+            return ""
+        try:
+            import qrcode
+        except ImportError:
+            return ""
+        try:
+            from app.core.security import SECRET_KEY
+            qr_secret = hashlib.sha256(f"qr-view-{SECRET_KEY}".encode()).digest()
+            ts = int(time.time())
+            payload = struct.pack(">II", self.response_id, ts)
+            sig = hmac.new(qr_secret, payload, hashlib.sha256).digest()[:16]
+            raw = payload + sig
+            token = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+            frontend_url = os.getenv("FRONTEND_URL", "https://safemetrics-sfi-dev.service.saferut.com")
+            url = f"{frontend_url}/public/response/{token}"
+
+            qr = qrcode.QRCode(version=1, box_size=4, border=2,
+                               error_correction=qrcode.constants.ERROR_CORRECT_M)
+            qr.add_data(url)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white")
+            buf = BytesIO()
+            img.save(buf, format="PNG")
+            b64 = base64.b64encode(buf.getvalue()).decode()
+
+            return (
+                '<div style="position:fixed;bottom:10px;right:10px;text-align:center;">'
+                f'<img src="data:image/png;base64,{b64}" style="width:75px;height:75px;"/>'
+                '<div style="font-size:6px;color:#999;margin-top:2px;">Verificar documento</div>'
+                '</div>'
+            )
+        except Exception:
+            return ""
+
     def _build_html(self) -> str:
         sc = self.style_config
         bg  = sc.get("backgroundColor") or "#ffffff"
@@ -1205,6 +1249,7 @@ img { max-width: 100%; }
             + self._render_all_fields()
             + '</div>'
             + self._footer_html()
+            + self._qr_html()
             + "\n</div>\n</body>\n</html>"
         )
 
