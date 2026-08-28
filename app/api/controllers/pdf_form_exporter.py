@@ -14,7 +14,10 @@ import time
 import struct
 import base64
 import html as _html
+import logging
 from urllib.parse import quote as _url_quote
+
+logger = logging.getLogger(__name__)
 
 # ── utilidades HTML ───────────────────────────────────────────────────────────
 
@@ -23,6 +26,27 @@ def _e(v: Any) -> str:
 
 def _req_star(required: bool) -> str:
     return '<span style="color:#DC2626;font-weight:bold;"> *</span>' if required else ""
+
+
+# ── imagenes externas ────────────────────────────────────────────────────────
+# El PDF referencia imagenes por URL (logo del formato y los QR de firma en
+# api.qrserver.com). Si el servidor no tiene salida a internet, o el host tarda,
+# el render se cuelga o revienta y el endpoint responde 500. Con este fetcher
+# una imagen que no llega solo deja un hueco: el PDF sale igual.
+_BLANK_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+    "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+_URL_TIMEOUT = int(os.getenv("PDF_IMAGE_TIMEOUT", "8"))
+
+
+def _safe_url_fetcher(url: str, timeout: int = _URL_TIMEOUT, ssl_context=None):
+    from weasyprint import default_url_fetcher
+    try:
+        return default_url_fetcher(url, timeout=timeout, ssl_context=ssl_context)
+    except Exception as exc:
+        logger.warning("PDF: no se pudo traer %s (%s)", url[:120], exc)
+        return {"string": _BLANK_PNG, "mime_type": "image/png"}
 
 
 # ── ancho: cortar repeaters muy anchos ───────────────────────────────────────
@@ -1440,10 +1464,11 @@ img { max-width: 100%; }
     def generate(self) -> BytesIO:
         try:
             from weasyprint import HTML as WH
-        except ImportError:
-            raise RuntimeError("weasyprint no instalado: pip install weasyprint")
+        except Exception as exc:                      # ImportError y OSError de libs nativas
+            logger.exception("weasyprint no se pudo importar")
+            raise RuntimeError("weasyprint no disponible: %s" % exc)
         buf = BytesIO()
-        WH(string=self._build_html()).write_pdf(buf)
+        WH(string=self._build_html(), url_fetcher=_safe_url_fetcher).write_pdf(buf)
         buf.seek(0)
         return buf
 

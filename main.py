@@ -77,6 +77,27 @@ origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
 # blanca sigue siendo estricta.
 _origin_regex = r"http://(localhost|127\.0\.0\.1):\d+" if os.getenv("ENV") == "development" else None
 
+# 0. Red de seguridad para excepciones NO controladas.
+#    Sin esto, un error inesperado sube hasta ServerErrorMiddleware, que está
+#    POR ENCIMA del middleware de CORS: la respuesta 500 sale sin cabeceras
+#    Access-Control-Allow-Origin y el navegador reporta "bloqueado por CORS",
+#    escondiendo el error real. Este middleware se registra ANTES que el de CORS
+#    para quedar POR DENTRO de él, así el 500 sí pasa por CORS.
+#    El detalle real solo va al log del servidor (M-4: no se expone al cliente).
+@app.middleware("http")
+async def _catch_unhandled_errors(request, call_next):
+    try:
+        return await call_next(request)
+    except Exception:
+        logger.exception(
+            "Excepción no controlada en %s %s", request.method, request.url.path
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Error interno del servidor."},
+        )
+
+
 # 1. CORS
 app.add_middleware(
     CORSMiddleware,

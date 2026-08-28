@@ -1617,14 +1617,26 @@ def download_response_pdf(
 
     submitted_at_str = str(response.submitted_at)[:19] if response.submitted_at else ""
 
-    output = generate_form_pdf(
-        form_design=form_design,
-        answers=answers,
-        style_config=style_config,
-        form_title=form.title,
-        submitted_at=submitted_at_str,
-        response_id=response.id,
-    )
+    try:
+        output = generate_form_pdf(
+            form_design=form_design,
+            answers=answers,
+            style_config=style_config,
+            form_title=form.title,
+            submitted_at=submitted_at_str,
+            response_id=response.id,
+        )
+    except Exception:
+        # El traceback queda en el log del servidor; al cliente solo le llega el
+        # 500 genérico (el manejador global lo sanitiza).
+        logger.exception(
+            "Falló la generación del PDF de la respuesta %s (formato %s)",
+            response_id, form.id,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo generar el PDF de esta respuesta",
+        )
 
     safe_title = (form.title or "Formato").replace(" ", "_").replace("/", "_").replace("\\", "_")
     filename = f"Respuesta_{safe_title}_{response_id}.pdf"
