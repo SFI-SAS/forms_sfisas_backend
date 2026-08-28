@@ -497,7 +497,20 @@ body {{
     letter-spacing: 0.05em;
     text-transform: uppercase;
 }}
-.rep-table {{ width: 100%; border-collapse: collapse; }}
+.rep-table {{ width: 100%; max-width: 100%; border-collapse: collapse; }}
+/* Bloques de columnas: repeaters muy anchos se parten en varias tablas */
+.rep-block + .rep-block {{ margin-top: 10px; }}
+.rep-block-caption {{
+    font-size: 8.5px;
+    font-weight: 600;
+    color: #0f8594;
+    background: #f1f5f9;
+    padding: 3px 12px;
+    border-top: 1px solid #e2e8f0;
+}}
+.rep-table th, .rep-table td,
+.sub-table th, .sub-table td {{ word-break: break-word; overflow-wrap: anywhere; }}
+.rep-table img, .sub-table img {{ max-width: 100% !important; height: auto !important; }}
 .sub-wrap {{
     margin: 6px 0;
     border-left: 3px solid #0f8594;
@@ -516,7 +529,7 @@ body {{
     text-transform: uppercase;
     border-bottom: 1px solid #b2e8ec;
 }}
-.sub-table {{ width: 100%; border-collapse: collapse; }}
+.sub-table {{ width: 100%; max-width: 100%; border-collapse: collapse; }}
 .sub-td {{
     padding: 6px 10px 10px 18px;
     background: #f8fafc;

@@ -18,6 +18,43 @@ def _e(v: Any) -> str:
 def _req_star(required: bool) -> str:
     return '<span style="color:#DC2626;font-weight:bold;"> *</span>' if required else ""
 
+
+# ── ancho: cortar repeaters muy anchos ───────────────────────────────────────
+# La hoja es letter landscape con 14mm de margen → ~251mm útiles. Pasado cierto
+# número de columnas la tabla se sale del papel y las de la derecha no se ven,
+# así que se parte en bloques apilados uno debajo del otro.
+MAX_COLS_MAIN = 10   # columnas por bloque en el repeater principal
+MAX_COLS_SUB  = 8    # el sub-repeater va indentado, le cabe menos
+
+
+def _split_columns(n_cols: int, max_per_block: int) -> List[tuple]:
+    """Parte n columnas en bloques balanceados de a lo sumo max_per_block."""
+    if n_cols <= max_per_block:
+        return [(0, n_cols)]
+    n_blocks = -(-n_cols // max_per_block)          # ceil
+    base, extra = divmod(n_cols, n_blocks)
+    out, start = [], 0
+    for i in range(n_blocks):
+        size = base + (1 if i < extra else 0)
+        out.append((start, start + size))
+        start += size
+    return out
+
+
+def _density(n_cols: int, base_font: float = 10.0) -> str:
+    """Aprieta letra y padding cuando el bloque lleva muchas columnas."""
+    if n_cols <= 6:
+        return ""
+    if n_cols <= 8:
+        return "font-size:{f}px;padding:5px 6px;".format(f=base_font - 1)
+    return "font-size:{f}px;padding:4px 5px;".format(f=base_font - 1.5)
+
+
+def _block_caption(start: int, end: int, total: int) -> str:
+    return (
+        '<div class="rep-block-caption">Columnas {a} a {b} de {t}</div>'
+    ).format(a=start + 1, b=end, t=total)
+
 # ── formateadores de tipos de campo ──────────────────────────────────────────
 
 def _fmt_firm(answer_text: str) -> str:
@@ -730,23 +767,14 @@ class FormPdfExporter:
                 hp=ts.get("headerPadding", "8px"),
                 bc=ts.get("borderColor", "#d1d5db"),
             )
-            ths = "".join(
-                '<th style="{s}">{lbl}{req}</th>'.format(
-                    s=th_s,
-                    lbl=_e((c.get("props") or {}).get("label") or "Campo"),
-                    req=('<span style="color:#ef4444;margin-left:3px;">*</span>' if (c.get("props") or {}).get("required") else ""),
-                )
-                for c in normal_ch
-            )
-
+            # Filas renderizadas celda a celda: después se reparten entre bloques
+            rendered_rows = []
             if parent_rows:
                 for disp_idx, prow in enumerate(parent_rows):
-                    row_bg      = ("background:" + alt_bg + ";") if striped and disp_idx % 2 == 1 else ""
                     row_data    = prow["rowData"]
                     repeated_id = prow["repeatedId"]
                     row_idx     = prow["rowIndex"]   # LOCAL index (igual que frontend)
 
-                    tds = ""
                     is_alt = striped and disp_idx % 2 == 1
                     cbg  = alt_bg if is_alt else ts.get("cellBackgroundColor", "#ffffff")
                     td_s = (
@@ -761,14 +789,15 @@ class FormPdfExporter:
                         cva=ts.get("cellVerticalAlign", "middle"),
                         bc=ts.get("borderColor", "#d1d5db"),
                     )
+                    cells = []
                     for child in normal_ch:
                         cid      = child.get("id", "")
                         lex      = str(child.get("linkExternalId") or "")
                         cell_val = row_data.get(cid) or (row_data.get(lex) if lex else None)
                         cell_html = _render_cell_value(cell_val) if cell_val else '<span class="cell-empty">-</span>'
-                        tds += '<td style="' + td_s + '">' + cell_html + '</td>'
-                    table_body += '<tr>' + tds + '</tr>'
+                        cells.append(cell_html)
 
+                    sub_html = ""
                     if sub_ch:
                         sub_html = "".join(
                             self._sub_repeater_for_row(
@@ -778,22 +807,72 @@ class FormPdfExporter:
                             )
                             for sf in sub_ch
                         )
-                        if sub_html:
+
+                    rendered_rows.append({
+                        "num": disp_idx + 1,
+                        "td_s": td_s,
+                        "cells": cells,
+                        "sub": sub_html,
+                    })
+
+            # Si hay más columnas de las que caben a lo ancho, se apilan bloques
+            blocks    = _split_columns(len(normal_ch), MAX_COLS_MAIN)
+            multi     = len(blocks) > 1
+            last_blk  = len(blocks) - 1
+            num_th_s  = th_s + "width:22px;text-align:center;"
+            tables    = []
+
+            for b_i, (start, end) in enumerate(blocks):
+                cols     = normal_ch[start:end]
+                span     = len(cols) + (1 if multi else 0)
+                dens     = _density(span)
+
+                ths = ('<th style="' + num_th_s + dens + '">#</th>') if multi else ""
+                ths += "".join(
+                    '<th style="{s}">{lbl}{req}</th>'.format(
+                        s=th_s + dens,
+                        lbl=_e((c.get("props") or {}).get("label") or "Campo"),
+                        req=('<span style="color:#ef4444;margin-left:3px;">*</span>' if (c.get("props") or {}).get("required") else ""),
+                    )
+                    for c in cols
+                )
+
+                table_body = ""
+                if rendered_rows:
+                    for r in rendered_rows:
+                        tds = ""
+                        if multi:
+                            tds += (
+                                '<td style="' + r["td_s"] + dens +
+                                'text-align:center;color:#9ca3af;">' + str(r["num"]) + '</td>'
+                            )
+                        tds += "".join(
+                            '<td style="' + r["td_s"] + dens + '">' + h + '</td>'
+                            for h in r["cells"][start:end]
+                        )
+                        table_body += '<tr>' + tds + '</tr>'
+
+                        # los sub-repeaters se pintan una sola vez, bajo el último bloque
+                        if r["sub"] and b_i == last_blk:
                             table_body += (
                                 '<tr><td colspan="{n}" class="sub-td">{sh}</td></tr>'
-                            ).format(n=n_cols, sh=sub_html)
-            else:
-                table_body = (
-                    '<tr><td colspan="{n}" style="text-align:center;padding:12px;">'
-                    '<span class="cell-empty">Sin datos registrados</span></td></tr>'
-                ).format(n=n_cols)
+                            ).format(n=span, sh=r["sub"])
+                else:
+                    table_body = (
+                        '<tr><td colspan="{n}" style="text-align:center;padding:12px;">'
+                        '<span class="cell-empty">Sin datos registrados</span></td></tr>'
+                    ).format(n=span or n_cols)
 
-            table_html = (
-                '<table class="rep-table">'
-                '<thead><tr>' + ths + '</tr></thead>'
-                '<tbody>' + table_body + '</tbody>'
-                '</table>'
-            )
+                caption = _block_caption(start, end, len(normal_ch)) if multi else ""
+                tables.append(
+                    '<div class="rep-block">' + caption +
+                    '<table class="rep-table">'
+                    '<thead><tr>' + ths + '</tr></thead>'
+                    '<tbody>' + table_body + '</tbody>'
+                    '</table></div>'
+                )
+
+            table_html = "".join(tables)
         else:
             table_html = ""
 
@@ -961,27 +1040,53 @@ class FormPdfExporter:
                    '<rect x="3" y="3" width="18" height="18" rx="2"/>'
                    '<path d="M3 9h18M3 15h18M9 3v18"/></svg>')
         sub_lbl = _e((sub_field.get("props") or {}).get("label") or "Sub-tabla")
-        ths = "".join(
-            '<th style="' + sth_s + '">' + _e((c.get("props") or {}).get("label") or "Campo") + '</th>'
-            for c in sub_normal
-        )
-        trs = ""
-        for ri, rd in enumerate(sub_rows):
-            row_bg = salt if ri % 2 == 1 else scbg
-            tds = "".join(
-                '<td style="' + std_s.replace("background:" + scbg, "background:" + row_bg) + '">'
-                + _render_cell_value(rd.get(c.get("id", ""))) + '</td>'
-                for c in sub_normal
+
+        # Mismo corte por ancho que el repeater principal
+        blocks = _split_columns(len(sub_normal), MAX_COLS_SUB)
+        multi  = len(blocks) > 1
+        tables = []
+
+        for start, end in blocks:
+            cols = sub_normal[start:end]
+            span = len(cols) + (1 if multi else 0)
+            dens = _density(span, base_font=9.5)
+
+            ths = ('<th style="' + sth_s + dens + 'width:20px;text-align:center;">#</th>') if multi else ""
+            ths += "".join(
+                '<th style="' + sth_s + dens + '">'
+                + _e((c.get("props") or {}).get("label") or "Campo") + '</th>'
+                for c in cols
             )
-            trs += '<tr>' + tds + '</tr>'
+
+            trs = ""
+            for ri, rd in enumerate(sub_rows):
+                row_bg  = salt if ri % 2 == 1 else scbg
+                row_td  = std_s.replace("background:" + scbg, "background:" + row_bg) + dens
+                tds = (
+                    '<td style="' + row_td + 'text-align:center;color:#9ca3af;">'
+                    + str(ri + 1) + '</td>'
+                ) if multi else ""
+                tds += "".join(
+                    '<td style="' + row_td + '">'
+                    + _render_cell_value(rd.get(c.get("id", ""))) + '</td>'
+                    for c in cols
+                )
+                trs += '<tr>' + tds + '</tr>'
+
+            caption = _block_caption(start, end, len(sub_normal)) if multi else ""
+            tables.append(
+                caption +
+                '<table class="sub-table">'
+                '<thead><tr>' + ths + '</tr></thead>'
+                '<tbody>' + trs + '</tbody>'
+                '</table>'
+            )
 
         return (
             '<div class="sub-wrap">'
             '<div class="sub-header">' + SUB_SVG + sub_lbl + '</div>'
-            '<table class="sub-table">'
-            '<thead><tr>' + ths + '</tr></thead>'
-            '<tbody>' + trs + '</tbody>'
-            '</table></div>'
+            + "".join(tables) +
+            '</div>'
         )
 
     # ── renderField ───────────────────────────────────────────────────────────
@@ -1164,9 +1269,33 @@ body {
 /* ── Repeater table ── */
 .rep-table {
     width: 100%;
+    max-width: 100%;
     border-collapse: collapse;
 }
 /* th y td usan inline styles del tableStyle del usuario */
+
+/* Bloque de columnas: cuando el repeater es muy ancho se parte en varios */
+.rep-block + .rep-block { margin-top: 10px; }
+.rep-block-caption {
+    font-size: 8.5px;
+    font-weight: 600;
+    color: #0CA4A5;
+    background: #f1f5f9;
+    padding: 3px 12px;
+    border-top: 1px solid #e2e8f0;
+    letter-spacing: 0.02em;
+}
+
+/* Nada de contenido puede empujar la tabla fuera del papel */
+.rep-table th, .rep-table td,
+.sub-table th, .sub-table td {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+.rep-table img, .sub-table img {
+    max-width: 100% !important;
+    height: auto !important;
+}
 
 /* ── Sub-repeater ── */
 .sub-wrap {
@@ -1191,8 +1320,10 @@ body {
 }
 .sub-table {
     width: 100%;
+    max-width: 100%;
     border-collapse: collapse;
 }
+.sub-table + .rep-block-caption { margin-top: 6px; }
 /* th y td usan inline styles del tableStyle del usuario */
 
 /* ── File badge ── */
