@@ -88,7 +88,10 @@ def _block_caption(start: int, end: int, total: int) -> str:
 # ── formateadores de tipos de campo ──────────────────────────────────────────
 
 def _fmt_firm(answer_text: str) -> str:
-    """Renderiza firma igual que renderInputFieldResponse caso firm."""
+    """Renderiza firma igual que renderInputFieldResponse caso firm.
+
+    Sin display:flex — ver la nota en _fmt_firm_cell.
+    """
     try:
         data = json.loads(answer_text)
         firm = data.get("firmData", {})
@@ -109,17 +112,19 @@ def _fmt_firm(answer_text: str) -> str:
             name_html = ('<span style="font-size:11px;color:#374151;">por ' + _e(person_name) + '</span>') if person_name else ""
             id_html   = ('<span style="font-size:10px;color:#6B7280;">(ID: ' + _e(person_id) + ')</span>') if person_id else ""
             return (
-                '<div style="display:flex;flex-direction:column;gap:6px;">'
-                '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
+                '<div>'
+                '<div style="margin-bottom:6px;">'
                 '<span style="font-size:10px;font-weight:600;color:#065F46;background:#D1FAE5;'
                 'padding:2px 7px;border-radius:4px;">&#10003; Firma validada</span>'
                 + name_html + id_html +
                 '</div>'
-                '<div style="display:flex;flex-direction:column;align-items:center;gap:4px;">'
-                '<span style="font-size:10px;color:#6B7280;">C\u00f3digo QR de verificaci\u00f3n:</span>'
+                '<div style="text-align:center;">'
+                '<span style="font-size:10px;color:#6B7280;display:block;margin-bottom:4px;">C\u00f3digo QR de verificaci\u00f3n:</span>'
                 '<img src="' + _e(qr_img) + '" alt="QR firma" '
-                'style="width:100px;height:100px;border:1px solid #D1D5DB;border-radius:6px;"/>'
-                '<span style="font-size:9px;color:#9CA3AF;text-align:center;word-break:break-all;max-width:200px;">'
+                'style="width:100px;height:100px;border:1px solid #D1D5DB;border-radius:6px;'
+                'display:block;margin:0 auto 4px auto;"/>'
+                '<span style="font-size:9px;color:#9CA3AF;text-align:center;word-break:break-all;'
+                'max-width:200px;display:block;margin:0 auto;">'
                 + _e(qr_url) + '</span>'
                 '</div></div>'
             )
@@ -159,15 +164,24 @@ def _fmt_firm_cell(answer_text: str) -> str:
         qr_img   = "https://api.qrserver.com/v1/create-qr-code/?size=90x90&data=" + _url_quote(qr_url)
         id_part  = ('<span style="font-size:9px;color:#9CA3AF;">ID: ' + _e(person_id) + '</span>') if person_id else ""
         name_part = ('<span style="font-size:9px;color:#374151;font-weight:500;">' + _e(person_name) + '</span>') if person_name else ""
+        # OJO: nada de display:flex aqui dentro. Esta celda vive DENTRO de la
+        # tabla del repeater, y el flexbox de WeasyPrint se rompe cuando un hijo
+        # flex no alcanza a caber y su layout devuelve None: revienta con
+        # "AttributeError: 'NoneType' object has no attribute 'height'"
+        # (flex.py:253) y el PDF entero se cae con 500. Con bloque + inline-block
+        # se ve igual y no pasa por esa ruta fragil.
         return (
-            '<div style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:2px 0;">'
-            '<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;justify-content:center;">'
+            '<div style="text-align:center;padding:2px 0;">'
+            '<div style="margin-bottom:3px;">'
             '<span style="font-size:9px;font-weight:600;color:#15803D;background:#F0FDF4;'
-            'padding:1px 5px;border-radius:99px;border:1px solid #BBF7D0;">&#10003; Firmado</span>'
-            + name_part + '</div>'
-            + id_part +
+            'padding:1px 5px;border-radius:99px;border:1px solid #BBF7D0;'
+            'display:inline-block;vertical-align:middle;">&#10003; Firmado</span>'
+            + (('&nbsp;' + name_part) if name_part else '') +
+            '</div>'
+            + ((id_part + '<div style="height:3px;"></div>') if id_part else '') +
             '<img src="' + _e(qr_img) + '" alt="QR" '
-            'style="width:70px;height:70px;border:1px solid #E5E7EB;border-radius:4px;"/>'
+            'style="width:70px;height:70px;border:1px solid #E5E7EB;border-radius:4px;'
+            'display:block;margin:3px auto;"/>'
             '<span style="font-size:8px;color:#9CA3AF;">Escanea para verificar</span>'
             '</div>'
         )
@@ -1131,8 +1145,14 @@ class FormPdfExporter:
             if not self._should_render(field):
                 return ""
             spacing = int(props.get("spacing") or 2) * 4
-            inner   = "".join(self._render_field(c) for c in (field.get("children") or []))
-            return '<div style="display:flex;flex-direction:column;gap:{g}px;margin-bottom:16px;">{i}</div>'.format(g=spacing, i=inner)
+            inner   = "".join(
+                '<div style="margin-bottom:{g}px;">{c}</div>'.format(g=spacing, c=self._render_field(c))
+                for c in (field.get("children") or [])
+            )
+            # Sin flex (ver _fmt_firm_cell): apilar en bloque y separar con
+            # margen es equivalente aqui, y no pasa por el layout flex de
+            # WeasyPrint, que se cae cuando un hijo no alcanza a caber.
+            return '<div style="margin-bottom:16px;">{i}</div>'.format(i=inner)
 
         if ftype == "horizontalLayout":
             if not self._should_render(field):
@@ -1143,11 +1163,16 @@ class FormPdfExporter:
                 space = int((child.get("props") or {}).get("space") or 3)
                 w     = (space / 12) * 100
                 ch_html += (
-                    '<div style="width:{w:.4f}%;padding-left:{h}px;padding-right:{h}px;'
+                    '<div style="display:inline-block;vertical-align:top;'
+                    'width:{w:.4f}%;padding-left:{h}px;padding-right:{h}px;'
                     'box-sizing:border-box;min-width:0;">{c}</div>'
                 ).format(w=w, h=gap / 2, c=self._render_field(child))
+            # Columnas con inline-block en vez de flex — es el mismo patron que
+            # ya usa _render_all_fields, y evita el layout flex de WeasyPrint.
+            # Los hijos van concatenados sin espacios en blanco entre ellos, asi
+            # que no aparecen huecos fantasma entre columnas.
             return (
-                '<div style="display:flex;flex-wrap:wrap;'
+                '<div style="'
                 'margin-left:-{h}px;margin-right:-{h}px;'
                 'width:calc(100% + {g}px);box-sizing:border-box;margin-bottom:16px;">{ch}</div>'
             ).format(h=gap / 2, g=gap, ch=ch_html)
@@ -1249,10 +1274,10 @@ body {
     padding: 0;
 }
 /* ── Metadata strip ── */
+/* Sin flex a proposito: el flexbox de WeasyPrint revienta cuando un hijo no
+   alcanza a caber (flex.py:253, 'NoneType' has no attribute 'height'). Estas
+   son filas de una sola linea, con inline-block quedan igual y no se caen. */
 .meta-strip {
-    display: flex;
-    align-items: center;
-    gap: 8px;
     padding: 7px 14px;
     background: #f8fafc;
     border-bottom: 1px solid #e2e8f0;
@@ -1269,6 +1294,7 @@ body {
     letter-spacing: 0.03em;
 }
 .meta-strip .dot { color: #cbd5e1; }
+.meta-strip > span { display: inline-block; vertical-align: middle; margin-right: 8px; }
 
 /* ── Fields area ── */
 .fields-area { padding: 16px 18px 10px 18px; }
@@ -1321,9 +1347,6 @@ body {
     box-shadow: 0 1px 3px rgba(0,0,0,0.06);
 }
 .repeater-header {
-    display: flex;
-    align-items: center;
-    gap: 6px;
     padding: 8px 12px;
     background: #0CA4A5;        /* teal exacto del UI (FormResponseRenderer) */
     color: #fff;
@@ -1332,7 +1355,7 @@ body {
     letter-spacing: 0.03em;
     text-transform: none;       /* el UI no lo pone uppercase */
 }
-.repeater-header svg { flex-shrink: 0; }
+.repeater-header svg { vertical-align: middle; margin-right: 6px; }
 
 /* ── Repeater table ── */
 .rep-table {
@@ -1374,9 +1397,6 @@ body {
     background: #f8fafc;
 }
 .sub-header {
-    display: flex;
-    align-items: center;
-    gap: 5px;
     padding: 5px 10px;
     background: #e6f7f8;
     color: #0CA4A5;
@@ -1386,6 +1406,7 @@ body {
     text-transform: none;
     border-bottom: 1px solid #b2e8ec;
 }
+.sub-header svg { vertical-align: middle; margin-right: 5px; }
 .sub-table {
     width: 100%;
     max-width: 100%;
