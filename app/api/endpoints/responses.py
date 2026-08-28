@@ -1648,6 +1648,122 @@ def download_response_pdf(
     )
 
 
+# TEMPORAL — interruptor del endpoint de diagnóstico de PDF de más abajo.
+# Ponerlo en False (y desplegar) lo apaga sin necesidad de entrar al panel.
+PDF_DEBUG_ENABLED = True
+
+
+@router.get("/{response_id}/pdf-debug", include_in_schema=False)
+def download_response_pdf_debug(
+    response_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """
+    TEMPORAL — diagnóstico del PDF que falla en producción y no en local.
+
+    Recorre el mismo camino que /{response_id}/pdf pero por etapas, y devuelve
+    en texto plano dónde se rompe, con el traceback y los datos del entorno
+    (versiones de weasyprint/pango, fuentes disponibles, memoria).
+
+    Solo admin/creator, y además fuera del OpenAPI. Para apagarlo sin tocar el
+    panel de despliegue, poner PDF_DEBUG_ENABLED = False (abajo) y desplegar.
+    BORRAR este endpoint y la constante cuando el bug esté cerrado.
+    """
+    import platform, sys, time, traceback
+    from fastapi.responses import PlainTextResponse
+
+    if not PDF_DEBUG_ENABLED:
+        raise HTTPException(status_code=404, detail="No encontrado")
+
+    out: List[str] = []
+    def log(msg): out.append(str(msg))
+
+    # ── entorno ──────────────────────────────────────────────────────────────
+    log(f"python      : {sys.version.split()[0]} — {platform.platform()}")
+    try:
+        import weasyprint
+        log(f"weasyprint  : {weasyprint.__version__}")
+        try:
+            from weasyprint.text.ffi import pango
+            log(f"pango       : {pango.pango_version_string().decode()}")
+        except Exception as e:
+            log(f"pango       : no se pudo leer ({e})")
+        try:
+            from weasyprint.text.fonts import FontConfiguration
+            FontConfiguration()
+            log("fontconfig  : ok")
+        except Exception as e:
+            log(f"fontconfig  : FALLA ({e})")
+    except Exception:
+        log("weasyprint  : NO IMPORTA")
+        log(traceback.format_exc())
+        return PlainTextResponse("\n".join(out), status_code=200)
+
+    try:
+        import resource
+        log(f"mem maxrss  : {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB")
+    except Exception:
+        pass
+
+    # ── etapas ───────────────────────────────────────────────────────────────
+    try:
+        response = db.query(Response).filter(Response.id == response_id).first()
+        if not response:
+            return PlainTextResponse("\n".join(out + ["respuesta no encontrada"]), status_code=200)
+        form = db.query(Form).filter(Form.id == response.form_id).first()
+        form_design = form.form_design
+        if isinstance(form_design, str):
+            form_design = json.loads(form_design)
+        log(f"formato     : {form.id} — {form.title}")
+
+        answers_orm = (
+            db.query(Answer)
+            .options(joinedload(Answer.question))
+            .filter(Answer.response_id == response_id)
+            .all()
+        )
+        log(f"answers     : {len(answers_orm)}")
+
+        t = time.time()
+        answers = _serialize_answers(answers_orm, db, form.id, form_design)
+        log(f"1. serializar        : ok ({time.time() - t:.1f}s)")
+
+        style_config = _extract_style_config(form_design)
+        log("2. style_config      : ok")
+
+        from app.api.controllers.pdf_form_exporter import FormPdfExporter
+        exporter = FormPdfExporter(
+            form_design=form_design,
+            answers=answers,
+            style_config=style_config,
+            form_title=form.title,
+            submitted_at=str(response.submitted_at)[:19] if response.submitted_at else "",
+            response_id=response.id,
+        )
+
+        t = time.time()
+        html = exporter.generate_html()
+        log(f"3. armar HTML        : ok ({len(html)} chars, {time.time() - t:.1f}s)")
+
+        t = time.time()
+        from app.api.controllers.pdf_form_exporter import _safe_url_fetcher
+        doc = weasyprint.HTML(string=html, url_fetcher=_safe_url_fetcher).render()
+        log(f"4. layout            : ok ({len(doc.pages)} páginas, {time.time() - t:.1f}s)")
+
+        t = time.time()
+        pdf = doc.write_pdf()
+        log(f"5. escribir PDF      : ok ({len(pdf)} bytes, {time.time() - t:.1f}s)")
+        log("")
+        log("NO FALLA por este camino.")
+    except Exception:
+        log("")
+        log("FALLA AQUI:")
+        log(traceback.format_exc())
+
+    return PlainTextResponse("\n".join(out), status_code=200)
+
+
 @router.get("/get_responses/all")
 def get_all_user_responses(
     db: Session = Depends(get_db),
