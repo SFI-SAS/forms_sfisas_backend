@@ -21,7 +21,7 @@ import app.models_audit  # noqa: F401  — registra NotificationSendLog en Base
 from app.api.endpoints import (
     alias, approvers, consultants, download_template, form_alerts, home_dashboard, integrations, list_form, pdf_router, profiles, projects, responses,
     responsibilitytransfer, users, forms, auth, questions, generic_activities, security, question_requests, rut,
-    tokens, support
+    tokens, support, public_view
 )
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -171,6 +171,8 @@ app.include_router(support.router, prefix="/support", tags=["Soporte"])
 app.include_router(tokens.router, prefix="/tokens", tags=["tokens"])
 # Feature #55: avisos emergentes configurables por el disenador.
 app.include_router(form_alerts.router, tags=["Form Alerts"])
+# Vista publica de respuestas via QR (sin autenticacion)
+app.include_router(public_view.router, prefix="/public", tags=["Public View"])
 
 # ========================================
 # CREAR TABLAS
