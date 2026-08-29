@@ -2009,11 +2009,14 @@ def get_form_field_access(
     # Los campos del diseño marcados como "este campo elige al recibidor",
     # para que la pantalla pueda listarlos aunque todavía no tengan config.
     selectores = field_access.receiver_selector_elements(form.form_design)
+    # Y los que eligen al aprobador, que funcionan igual pero con otro papel.
+    selectores_aprob = field_access.approver_selector_elements(form.form_design)
 
     return {
         "access": access,
         "dynamic_access": dynamic_access,
         "receiver_selectors": selectores,
+        "approver_selectors": selectores_aprob,
     }
 
 

@@ -18,6 +18,9 @@ donde Tipo de pago = Contado".
 
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 HIDDEN = "hidden"
 READ = "read"
@@ -833,6 +836,44 @@ def receiver_selector_elements(form_design: Any) -> List[dict]:
     return encontrados
 
 
+def approver_selector_elements(form_design: Any) -> List[dict]:
+    """Campos del diseño marcados como "este campo elige al aprobador".
+
+    Gemelo de `receiver_selector_elements`, con la bandera `approverSelector`.
+    Devuelve [{element_id, question_id, label}], en el orden del diseño.
+    """
+    import json
+
+    if isinstance(form_design, str):
+        try:
+            form_design = json.loads(form_design)
+        except (ValueError, TypeError):
+            return []
+
+    if not isinstance(form_design, list):
+        return []
+
+    encontrados: List[dict] = []
+
+    def walk(items: Any) -> None:
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            props = item.get("props") or {}
+            if props.get("approverSelector") and item.get("id"):
+                encontrados.append({
+                    "element_id": str(item["id"]),
+                    "question_id": item.get("id_question") or item.get("linkExternalId"),
+                    "label": props.get("label") or "Aprobador",
+                })
+            walk(item.get("children"))
+
+    walk(form_design)
+    return encontrados
+
+
 def resolve_receiver_user(db, valor: Any):
     """Usuario que representa el valor elegido en un campo selector de recibidor.
 
@@ -1003,5 +1044,138 @@ def resolve_dynamic_receivers(db, response_id: int) -> List[int]:
 
     if creados:
         db.commit()
+
+    return creados
+
+
+def resolve_dynamic_approvers(db, response_id: int) -> List[int]:
+    """Crea los aprobadores elegidos en campos selectores de esta respuesta.
+
+    Gemelo de `resolve_dynamic_receivers`, pero con papel 'approver': el que
+    diligencia (o un aprobador anterior) escoge en un campo quién aprueba
+    despues, en vez de que el administrador lo deje fijo en la plantilla.
+
+    Igual que con los recibidores, el nuevo entra al FINAL de la cadena: la
+    secuencia es la clave con la que se localiza cada aprobacion, y renumerar
+    filas ya creadas para colarlo en mitad del flujo es mucho mas arriesgado que
+    ponerlo detras. En el caso previsto —el ultimo de la cadena escoge quien
+    sigue— es ademas la misma posicion.
+
+    Es idempotente: si el participante de ese campo ya existe, no hace nada.
+    Devuelve los user_id creados.
+    """
+    from app.core import response_scope
+    from app.models import Answer, ApprovalStatus, Form, Response, ResponseApproval
+
+    response = db.query(Response).filter(Response.id == response_id).first()
+    if not response:
+        return []
+
+    form = db.query(Form).filter(Form.id == response.form_id).first()
+    if not form:
+        return []
+
+    selectores = approver_selector_elements(form.form_design)
+    if not selectores:
+        return []
+
+    existentes = {
+        ra.dynamic_source_element_id
+        for ra in db.query(ResponseApproval)
+        .filter(
+            ResponseApproval.response_id == response_id,
+            ResponseApproval.dynamic_source_element_id.isnot(None),
+        )
+        .all()
+    }
+    pendientes = [s for s in selectores if s["element_id"] not in existentes]
+    if not pendientes:
+        return []
+
+    ids_arbol = response_scope.response_tree_ids(db, response_id)
+    answers = db.query(Answer).filter(Answer.response_id.in_(ids_arbol)).all()
+
+    ya_en_cadena = {
+        ra.user_id
+        for ra in db.query(ResponseApproval)
+        .filter(ResponseApproval.response_id == response_id)
+        .all()
+    }
+    siguiente_secuencia = max(
+        [
+            ra.sequence_number
+            for ra in db.query(ResponseApproval)
+            .filter(ResponseApproval.response_id == response_id)
+            .all()
+        ] or [0]
+    )
+
+    creados: List[int] = []
+    for selector in pendientes:
+        respuesta = next(
+            (
+                a for a in answers
+                if str(_get(a, "form_design_element_id") or "") == selector["element_id"]
+                and (_get(a, "answer_text") or "").strip()
+            ),
+            None,
+        )
+        if respuesta is None:
+            continue  # todavia nadie lo ha llenado
+
+        # Se reusa el mismo resolutor de los recibidores: el formato del texto
+        # que guarda el campo ("Nombre (correo)" / "Nombre (#id)") es identico.
+        usuario = resolve_receiver_user(db, _get(respuesta, "answer_text"))
+        if usuario is None:
+            continue
+        if usuario.id in ya_en_cadena:
+            continue
+
+        siguiente_secuencia += 1
+        db.add(ResponseApproval(
+            response_id=response_id,
+            user_id=usuario.id,
+            sequence_number=siguiente_secuencia,
+            is_mandatory=True,
+            status=ApprovalStatus.pendiente,
+            participant_role="approver",
+            dynamic_source_element_id=selector["element_id"],
+        ))
+        ya_en_cadena.add(usuario.id)
+        creados.append(usuario.id)
+
+    if creados:
+        db.commit()
+
+        # Avisarle al que quedo de turno.
+        #
+        # Hace falta porque el aviso al "siguiente aprobador" sale al ENVIAR la
+        # respuesta (post_create_response), y para entonces este participante
+        # todavia no existe: se crea despues, cuando se guarda la answer del
+        # campo selector. En un formato sin aprobadores fijos —el caso tipico de
+        # esta funcion— nadie recibiria nada.
+        #
+        # Solo se manda si el que sigue pendiente es uno de los recien creados:
+        # si delante habia aprobadores fijos, a esos ya se les aviso y repetirlo
+        # seria correo de mas.
+        try:
+            from app.models import ApprovalStatus, ResponseApproval
+
+            pendientes = (
+                db.query(ResponseApproval)
+                .filter(
+                    ResponseApproval.response_id == response_id,
+                    ResponseApproval.status == ApprovalStatus.pendiente,
+                )
+                .order_by(ResponseApproval.sequence_number)
+                .all()
+            )
+            if pendientes and pendientes[0].user_id in creados:
+                from app.crud import send_mails_to_next_supporters
+                send_mails_to_next_supporters(response_id, db)
+        except Exception:
+            # El aviso no puede tumbar la creacion del participante: si el correo
+            # falla, el aprobador igual queda en la cadena y lo vera en su bandeja.
+            logger.exception("No se pudo avisar al aprobador dinamico de la respuesta %s", response_id)
 
     return creados

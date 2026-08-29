@@ -5063,6 +5063,45 @@ def get_next_mandatory_approver(response_id: int, db: Session):
         and ra.status != ApprovalStatus.aprobado
     ]
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # Aprobadores DINÁMICOS: los que alguien eligió en un campo selector.
+    #
+    # También van aparte, y por la misma razón que los recibidores: el recorrido
+    # de arriba va sobre la PLANTILLA del formato (FormApproval), y estos no
+    # están ahí —nacen como ResponseApproval al diligenciar—. Sin este bloque se
+    # crean bien y se les ve en su bandeja, pero no les llega el correo.
+    # ═══════════════════════════════════════════════════════════════════════
+    for ra in response_approvals:
+        if (getattr(ra, "participant_role", None) or "approver") != "approver":
+            continue
+        if not getattr(ra, "dynamic_source_element_id", None):
+            continue  # fijo: ya lo cubre el recorrido de la plantilla
+        if ra.status != ApprovalStatus.pendiente or not ra.user:
+            continue
+        if approval_mode != "parallel":
+            # En secuencial le toca cuando ya no queda ningún obligatorio
+            # pendiente por delante suyo.
+            anteriores_pendientes = [
+                x for x in response_approvals
+                if (getattr(x, "participant_role", None) or "approver") == "approver"
+                and x.is_mandatory
+                and x.sequence_number < ra.sequence_number
+                and x.status != ApprovalStatus.aprobado
+            ]
+            if anteriores_pendientes:
+                continue
+        if ra.user.email in ya_en_lista:
+            continue
+        siguientes_aprobadores.append({
+            "nombre": ra.user.name,
+            "email": ra.user.email,
+            "telefono": ra.user.telephone,
+            "secuencia": ra.sequence_number,
+            "es_obligatorio": ra.is_mandatory,
+            "es_recibidor": False,
+        })
+        ya_en_lista.add(ra.user.email)
+
     for ra in response_approvals:
         if (getattr(ra, "participant_role", None) or "approver") != "receiver":
             continue
@@ -5801,6 +5840,11 @@ async def update_response_approval_status(
     # nuevo participante tiene que existir antes de decidir a quién le toca.
     # Es idempotente y no-op si el formato no usa recibidores dinámicos.
     field_access.resolve_dynamic_receivers(db, response_id)
+
+    # 0.c Igual para los aprobadores elegidos en un campo selector: quien acaba
+    # de cerrar su paso pudo escoger a quien aprueba despues, y ese participante
+    # tiene que existir antes de decidir a quien le toca.
+    field_access.resolve_dynamic_approvers(db, response_id)
 
     # 1. Buscar el ResponseApproval correspondiente
     response_approval = db.query(ResponseApproval).filter(

@@ -257,6 +257,17 @@ async def create_answer(
                 except Exception as e:
                     logger.error(f"No se pudo crear el recibidor elegido: {e}")
 
+            # Lo mismo para los aprobadores elegidos en un campo selector.
+            marcados_aprob = {
+                s["element_id"]
+                for s in field_access.approver_selector_elements(form.form_design)
+            }
+            if element_id in marcados_aprob:
+                try:
+                    field_access.resolve_dynamic_approvers(db, response.id)
+                except Exception as e:
+                    logger.error(f"No se pudo crear el aprobador elegido: {e}")
+
     # Retornar respuesta
     if isinstance(payload, list):
         return {"message": f"{len(answers_list)} answers created", "count": len(answers_list)}
