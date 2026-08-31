@@ -78,8 +78,10 @@ def public_view_response(token: str, db: Session = Depends(get_db)):
             "question_text": question.question_text if question else "Campo desconocido",
             "question_type": question.question_type.value if question and question.question_type else "text",
             "answer_value": answer.answer_text,
+            "file_path": answer.file_path,
             "repeater_id": answer.repeated_id,
             "repeater_row": answer.repeater_row_index,
+            "form_design_element_id": answer.form_design_element_id,
         })
 
     return {
@@ -91,6 +93,7 @@ def public_view_response(token: str, db: Session = Depends(get_db)):
             "title": form.title,
             "description": form.description,
         },
+        "form_design": form.form_design,
         "answers": answers_data,
     }
 
