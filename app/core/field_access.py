@@ -875,7 +875,11 @@ def approver_selector_elements(form_design: Any) -> List[dict]:
 
 
 def resolve_receiver_user(db, valor: Any):
-    """Usuario que representa el valor elegido en un campo selector de recibidor.
+    """Usuario al que se refiere el valor de un campo selector de participante.
+
+    Sirve para los dos casos: cuando la persona se escoge en el desplegable
+    ("Nombre (correo)" / "Nombre (#id)") y cuando el valor llega por
+    autocompletado desde otro formato (una cédula, un nombre, o ambos).
 
     El campo guarda texto, así que se busca por lo más identificable primero.
     El frontend arma cada opción como "Nombre (correo)" y, cuando no puede ver
@@ -913,10 +917,33 @@ def resolve_receiver_user(db, valor: Any):
         if usuario:
             return usuario
 
-    # Último recurso: nombre exacto, y solo si no hay homónimos.
-    por_nombre = db.query(User).filter(User.name == texto).all()
-    if len(por_nombre) == 1:
-        return por_nombre[0]
+    # ── Valores que NO vienen del desplegable de personas ────────────────────
+    # El campo puede llenarse por autocompletado desde otro formato: se escoge un
+    # proyecto y el campo trae la cédula, el nombre, o los dos juntos
+    # ("1098765 - JUAN PEREZ"). Ahí no hay correo ni "#id" que valga, así que se
+    # busca por documento y por nombre. En todos los casos se exige que la
+    # coincidencia sea ÚNICA: ante la duda es mejor no crear un participante
+    # equivocado que meter al que no era en la cadena.
+    piezas = {texto}
+    for sep in (" - ", " – ", " | ", ",", ";", "-"):
+        for parte in texto.split(sep):
+            parte = parte.strip()
+            if parte:
+                piezas.add(parte)
+    # Las tiras de dígitos sueltas son candidatas a documento.
+    piezas.update(re.findall(r"\d{4,}", texto))
+
+    for pieza in piezas:
+        por_documento = db.query(User).filter(User.num_document == pieza).all()
+        if len(por_documento) == 1:
+            return por_documento[0]
+
+    for pieza in piezas:
+        por_nombre = db.query(User).filter(
+            func.lower(func.trim(User.name)) == pieza.lower()
+        ).all()
+        if len(por_nombre) == 1:
+            return por_nombre[0]
 
     return None
 
@@ -1048,7 +1075,11 @@ def resolve_dynamic_receivers(db, response_id: int) -> List[int]:
     return creados
 
 
-def resolve_dynamic_approvers(db, response_id: int) -> List[int]:
+def resolve_dynamic_approvers(
+    db,
+    response_id: int,
+    avisos: Optional[List[str]] = None,
+) -> List[int]:
     """Crea los aprobadores elegidos en campos selectores de esta respuesta.
 
     Gemelo de `resolve_dynamic_receivers`, pero con papel 'approver': el que
@@ -1062,7 +1093,9 @@ def resolve_dynamic_approvers(db, response_id: int) -> List[int]:
     sigue— es ademas la misma posicion.
 
     Es idempotente: si el participante de ese campo ya existe, no hace nada.
-    Devuelve los user_id creados.
+    Devuelve los user_id creados. Si se pasa `avisos`, se le agregan los mensajes
+    de los campos cuyo valor no se pudo resolver a un usuario, para que quien
+    diligencia se entere en vez de quedarse sin aprobador en silencio.
     """
     from app.core import response_scope
     from app.models import Answer, ApprovalStatus, Form, Response, ResponseApproval
@@ -1111,6 +1144,9 @@ def resolve_dynamic_approvers(db, response_id: int) -> List[int]:
     )
 
     creados: List[int] = []
+    # Avisos para quien diligencia: campos llenos cuyo valor no corresponde a
+    # ningún usuario. Se devuelven aparte de los creados.
+    sin_resolver: List[str] = []
     for selector in pendientes:
         respuesta = next(
             (
@@ -1125,8 +1161,20 @@ def resolve_dynamic_approvers(db, response_id: int) -> List[int]:
 
         # Se reusa el mismo resolutor de los recibidores: el formato del texto
         # que guarda el campo ("Nombre (correo)" / "Nombre (#id)") es identico.
-        usuario = resolve_receiver_user(db, _get(respuesta, "answer_text"))
+        texto = (_get(respuesta, "answer_text") or "").strip()
+        usuario = resolve_receiver_user(db, texto)
         if usuario is None:
+            # No se pudo saber a quién se refiere: ni por correo, ni por cédula,
+            # ni por nombre único. Se avisa en vez de dejarlo pasar en silencio;
+            # antes el formato se enviaba sin aprobador y nadie se enteraba.
+            aviso = (
+                f'No se encontró en SafeMetrics al aprobador "{texto}" '
+                f'del campo "{selector["label"]}". El formato quedó sin ese aprobador.'
+            )
+            logger.warning(
+                "Respuesta %s: %s (elemento %s)", response_id, aviso, selector["element_id"]
+            )
+            sin_resolver.append(aviso)
             continue
         if usuario.id in ya_en_cadena:
             continue
@@ -1143,6 +1191,9 @@ def resolve_dynamic_approvers(db, response_id: int) -> List[int]:
         ))
         ya_en_cadena.add(usuario.id)
         creados.append(usuario.id)
+
+    if avisos is not None:
+        avisos.extend(sin_resolver)
 
     if creados:
         db.commit()

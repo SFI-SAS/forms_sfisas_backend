@@ -173,6 +173,11 @@ async def create_answer(
     # ✅ CAMBIO 2: Convertir a lista si es objeto individual
     answers_list = payload if isinstance(payload, list) else [payload]
 
+    # Avisos para quien diligencia (p. ej. un campo que elige aprobador cuyo
+    # valor no corresponde a ningún usuario). Viajan en la respuesta del
+    # endpoint; si van vacíos, no se incluye la clave.
+    avisos_participantes: list[str] = []
+
     # NOTA: /save-answers/ es el endpoint de CREACIÓN de answers. El frontend lo
     # invoca UNA VEZ POR ANSWER al diligenciar (incluyendo varias filas de
     # repeater con el mismo question_id), y en formato cerrado la response nace
@@ -264,15 +269,22 @@ async def create_answer(
             }
             if element_id in marcados_aprob:
                 try:
-                    field_access.resolve_dynamic_approvers(db, response.id)
+                    field_access.resolve_dynamic_approvers(
+                        db, response.id, avisos=avisos_participantes
+                    )
                 except Exception as e:
                     logger.error(f"No se pudo crear el aprobador elegido: {e}")
 
-    # Retornar respuesta
+    # Retornar respuesta. `avisos` viaja para que el frontend pueda decirle a
+    # quien diligencia que un aprobador quedó sin asignar porque el valor del
+    # campo no corresponde a ningún usuario de SafeMetrics.
     if isinstance(payload, list):
-        return {"message": f"{len(answers_list)} answers created", "count": len(answers_list)}
+        salida = {"message": f"{len(answers_list)} answers created", "count": len(answers_list)}
     else:
-        return {"message": "Answer created", "answer": payload}
+        salida = {"message": "Answer created", "answer": payload}
+    if avisos_participantes:
+        salida["avisos"] = avisos_participantes
+    return salida
 
 @router.post("/close-response/{response_id}")
 async def close_response(
