@@ -1238,9 +1238,9 @@ class FormPdfExporter:
             b64 = base64.b64encode(buf.getvalue()).decode()
 
             return (
-                '<div style="position:fixed;bottom:10px;right:10px;text-align:center;">'
-                f'<img src="data:image/png;base64,{b64}" style="width:75px;height:75px;"/>'
-                '<div style="font-size:6px;color:#999;margin-top:2px;">Verificar documento</div>'
+                '<div style="position:fixed;top:8px;right:8px;text-align:center;opacity:0.85;">'
+                f'<img src="data:image/png;base64,{b64}" style="width:50px;height:50px;"/>'
+                '<div style="font-size:5px;color:#aaa;margin-top:1px;">Verificar</div>'
                 '</div>'
             )
         except Exception:

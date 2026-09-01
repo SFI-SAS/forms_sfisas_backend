@@ -3108,7 +3108,7 @@ def get_related_or_filtered_answers_optimized(
 
     if condition:
         responses = db.query(Response).filter_by(form_id=condition.form_id).all()
-        valid_answers = []  # Lista para mantener duplicados
+        valid_answers = []
         correlations_map = {}
         response_ids_matched = set()
 
@@ -3116,8 +3116,6 @@ def get_related_or_filtered_answers_optimized(
             answers = db.query(Answer).filter_by(response_id=response.id).all()
 
             response_matched = False
-            # Reconstruir por fila: cada fila del repetidor empareja su condición,
-            # su valor fuente y sus correlaciones sin mezclarse con otras filas.
             for row in _reconstruct_answer_rows(answers):
                 condition_val = row.get(condition.condition_question_id)
                 source_val = row.get(condition.source_question_id)
@@ -3127,9 +3125,10 @@ def get_related_or_filtered_answers_optimized(
                 try:
                     condition_val_converted = float(condition_val)
                     expected_val = float(condition.expected_value)
-                except ValueError:
-                    condition_val_converted = str(condition_val)
-                    expected_val = str(condition.expected_value)
+                except (ValueError, TypeError):
+                    # Comparacion case-insensitive para strings
+                    condition_val_converted = str(condition_val).strip().lower()
+                    expected_val = str(condition.expected_value).strip().lower()
 
                 condition_met = False
                 if condition.operator == '==':
