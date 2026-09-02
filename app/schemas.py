@@ -614,8 +614,12 @@ class QuestionFilterConditionCreate(BaseModel):
     operator: Literal['==', '!=', '>', '<', '>=', '<=', 'in', 'not in'] = Field(
         default='==', description="Operador lógico para la comparación"
     )
+    use_latest_only: bool = Field(
+        default=False,
+        description="Si True, solo considera la respuesta mas reciente por cada valor del campo fuente"
+    )
 
-    
+
 class FilteredAnswersResponse(BaseModel):
     answer: str
     
