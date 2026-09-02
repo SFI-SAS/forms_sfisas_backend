@@ -929,6 +929,7 @@ def create_question_filter_condition(
         condition_question_id=condition_data.condition_question_id,
         expected_value=condition_data.expected_value,
         operator=condition_data.operator,
+        use_latest_only=condition_data.use_latest_only,
     )
 
     db.add(new_condition)

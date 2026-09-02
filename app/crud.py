@@ -3107,7 +3107,21 @@ def get_related_or_filtered_answers_optimized(
     condition = db.query(QuestionFilterCondition).filter_by(filtered_question_id=question_id).first()
 
     if condition:
-        responses = db.query(Response).filter_by(form_id=condition.form_id).all()
+        # Ordenar por fecha: más recientes primero (para use_latest_only)
+        responses = (
+            db.query(Response)
+            .filter_by(form_id=condition.form_id)
+            .order_by(Response.submitted_at.desc())
+            .all()
+        )
+        use_latest = getattr(condition, 'use_latest_only', False)
+
+        # Si use_latest_only: para cada source_val, solo considerar la respuesta
+        # más reciente. "más reciente" = la response con submitted_at más alto
+        # donde aparece ese source_val.
+        # Estructura: { source_val: { condition_val, row, response_id } }
+        latest_by_source = {}
+
         valid_answers = []
         correlations_map = {}
         response_ids_matched = set()
@@ -3122,11 +3136,18 @@ def get_related_or_filtered_answers_optimized(
                 if not condition_val or not source_val:
                     continue
 
+                # use_latest_only: si ya vimos este source_val en una respuesta
+                # más reciente, ignorar (las responses vienen ordenadas desc).
+                if use_latest:
+                    source_key = str(source_val).strip().lower()
+                    if source_key in latest_by_source:
+                        continue
+                    latest_by_source[source_key] = True
+
                 try:
                     condition_val_converted = float(condition_val)
                     expected_val = float(condition.expected_value)
                 except (ValueError, TypeError):
-                    # Comparacion case-insensitive para strings
                     condition_val_converted = str(condition_val).strip().lower()
                     expected_val = str(condition.expected_value).strip().lower()
 
@@ -3148,7 +3169,7 @@ def get_related_or_filtered_answers_optimized(
                     continue
 
                 response_matched = True
-                valid_answers.append(source_val)  # ✅ Mantiene duplicados
+                valid_answers.append(source_val)
 
                 if source_val not in correlations_map:
                     correlations_map[source_val] = {}
@@ -3161,9 +3182,8 @@ def get_related_or_filtered_answers_optimized(
             if response_matched:
                 response_ids_matched.add(response.id)
 
-        # ✅ Sin filtrar duplicados
         filtered = list(filter(None, valid_answers))
-        
+
         return {
             "source": "condicion_filtrada",
             "data": [{"name": val} for val in filtered],
