@@ -5866,11 +5866,20 @@ async def update_response_approval_status(
     field_access.resolve_dynamic_approvers(db, response_id)
 
     # 1. Buscar el ResponseApproval correspondiente
-    response_approval = db.query(ResponseApproval).filter(
+    # Filtrar por el usuario que está aprobando: en modo PARALELO todos los
+    # aprobadores comparten sequence_number, así que sin este filtro `.first()`
+    # devolvía una fila cualquiera (la de menor id) y la aprobación quedaba
+    # firmada a nombre de otra persona.
+    base_q = db.query(ResponseApproval).filter(
         ResponseApproval.response_id == response_id,
         ResponseApproval.sequence_number == update_data.selectedSequence
-    ).first()
-    
+    )
+    response_approval = base_q.filter(ResponseApproval.user_id == user_id).first()
+    if not response_approval:
+        # El que actúa no tiene fila propia en este paso (admin/override, flujos
+        # que resuelven aprobaciones por otras rutas): comportamiento anterior.
+        response_approval = base_q.first()
+
     if not response_approval:
         raise HTTPException(status_code=404, detail="ResponseApproval not found")
 
