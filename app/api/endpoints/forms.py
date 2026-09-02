@@ -605,6 +605,7 @@ def get_form_endpoint(
 def get_form_design(
     form_id: int,
     audience: Optional[str] = None,
+    response_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -666,18 +667,71 @@ def get_form_design(
 
     # PASO 5: Recorte por audiencia. Se hace SIEMPRE después del caché para que
     # nunca se guarde una versión recortada bajo la llave global del formato.
-    return _apply_design_audience(db, form_id, design_response, audience, current_user)
+    return _apply_design_audience(db, form_id, design_response, audience,
+                                 current_user, response_id)
+
+
+def _config_de_participante(db, form_id: int, user_id: int,
+                            response_id: Optional[int]) -> Optional[dict]:
+    """Config de campos de quien mira, sea fijo o elegido al diligenciar.
+
+    Un participante ALEATORIO no tiene config propia: no es un usuario del
+    formato, entró a la cadena porque alguien lo escogió en un campo. La suya
+    cuelga de ESE campo (`dynamic_key`). Sin esto, al abrir la respuesta no se
+    le ofrecía ni un campo para llenar —ni la firma que le tocaba— porque el
+    diseño salía sin `field_access`.
+
+    Con `response_id` se sabe exactamente por qué campo entró. Sin él (la
+    pantalla de aprobación carga el diseño por formato, no por respuesta) se
+    busca su participación más reciente en este formato.
+    """
+    propia = field_access.load_field_access(db, form_id).get(user_id)
+    if propia:
+        return propia
+
+    if response_id:
+        return field_access.config_for_participant(db, form_id, response_id, user_id)
+
+    participacion = (
+        db.query(ResponseApproval)
+        .join(Response, ResponseApproval.response_id == Response.id)
+        .filter(
+            Response.form_id == form_id,
+            ResponseApproval.user_id == user_id,
+            ResponseApproval.dynamic_source_element_id.isnot(None),
+        )
+        .order_by(ResponseApproval.id.desc())
+        .first()
+    )
+    if not participacion:
+        return None
+    return field_access.load_dynamic_field_access(db, form_id).get(
+        participacion.dynamic_source_element_id
+    )
 
 
 def _apply_design_audience(db, form_id: int, design_response: dict,
-                           audience: Optional[str], current_user: User) -> dict:
+                           audience: Optional[str], current_user: User,
+                           response_id: Optional[int] = None) -> dict:
     """Recorta el diseño según quién lo va a usar. Ver get_form_design."""
     if audience not in ("fill", "approve", "view"):
         return design_response
 
     configs = field_access.load_field_access(db, form_id)
-    if not configs:
+    # Los participantes ALEATORIOS (los que se eligen en un campo al diligenciar)
+    # no cuelgan de un usuario: su config va contra el campo que los define. Sin
+    # esto, un campo que llena un aprobador aleatorio le llegaba al diligenciador
+    # como suyo —lo podía escribir, escoger o firmar—, al revés de lo que pasa
+    # con un aprobador fijo. Y si el formato SOLO tenía participantes aleatorios,
+    # `configs` venía vacío y el diseño salía entero, sin recortar nada.
+    dinamicas = field_access.load_dynamic_field_access(db, form_id)
+    if not configs and not dinamicas:
         return design_response
+
+    def campos_de_los_aprobadores() -> set:
+        """Campos que llena algún participante, fijo o aleatorio."""
+        return (field_access.owned_element_ids(configs)
+                | field_access.owned_element_ids(dinamicas))
 
     result = dict(design_response)
 
@@ -690,7 +744,7 @@ def _apply_design_audience(db, form_id: int, design_response: dict,
         if getattr(current_user.user_type, "name", "") in ("admin", "creator"):
             return design_response
 
-        config = configs.get(current_user.id)
+        config = _config_de_participante(db, form_id, current_user.id, response_id)
         if config is not None:
             # Es aprobador o recibidor: no ve los campos que tiene en "No lo ve".
             recortar = field_access.elements_with_mode(config, field_access.HIDDEN)
@@ -704,22 +758,23 @@ def _apply_design_audience(db, form_id: int, design_response: dict,
                 recortar = set()
             else:
                 diseno = design_response.get("form_design")
-                recortar = field_access.owned_element_ids(configs) -                     field_access.elements_visible_to_filler(diseno)
+                recortar = campos_de_los_aprobadores() - field_access.elements_visible_to_filler(diseno)
         result["form_design"] = field_access.strip_elements(
             design_response.get("form_design"), recortar
         )
         return result
 
     if audience == "fill":
-        # Quien diligencia no ve los campos que llena algún aprobador.
-        owned = field_access.owned_element_ids(configs)
+        # Quien diligencia no ve los campos que llena algún aprobador, sea fijo
+        # o de los que se eligen al diligenciar.
+        owned = campos_de_los_aprobadores()
         result["form_design"] = field_access.strip_elements(
             design_response.get("form_design"), owned
         )
         return result
 
     # audience == "approve"
-    config = configs.get(current_user.id)
+    config = _config_de_participante(db, form_id, current_user.id, response_id)
     if not config:
         return design_response
 
@@ -5997,6 +6052,59 @@ def get_form_diligenciar_context(
         }
         for t in template
     ]
+
+    # ── 1-bis. Los que se eligen al diligenciar ──────────────────────────────
+    # No están en `form_approvals`: quiénes son se sabrá cuando alguien llene el
+    # campo que los elige. Pero van a estar en la cadena, así que tienen que
+    # salir aquí; si no, este recuadro promete una cadena distinta a la real —y
+    # un formato cuyo único aprobador es aleatorio se anunciaba como si no
+    # tuviera aprobadores.
+    dinamicos = []
+    for sel in field_access.approver_selector_elements(form.form_design):
+        pedida = sel.get("orden")
+        dinamicos.append((
+            # Mismo criterio que usa la cadena de verdad: el que pide el puesto
+            # N entra justo antes del fijo que lo ocupa; sin puesto, al final.
+            (pedida - 0.5) if pedida is not None else float("inf"),
+            0,
+            sel.get("orden_diseno", 0),
+            "approver",
+            sel,
+        ))
+    for i, sel in enumerate(field_access.receiver_selector_elements(form.form_design)):
+        # El recibidor no hace fila: espera a SUS aprobadores o al cierre.
+        dinamicos.append((float("inf"), 2, i, "receiver", sel))
+
+    if dinamicos:
+        combinados = [
+            ((float(a["sequence_number"] or 0), 1, i), a)
+            for i, a in enumerate(approvers)
+        ]
+        for peso, sub, desempate, papel, sel in dinamicos:
+            combinados.append((
+                (peso, sub, desempate),
+                {
+                    "sequence_number": 0,  # se numera abajo
+                    "is_mandatory": True,
+                    "user_id": None,
+                    "user_name": "Se elige al enviar",
+                    "user_email": None,
+                    "deadline_days": None,
+                    "avg_days": None,
+                    "participant_role": papel,
+                    "receives_from_user_ids": [],
+                    "receive_timing": "after_approvals",
+                    # Para que la interfaz lo pinte distinto y diga de dónde sale.
+                    "is_dynamic": True,
+                    "dynamic_element_id": sel["element_id"],
+                    "source_label": sel.get("label") or "un campo del formato",
+                },
+            ))
+        combinados.sort(key=lambda x: x[0])
+        approvers = []
+        for posicion, (_, participante) in enumerate(combinados, start=1):
+            participante["sequence_number"] = posicion
+            approvers.append(participante)
 
     # ── 2. Email recipients ──────────────────────────────────────────────────
     notifs = (

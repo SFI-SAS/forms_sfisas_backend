@@ -2083,18 +2083,28 @@ def update_form_field_access(
     # campo guardan por separado, y omitirlos no puede significar "bórralos".
     if data.dynamic_access is not None:
         # Solo se acepta config para un campo que de verdad esté marcado como
-        # selector de recibidor, para no dejar reglas colgando de campos que ya
-        # no lo son.
+        # selector, para no dejar reglas colgando de campos que ya no lo son.
+        # Los DOS tipos cuentan: el que elige recibidor y el que elige
+        # aprobador. Antes solo se miraban los de recibidor, así que configurar
+        # los campos de un aprobador aleatorio se caía con un 422.
         marcados = {
             s["element_id"]
             for s in field_access.receiver_selector_elements(form.form_design)
+        } | {
+            s["element_id"]
+            for s in field_access.approver_selector_elements(form.form_design)
         }
         entrantes_dyn = {}
         for element_id, config in data.dynamic_access.items():
             if element_id not in marcados:
                 raise HTTPException(
                     status_code=422,
-                    detail=f"El campo {element_id} no está marcado como selector de recibidor"
+                    detail=(
+                        "Ese campo no está marcado como selector de aprobador ni de "
+                        "recibidor en el diseño guardado del formato. Si acabas de "
+                        "marcarlo, guarda el formato y vuelve a intentarlo. "
+                        f"(campo {element_id})"
+                    )
                 )
             entrantes_dyn[element_id] = config.model_dump()
 
@@ -2390,8 +2400,40 @@ def normalize_chain_sequence(
             # se queda al final de la cadena.
             sueltos.append(fa)
 
+    # ── Puestos reservados a los aprobadores aleatorios ─────────────────────
+    # Un aprobador aleatorio no tiene fila aquí: sale de un campo del diseño y
+    # solo se sabe quién es al diligenciar. Pero SÍ ocupa un puesto en la
+    # cadena, y renumerar sin contarlo rompía lo que el usuario acababa de
+    # pedir: ponía el aprobador fijo en el #2 —para dejarle el #1 al
+    # aleatorio—, guardaba, y esta función lo compactaba de vuelta al #1.
+    #
+    # Se representan con None: consumen número y no se escribe nada en la BD.
+    # Su puesto real lo aplica `field_access._reordenar_cadena` cuando la
+    # respuesta ya sabe quién es la persona.
+    selectores = []
+    formato = db.query(Form).filter(Form.id == form_id).first()
+    if formato is not None:
+        selectores = field_access.approver_selector_elements(
+            getattr(formato, "form_design", None)
+        )
+
+    puestos = []
+    for i, aprobador in enumerate(aprobadores):
+        puestos.append(((float(aprobador.sequence_number or 0), 1, i), aprobador))
+    for sel in selectores:
+        pedida = sel.get("orden")
+        # `- 0.5` mete al aleatorio JUSTO ANTES del fijo que ocupa ese puesto,
+        # que es lo que se pide al decir "el aleatorio va primero que el fijo".
+        # Sin puesto pedido, al final.
+        base = (pedida - 0.5) if pedida is not None else float("inf")
+        puestos.append(((base, 0, sel.get("orden_diseno", 0)), None))
+    puestos.sort(key=lambda x: x[0])
+
     orden = []
-    for aprobador in aprobadores:
+    for _, aprobador in puestos:
+        if aprobador is None:
+            orden.append(None)  # puesto reservado
+            continue
         orden.append(aprobador)
         orden.extend(tras_aprobador.get(aprobador.user_id, []))
     orden.extend(sueltos)
@@ -2399,6 +2441,8 @@ def normalize_chain_sequence(
     cambios = 0
     nuevo_por_usuario = {}
     for posicion, fa in enumerate(orden, start=1):
+        if fa is None:
+            continue
         if fa.sequence_number != posicion:
             fa.sequence_number = posicion
             cambios += 1

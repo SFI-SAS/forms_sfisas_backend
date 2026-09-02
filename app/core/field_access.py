@@ -863,10 +863,40 @@ def approver_selector_elements(form_design: Any) -> List[dict]:
                 continue
             props = item.get("props") or {}
             if props.get("approverSelector") and item.get("id"):
+                # Posicion pedida en la cadena. La escribe el creador del formato:
+                # 1 = antes de todos los fijos, 2 = despues del primero, etc.
+                # Sin valor, va al final (como se comportaba antes).
+                try:
+                    orden = int(props.get("approverSelectorOrder"))
+                except (TypeError, ValueError):
+                    orden = None
+                # Cómo aprueba: botón, botón o firma facial, o facial obligatoria.
+                # El aprobador fijo lo lleva en su fila de `form_approvals`; el
+                # aleatorio no tiene fila —se sabe quién es al diligenciar—, así
+                # que viaja en el diseño, con el campo que lo elige.
+                modo_firma = props.get("approverSelectorFirmMode")
+                if modo_firma not in ("button", "button_or_facial", "facial"):
+                    modo_firma = "button"
+                try:
+                    pregunta_firma = int(props.get("approverSelectorFirmQuestionId"))
+                except (TypeError, ValueError):
+                    pregunta_firma = None
+                # La BD exige pregunta fuente para cualquier modo facial
+                # (response_approvals_firm_source_required_check). Sin ella el
+                # modo no se puede aplicar: se queda en botón.
+                if modo_firma != "button" and pregunta_firma is None:
+                    modo_firma = "button"
+
                 encontrados.append({
                     "element_id": str(item["id"]),
                     "question_id": item.get("id_question") or item.get("linkExternalId"),
                     "label": props.get("label") or "Aprobador",
+                    "orden": orden,
+                    "firm_mode": modo_firma,
+                    "firm_source_question_id": pregunta_firma,
+                    # Desempate entre aleatorios sin posicion o con la misma: el
+                    # orden en que aparecen los campos en el diseno.
+                    "orden_diseno": len(encontrados),
                 })
             walk(item.get("children"))
 
@@ -1075,6 +1105,75 @@ def resolve_dynamic_receivers(db, response_id: int) -> List[int]:
     return creados
 
 
+def _reordenar_cadena(db, response_id: int, posiciones: Dict[str, tuple]) -> None:
+    """Coloca a los aprobadores dinámicos en la posición que pidió el formato.
+
+    Por defecto un aprobador elegido en un campo entra al FINAL de la cadena.
+    Pero el creador del formato puede querer lo contrario: "primero mi jefe
+    inmediato —que se escoge al enviar— y después el aprobador fijo". Esa
+    posición viaja en el diseño (`approverSelectorOrder`) y aquí se aplica
+    renumerando la cadena completa.
+
+    Se renumera SOLO si nadie ha actuado todavía: en cuanto alguien aprueba o
+    rechaza, su `sequence_number` ya quedó referenciado (los correos, la pantalla
+    de aprobación y `update_approval` lo usan como clave) y moverlo sería
+    peligroso. En ese caso se deja como está, que es el comportamiento anterior.
+
+    El orden entre varios dinámicos, cuando piden la misma posición o ninguna, lo
+    decide el orden de sus campos en el diseño.
+    """
+    from app.models import ApprovalStatus, ResponseApproval
+
+    if not posiciones:
+        return
+
+    filas = (
+        db.query(ResponseApproval)
+        .filter(ResponseApproval.response_id == response_id)
+        .order_by(ResponseApproval.sequence_number)
+        .all()
+    )
+    if not filas:
+        return
+
+    if any(f.status != ApprovalStatus.pendiente for f in filas):
+        logger.info(
+            "Respuesta %s: la cadena ya tiene pasos resueltos, no se reordena.", response_id
+        )
+        return
+
+    # Clave de orden por participante:
+    #   fijos     -> la secuencia que traían de la plantilla
+    #   dinámicos -> la posición pedida (o el final si no pidieron ninguna)
+    fin = max([f.sequence_number or 0 for f in filas] or [0]) + 1000
+
+    def clave(f):
+        elem = getattr(f, "dynamic_source_element_id", None)
+        if elem and elem in posiciones:
+            pedida, orden_diseno = posiciones[elem]
+            # `- 0.5` mete al dinámico JUSTO ANTES del fijo que ocupa esa
+            # posición, que es lo que se pide al decir "va primero que el fijo".
+            base = (pedida - 0.5) if pedida is not None else fin
+            return (base, orden_diseno)
+        return (float(f.sequence_number or 0), 0)
+
+    ordenadas = sorted(filas, key=clave)
+
+    cambio = False
+    for i, f in enumerate(ordenadas, start=1):
+        if f.sequence_number != i:
+            f.sequence_number = i
+            cambio = True
+
+    if cambio:
+        db.commit()
+        logger.info(
+            "Respuesta %s: cadena reordenada -> %s",
+            response_id,
+            [(f.sequence_number, f.user_id, f.dynamic_source_element_id or "fijo") for f in ordenadas],
+        )
+
+
 def resolve_dynamic_approvers(
     db,
     response_id: int,
@@ -1147,6 +1246,8 @@ def resolve_dynamic_approvers(
     # Avisos para quien diligencia: campos llenos cuyo valor no corresponde a
     # ningún usuario. Se devuelven aparte de los creados.
     sin_resolver: List[str] = []
+    # element_id -> (posicion pedida en la cadena, orden en el diseño)
+    posiciones_pedidas: Dict[str, tuple] = {}
     for selector in pendientes:
         respuesta = next(
             (
@@ -1188,15 +1289,24 @@ def resolve_dynamic_approvers(
             status=ApprovalStatus.pendiente,
             participant_role="approver",
             dynamic_source_element_id=selector["element_id"],
+            # Sin esto quedaba en 'button' por defecto y al aprobador elegido
+            # nunca se le ofrecía firmar con la cámara, aunque el formato lo
+            # pidiera.
+            firm_mode=selector.get("firm_mode") or "button",
+            firm_source_question_id=selector.get("firm_source_question_id"),
         ))
         ya_en_cadena.add(usuario.id)
         creados.append(usuario.id)
+        posiciones_pedidas[selector["element_id"]] = (
+            selector.get("orden"), selector.get("orden_diseno", 0),
+        )
 
     if avisos is not None:
         avisos.extend(sin_resolver)
 
     if creados:
         db.commit()
+        _reordenar_cadena(db, response_id, posiciones_pedidas)
 
         # Avisarle al que quedo de turno.
         #
