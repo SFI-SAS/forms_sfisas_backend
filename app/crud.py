@@ -9898,22 +9898,30 @@ def search_forms_by_user(
     search: str,
     filter_type: str = "all",
     page: int = 1,
-    page_size: int = 30
+    page_size: int = 30,
+    include_drafts: bool = False
 ) -> dict:
     """
     Busca formularios asignados al usuario con búsqueda flexible.
-    
+
     Busca en: title, description, category.name, palabras_clave
     Soporta búsqueda parcial, case-insensitive, y múltiples palabras.
+
+    `include_drafts=True` incluye los BORRADORES (is_enabled=False). Solo lo pide
+    la pantalla de EDICION de formatos: sin esto, un borrador sin categoria no
+    aparece en ninguna busqueda y queda inalcanzable desde la UI (incidente
+    "Borrador Permiso Alturas" #354, 2026-09-02). Las pantallas de diligenciar y
+    de respuestas NO lo pasan, asi que siguen viendo solo formatos activos.
     """
-    
-    # ── 1. Base query: formularios habilitados ──
+
+    # ── 1. Base query: formularios habilitados (o tambien borradores) ──
     query = (
         db.query(Form)
         .outerjoin(FormCategory, Form.id_category == FormCategory.id)
         .options(joinedload(Form.category))
-        .filter(Form.is_enabled == True)
     )
+    if not include_drafts:
+        query = query.filter(Form.is_enabled == True)
     
     # ── 2. Filtro por tipo de asignación ──
     # Admin ve TODOS los formatos habilitados
