@@ -3884,6 +3884,7 @@ def search_user_forms(
     filter_type: str = Query("all", pattern="^(all|user|response_user)$"),
     page: int = 1,
     page_size: int = 30,
+    include_drafts: bool = Query(False, description="Incluir borradores (is_enabled=false). Solo la pantalla de editar formatos."),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -3893,7 +3894,8 @@ def search_user_forms(
         page_size = 100
 
     # Llamar a la función de servicio
-    result = search_forms_by_user(db, current_user.id, search.strip(), filter_type, page, page_size)
+    result = search_forms_by_user(db, current_user.id, search.strip(), filter_type, page, page_size,
+                                  include_drafts=include_drafts)
     return result
 
 

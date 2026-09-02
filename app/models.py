@@ -645,6 +645,11 @@ class QuestionFilterCondition(Base):
     condition_question_id = Column(BigInteger, ForeignKey('questions.id'), nullable=False)
     expected_value = Column(String(255), nullable=False)
     operator = Column(String(10), nullable=False, default="==")
+    # Si True, agrupa las respuestas por el valor de source_question_id y solo
+    # considera la MÁS RECIENTE de cada grupo. Útil cuando un mismo valor
+    # (ej: un proyecto) puede tener múltiples respuestas con estados diferentes
+    # y solo importa el estado actual (la última respuesta enviada).
+    use_latest_only = Column(Boolean, nullable=False, default=False, server_default='false')
     form = relationship("Form")
     filtered_question = relationship("Question", foreign_keys=[filtered_question_id])
     source_question = relationship("Question", foreign_keys=[source_question_id])

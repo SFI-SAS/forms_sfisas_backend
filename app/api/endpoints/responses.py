@@ -929,6 +929,7 @@ def create_question_filter_condition(
         condition_question_id=condition_data.condition_question_id,
         expected_value=condition_data.expected_value,
         operator=condition_data.operator,
+        use_latest_only=condition_data.use_latest_only,
     )
 
     db.add(new_condition)
@@ -3362,4 +3363,89 @@ def aggregate_responses_global(
             {"form_id": fid, "form_name": title, "period": period, "count": cnt}
             for fid, title, period, cnt in rows
         ]
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Traer respuestas anteriores para reutilizar al diligenciar
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/my-previous/{form_id}")
+def get_my_previous_responses(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Devuelve las respuestas anteriores del usuario actual para un formato.
+    Disponible siempre — no requiere configuracion del admin.
+    """
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    responses = (
+        db.query(Response)
+        .filter(
+            Response.form_id == form_id,
+            Response.user_id == current_user.id,
+            Response.parent_response_id.is_(None),
+        )
+        .order_by(Response.submitted_at.desc())
+        .limit(50)
+        .all()
+    )
+
+    result = []
+    for resp in responses:
+        result.append({
+            "response_id": resp.id,
+            "submitted_at": resp.submitted_at.isoformat() if resp.submitted_at else None,
+        })
+
+    return {"responses": result}
+
+
+@router.get("/my-previous/{form_id}/{response_id}/answers")
+def get_previous_response_answers(
+    form_id: int,
+    response_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Devuelve TODOS los datos de una respuesta anterior del usuario actual
+    para cargarlos como valores iniciales de un nuevo diligenciamiento.
+    """
+    response = db.query(Response).filter(
+        Response.id == response_id,
+        Response.form_id == form_id,
+        Response.user_id == current_user.id,
+        Response.parent_response_id.is_(None),
+    ).first()
+    if not response:
+        raise HTTPException(status_code=404, detail="Respuesta no encontrada")
+
+    answers = db.query(Answer).filter(Answer.response_id == response_id).all()
+
+    answers_data = []
+    for a in answers:
+        question = db.query(Question).filter(Question.id == a.question_id).first()
+        answers_data.append({
+            "answer_id": a.id,
+            "question_id": a.question_id,
+            "question_text": question.question_text if question else None,
+            "question_type": question.question_type.value if question and question.question_type else None,
+            "answer_text": a.answer_text,
+            "file_path": a.file_path,
+            "form_design_element_id": a.form_design_element_id,
+            "repeated_id": a.repeated_id,
+            "repeater_row_index": a.repeater_row_index,
+            "parent_repeated_id": a.parent_repeated_id,
+        })
+
+    return {
+        "response_id": response.id,
+        "submitted_at": response.submitted_at.isoformat() if response.submitted_at else None,
+        "answers": answers_data,
     }

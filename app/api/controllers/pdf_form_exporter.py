@@ -947,11 +947,14 @@ class FormPdfExporter:
             table_html = '<div style="padding:8px 14px;">' + subs + '</div>'
 
         lbl = props.get("label", "")
+        # No mostrar header en el PDF si el label es genérico / de UI
+        skip_labels = ("agregar filas", "tabla de datos", "sub-tabla", "repetidor")
+        show_header = bool(lbl) and not any(s in lbl.lower() for s in skip_labels)
         REP_SVG = ('<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
                    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
                    '<rect x="3" y="3" width="18" height="18" rx="2"/>'
                    '<path d="M3 9h18M3 15h18M9 3v18"/></svg>')
-        header_div = ('<div class="repeater-header">' + REP_SVG + _e(lbl) + '</div>') if lbl else ""
+        header_div = ('<div class="repeater-header">' + REP_SVG + _e(lbl) + '</div>') if show_header else ""
 
         return '<div class="repeater-wrap">' + header_div + table_html + '</div>'
 
