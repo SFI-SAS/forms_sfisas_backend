@@ -4308,16 +4308,22 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
             if not form_obj:
                 continue
             ya_cubiertos.add(form_id_dinamico)
-            # El plazo se hereda de la plantilla del formato, que es de donde
-            # sale para todos los demás participantes.
-            plantilla = (
-                db.query(FormApproval)
-                .filter(FormApproval.form_id == form_id_dinamico, FormApproval.is_active == True)
-                .first()
+            # El plazo sale del campo que lo eligió, si ahí se configuró uno.
+            # Si no, se hereda de la plantilla del formato, que es de donde sale
+            # para todos los demás participantes.
+            plazo = field_access.plazo_de_selector(
+                form_obj.form_design, getattr(ra, "dynamic_source_element_id", None)
             )
+            if plazo is None:
+                plantilla = (
+                    db.query(FormApproval)
+                    .filter(FormApproval.form_id == form_id_dinamico, FormApproval.is_active == True)
+                    .first()
+                )
+                plazo = plantilla.deadline_days if plantilla else None
             form_approvals.append(SimpleNamespace(
                 form=form_obj,
-                deadline_days=plantilla.deadline_days if plantilla else None,
+                deadline_days=plazo,
             ))
 
     for form_approval in form_approvals:
@@ -7299,7 +7305,17 @@ def get_response_details_logic(db: Session):
             )
 
             if form_approval:
-                acumulado_deadline += form_approval.deadline_days
+                acumulado_deadline += form_approval.deadline_days or 0
+            else:
+                # Participante elegido al diligenciar: no tiene fila en la
+                # plantilla, su plazo está en el diseño. Sin esto, su paso
+                # sumaba 0 días y la respuesta se daba por vencida antes de
+                # tiempo —o nunca, según el caso—.
+                plazo_dinamico = field_access.plazo_de_selector(
+                    response.form.form_design if response.form else None,
+                    getattr(approval, "dynamic_source_element_id", None),
+                )
+                acumulado_deadline += plazo_dinamico or 0
 
             if rechazo_encontrado or approval.status != ApprovalStatus.pendiente:
                 continue
@@ -7318,7 +7334,13 @@ def get_response_details_logic(db: Session):
                     "reviewed_at": approval.reviewed_at,
                     "is_mandatory": approval.is_mandatory,
                     "message": approval.message,
-                    "deadline_days": form_approval.deadline_days if form_approval else None,
+                    "deadline_days": (
+                        form_approval.deadline_days if form_approval
+                        else field_access.plazo_de_selector(
+                            response.form.form_design if response.form else None,
+                            getattr(approval, "dynamic_source_element_id", None),
+                        )
+                    ),
                     "deadline_acumulado": acumulado_deadline,
                     "plazo_vencido": plazo_vencido,
                     "creador": {

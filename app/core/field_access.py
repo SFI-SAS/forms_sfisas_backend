@@ -887,6 +887,16 @@ def approver_selector_elements(form_design: Any) -> List[dict]:
                 if modo_firma != "button" and pregunta_firma is None:
                     modo_firma = "button"
 
+                # Plazo en días para decidir, igual que el del aprobador fijo.
+                # Sin valor, el aleatorio entraba sin plazo: nunca se le vencía
+                # ni salía en los avisos de vencimiento.
+                try:
+                    plazo = int(props.get("approverSelectorDeadlineDays"))
+                    if plazo < 0:
+                        plazo = None
+                except (TypeError, ValueError):
+                    plazo = None
+
                 encontrados.append({
                     "element_id": str(item["id"]),
                     "question_id": item.get("id_question") or item.get("linkExternalId"),
@@ -894,6 +904,7 @@ def approver_selector_elements(form_design: Any) -> List[dict]:
                     "orden": orden,
                     "firm_mode": modo_firma,
                     "firm_source_question_id": pregunta_firma,
+                    "deadline_days": plazo,
                     # Desempate entre aleatorios sin posicion o con la misma: el
                     # orden en que aparecen los campos en el diseno.
                     "orden_diseno": len(encontrados),
@@ -1172,6 +1183,26 @@ def _reordenar_cadena(db, response_id: int, posiciones: Dict[str, tuple]) -> Non
             response_id,
             [(f.sequence_number, f.user_id, f.dynamic_source_element_id or "fijo") for f in ordenadas],
         )
+
+
+def plazo_de_selector(form_design: Any, element_id: Optional[str]) -> Optional[int]:
+    """Días que tiene para decidir el participante elegido en ese campo.
+
+    El plazo de un aprobador fijo vive en su fila de `form_approvals`. El
+    aleatorio no tiene fila —quién es se sabe al diligenciar— y
+    `response_approvals` no tiene columna de plazo, así que su plazo se guarda
+    donde vive todo lo suyo: en el diseño, con el campo que lo elige
+    (`approverSelectorDeadlineDays`).
+
+    Devuelve None si ese campo no pide plazo, y entonces quien pregunte decide
+    con qué reemplazarlo (hoy, con el de la plantilla del formato).
+    """
+    if not element_id:
+        return None
+    for selector in approver_selector_elements(form_design):
+        if selector["element_id"] == element_id:
+            return selector.get("deadline_days")
+    return None
 
 
 def resolve_dynamic_approvers(
