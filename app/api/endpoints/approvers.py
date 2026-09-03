@@ -2094,18 +2094,19 @@ def update_form_field_access(
             s["element_id"]
             for s in field_access.approver_selector_elements(form.form_design)
         }
+        # El cliente (FieldApproverAccess.tsx → cambiarModoDinamico) reenvía TODA
+        # la config dinámica existente en cada guardado, no solo la que cambió.
+        # Si un campo dejó de estar marcado como selector (se desmarcó o se
+        # borró) después de tener config, seguía llegando en el payload para
+        # SIEMPRE — y antes esto tumbaba la petición COMPLETA con un 422,
+        # bloqueando cualquier cambio futuro sobre cualquier otro selector del
+        # mismo formato. Ahora se ignora en silencio: como no entra a
+        # `entrantes_dyn`, la limpieza de abajo (dynamic_access existente que ya
+        # no viene en el payload) lo borra solo, autocurando el dato huérfano.
         entrantes_dyn = {}
         for element_id, config in data.dynamic_access.items():
             if element_id not in marcados:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        "Ese campo no está marcado como selector de aprobador ni de "
-                        "recibidor en el diseño guardado del formato. Si acabas de "
-                        "marcarlo, guarda el formato y vuelve a intentarlo. "
-                        f"(campo {element_id})"
-                    )
-                )
+                continue
             entrantes_dyn[element_id] = config.model_dump()
 
         for element_id, config in entrantes_dyn.items():
