@@ -368,6 +368,8 @@ class FormPdfExporter:
         form_title: str = "",
         submitted_at: str = "",
         response_id: Optional[int] = None,
+        filler_name: str = "",
+        orientation: str = "landscape",
     ):
         self.form_design  = form_design
         self.answers      = answers
@@ -375,6 +377,18 @@ class FormPdfExporter:
         self.form_title   = form_title
         self.submitted_at = submitted_at
         self.response_id  = response_id
+        self.filler_name  = filler_name
+        self.orientation  = "portrait" if orientation == "portrait" else "landscape"
+
+        # Ancho útil de la hoja: en vertical hay bastante menos espacio, así
+        # que los bloques de columnas del repeater tienen que ser más
+        # angostos o la tabla se sale del papel.
+        if self.orientation == "portrait":
+            self.max_cols_main = 5
+            self.max_cols_sub  = 4
+        else:
+            self.max_cols_main = MAX_COLS_MAIN
+            self.max_cols_sub  = MAX_COLS_SUB
 
         # answersMap — mismo orden de prioridad que el frontend
         self._answers_map: Dict[str, Any] = {}
@@ -860,7 +874,7 @@ class FormPdfExporter:
                     })
 
             # Si hay más columnas de las que caben a lo ancho, se apilan bloques
-            blocks    = _split_columns(len(normal_ch), MAX_COLS_MAIN)
+            blocks    = _split_columns(len(normal_ch), self.max_cols_main)
             multi     = len(blocks) > 1
             last_blk  = len(blocks) - 1
             num_th_s  = th_s + "width:22px;text-align:center;"
@@ -1089,7 +1103,7 @@ class FormPdfExporter:
         sub_lbl = _e((sub_field.get("props") or {}).get("label") or "Sub-tabla")
 
         # Mismo corte por ancho que el repeater principal
-        blocks = _split_columns(len(sub_normal), MAX_COLS_SUB)
+        blocks = _split_columns(len(sub_normal), self.max_cols_sub)
         multi  = len(blocks) > 1
         tables = []
 
@@ -1231,7 +1245,9 @@ class FormPdfExporter:
             frontend_url = os.getenv("FRONTEND_URL", "https://safemetrics-sfi-dev.service.saferut.com")
             url = f"{frontend_url}/public/response/{token}"
 
-            qr = qrcode.QRCode(version=1, box_size=4, border=2,
+            # box_size más grande → el PNG sale con más resolución nativa, no
+            # solo estirado por CSS: se ve nítido al agrandarlo.
+            qr = qrcode.QRCode(version=1, box_size=6, border=2,
                                error_correction=qrcode.constants.ERROR_CORRECT_M)
             qr.add_data(url)
             qr.make(fit=True)
@@ -1241,9 +1257,9 @@ class FormPdfExporter:
             b64 = base64.b64encode(buf.getvalue()).decode()
 
             return (
-                '<div style="position:fixed;top:8px;right:8px;text-align:center;opacity:0.85;">'
-                f'<img src="data:image/png;base64,{b64}" style="width:50px;height:50px;"/>'
-                '<div style="font-size:5px;color:#aaa;margin-top:1px;">Verificar</div>'
+                '<div style="position:fixed;top:8px;right:8px;text-align:center;opacity:0.9;">'
+                f'<img src="data:image/png;base64,{b64}" style="width:78px;height:78px;"/>'
+                '<div style="font-size:6px;color:#94a3b8;margin-top:1px;">Verificar</div>'
                 '</div>'
             )
         except Exception:
@@ -1438,9 +1454,13 @@ body {
 .cell-empty { color: #9ca3af; font-style: italic; }
 
 /* ── Page ── */
+/* Margen superior ampliado: dentro de esa franja va el encabezado
+   `position:fixed` con título + quien diligenció, que por eso SÍ se repite
+   en cada hoja nueva (antes solo estaba en el flujo normal del documento,
+   así que aparecía una única vez, en la primera página). */
 @page {
-    size: letter landscape;
-    margin: 12mm 14mm;
+    size: letter """ + self.orientation + """;
+    margin: 26mm 14mm 12mm 14mm;
 }
 table { border-collapse: collapse; }
 img { max-width: 100%; }
@@ -1448,32 +1468,38 @@ img { max-width: 100%; }
         resp_id    = self.response_id
         sub_at     = str(self.submitted_at or "")[:19].replace("T", " ")
 
-        # Título grande del formato, prominente en la parte superior
-        title_html = ""
+        # Encabezado fijo: se repite en TODAS las hojas (vive en la franja
+        # de margen superior, no en el flujo normal del contenido).
+        header_bits = []
         if self.form_title:
-            title_html = (
-                '<div style="padding: 18px 18px 6px 18px;">'
-                '<h1 style="font-size: 22px; font-weight: 700; color: #0f172a;'
-                ' margin: 0; line-height: 1.25; letter-spacing: -0.01em;">'
-                + _e(self.form_title) +
-                '</h1>'
-                '</div>'
+            header_bits.append(
+                '<div style="font-size: 15px; font-weight: 700; color: #0f172a;'
+                ' line-height: 1.25; letter-spacing: -0.01em;">'
+                + _e(self.form_title) + '</div>'
             )
-
-        # Meta-strip: ahora solo lleva ID y fecha (el título ya está arriba)
         meta_parts = []
+        if self.filler_name:
+            meta_parts.append('<span>' + _e(self.filler_name) + '</span>')
         if resp_id:
             meta_parts.append('<span class="resp-badge">Respuesta #' + str(resp_id) + '</span>')
         if sub_at:
-            meta_parts.append('<span class="dot">●</span><span>' + _e(sub_at) + '</span>')
-        meta_html = ('<div class="meta-strip">' + "".join(meta_parts) + '</div>') if meta_parts else ""
+            meta_parts.append('<span>' + _e(sub_at) + '</span>')
+        if meta_parts:
+            header_bits.append(
+                '<div class="meta-strip" style="padding:0;background:transparent;border:0;'
+                'font-size: 8.5px; color: #64748b; margin-top: 3px;">'
+                + '<span class="dot">●</span>'.join(meta_parts) + '</div>'
+            )
+        fixed_header_html = (
+            '<div style="position:fixed;top:6mm;left:14mm;right:95px;">'
+            + "".join(header_bits) + '</div>'
+        ) if header_bits else ""
 
         return (
             "<!DOCTYPE html>\n<html lang=\"es\">\n<head>\n"
             "<meta charset=\"UTF-8\"/>\n<style>\n" + css + "\n</style>\n</head>\n<body>\n"
             '<div class="page-wrapper">\n'
-            + title_html + "\n"
-            + meta_html + "\n"
+            + fixed_header_html + "\n"
             + '<div class="fields-area">'
             + self._header_html()
             + self._render_all_fields()
@@ -1507,6 +1533,8 @@ def generate_form_pdf(
     form_title: str = "",
     submitted_at: str = "",
     response_id: Optional[int] = None,
+    filler_name: str = "",
+    orientation: str = "landscape",
 ) -> BytesIO:
     return FormPdfExporter(
         form_design=form_design,
@@ -1515,4 +1543,6 @@ def generate_form_pdf(
         form_title=form_title,
         submitted_at=submitted_at,
         response_id=response_id,
+        filler_name=filler_name,
+        orientation=orientation,
     ).generate()

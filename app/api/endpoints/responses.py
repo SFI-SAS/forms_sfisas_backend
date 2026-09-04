@@ -1576,6 +1576,7 @@ async def get_response_with_complete_answers_and_history(
 @router.get("/{response_id}/pdf")
 def download_response_pdf(
     response_id: int,
+    orientation: str = Query("landscape", pattern="^(landscape|portrait)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1641,6 +1642,9 @@ def download_response_pdf(
 
     submitted_at_str = str(response.submitted_at)[:19] if response.submitted_at else ""
 
+    filler = db.query(User).filter(User.id == response.user_id).first()
+    filler_name = filler.name if filler else ""
+
     try:
         output = generate_form_pdf(
             form_design=form_design,
@@ -1649,6 +1653,8 @@ def download_response_pdf(
             form_title=form.title,
             submitted_at=submitted_at_str,
             response_id=response.id,
+            filler_name=filler_name,
+            orientation=orientation,
         )
     except Exception:
         # El traceback queda en el log del servidor; al cliente solo le llega el

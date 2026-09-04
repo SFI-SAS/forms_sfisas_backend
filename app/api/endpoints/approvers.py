@@ -2141,6 +2141,11 @@ class ApproverAnswerItem(BaseModel):
     # Fila del repetidor a la que pertenece. Ausente en campos sueltos.
     repeated_id: Optional[str] = None
     repeater_row_index: Optional[int] = None
+    # Fila del repetidor PADRE, solo cuando element_id vive dentro de un
+    # sub-repetidor. Sin esto, una fila de sub-repetidor que crea el aprobador
+    # no queda atada a su fila padre y el renderer solo puede adivinar a cuál
+    # pertenece por posición — se rompe en cuanto hay más de una fila padre.
+    parent_repeated_id: Optional[str] = None
 
 
 class ApproverAnswersSchema(BaseModel):
@@ -2329,6 +2334,7 @@ def save_approver_field_answers(
                 form_design_element_id=item.element_id,
                 repeated_id=item.repeated_id,
                 repeater_row_index=item.repeater_row_index,
+                parent_repeated_id=item.parent_repeated_id,
                 answered_by_user_id=current_user.id,
                 answered_at=now,
             )
