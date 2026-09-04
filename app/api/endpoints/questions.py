@@ -1497,10 +1497,6 @@ def get_serials_for_field(
 def get_answers_map_for_serial(
     response_id: int,
     target_form_id: Optional[int] = Query(None),
-    # Preguntas del formato ORIGEN elegidas en el picker de Propiedades
-    # (`props.serialAutofillQuestionIds`). Sin este parámetro se mantiene el
-    # comportamiento de siempre: trae TODO lo que tenga relación armada.
-    only_question_ids: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -1514,20 +1510,11 @@ def get_answers_map_for_serial(
     if not answers:
         raise HTTPException(status_code=404, detail=f"No hay respuestas para el serial {response_id}")
 
-    allowed_qids: Optional[set] = None
-    if only_question_ids:
-        try:
-            allowed_qids = {int(q) for q in only_question_ids.split(",") if q.strip()}
-        except ValueError:
-            allowed_qids = None
-
     def is_useful(a) -> bool:
         txt = getattr(a, 'answer_text', None)
         if not txt or not str(txt).strip():
             return False
         if str(txt).strip().startswith(("{", "[")):
-            return False
-        if allowed_qids is not None and a.question_id not in allowed_qids:
             return False
         return True
 
