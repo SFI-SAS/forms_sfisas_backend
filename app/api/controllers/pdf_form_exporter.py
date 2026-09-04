@@ -581,6 +581,7 @@ class FormPdfExporter:
         props  = field.get("props") or {}
         label  = _e(props.get("label") or "Campo")
         req    = ('<span class="req">*</span>' if props.get("required") else "")
+        pos    = props.get("labelPosition") or "arriba"
         answer = self._get_answer(field)
         ftype  = field.get("type", "")
 
@@ -613,12 +614,19 @@ class FormPdfExporter:
         else:
             value_html = '<span class="field-empty">Sin respuesta registrada</span>'
 
-        return (
-            '<div class="field-row">'
-            '<div class="field-label">' + label + req + '</div>'
-            '<div class="field-value">' + value_html + '</div>'
-            '</div>'
-        )
+        label_html = '<div class="field-label">' + label + req + '</div>'
+        value_html_row = '<div class="field-value">' + value_html + '</div>'
+
+        # "abajo": mismo campo, orden invertido en el HTML — nada de CSS que
+        # pueda fallar, el valor simplemente se escribe antes que la etiqueta.
+        if pos == "abajo":
+            return '<div class="field-row">' + value_html_row + label_html + '</div>'
+        # "lado": tabla de 2 celdas (no flexbox — WeasyPrint es más confiable
+        # con display:table que con flex cuando el contenido de la celda
+        # puede ser complejo, como una tabla de repetidor o una imagen).
+        if pos == "lado":
+            return '<div class="field-row field-row-lado">' + label_html + value_html_row + '</div>'
+        return '<div class="field-row">' + label_html + value_html_row + '</div>'
 
     def _render_table_field(self, props: dict) -> str:
         options = props.get("options") or []
@@ -1357,6 +1365,29 @@ body {
     font-size: 11px;
 }
 
+/* ── Posición de la etiqueta "al lado" — igual que en el resto de la app.
+   display:table en vez de flexbox: WeasyPrint es más confiable con tablas
+   cuando la celda del valor trae algo complejo (imagen, tabla de repeater). */
+.field-row-lado {
+    display: table;
+    width: 100%;
+    table-layout: auto;
+}
+.field-row-lado .field-label {
+    display: table-cell;
+    width: 1%;
+    white-space: normal;
+    vertical-align: top;
+    padding-top: 8px;
+    padding-right: 10px;
+    margin-bottom: 0;
+}
+.field-row-lado .field-value {
+    display: table-cell;
+    vertical-align: top;
+    width: auto;
+}
+
 /* ── Repeater wrapper ── */
 .repeater-wrap {
     margin-bottom: 16px;
@@ -1454,13 +1485,32 @@ body {
 .cell-empty { color: #9ca3af; font-style: italic; }
 
 /* ── Page ── */
-/* Margen superior ampliado: dentro de esa franja va el encabezado
-   `position:fixed` con título + quien diligenció, que por eso SÍ se repite
-   en cada hoja nueva (antes solo estaba en el flujo normal del documento,
-   así que aparecía una única vez, en la primera página). */
+/* Encabezado que se repite en cada hoja NUEVA: título + quien diligenció.
+   `position:fixed` (lo que había antes) resultó poco confiable — en algunos
+   casos WeasyPrint lo posicionaba respecto al ÁREA DE CONTENIDO en vez de
+   respecto a la hoja completa, y el encabezado terminaba encima de los
+   campos en vez de en el margen. Esto usa el mecanismo real de CSS para
+   paginado (@page + string-set/string()), que SÍ reserva su propio espacio
+   en el margen sin invadir el contenido: la hoja 1 ya trae el título grande
+   dentro del documento (marcado con `string-set`) y las hojas siguientes
+   heredan ese texto en su margen superior automáticamente. */
 @page {
     size: letter """ + self.orientation + """;
-    margin: 26mm 14mm 12mm 14mm;
+    margin: 20mm 14mm 12mm 14mm;
+    @top-left {
+        content: string(doc-title) "   •   " string(doc-filler);
+        font-size: 8.5px;
+        color: #64748b;
+        padding-top: 6mm;
+    }
+}
+@page :first {
+    /* La hoja 1 ya muestra el título grande en el cuerpo — repetirlo chiquito
+       arriba sería redundante, así que aquí no reserva ese espacio extra. */
+    margin-top: 12mm;
+}
+@page :first {
+    @top-left { content: normal; }
 }
 table { border-collapse: collapse; }
 img { max-width: 100%; }
@@ -1468,38 +1518,41 @@ img { max-width: 100%; }
         resp_id    = self.response_id
         sub_at     = str(self.submitted_at or "")[:19].replace("T", " ")
 
-        # Encabezado fijo: se repite en TODAS las hojas (vive en la franja
-        # de margen superior, no en el flujo normal del contenido).
-        header_bits = []
+        # Título grande del formato, prominente en la parte superior de la
+        # hoja 1. `string-set` captura su texto para que las hojas 2+ lo
+        # repitan solas en su margen (ver @page arriba).
+        title_html = ""
         if self.form_title:
-            header_bits.append(
-                '<div style="font-size: 15px; font-weight: 700; color: #0f172a;'
-                ' line-height: 1.25; letter-spacing: -0.01em;">'
-                + _e(self.form_title) + '</div>'
+            title_html = (
+                '<div style="padding: 18px 18px 6px 18px;">'
+                '<h1 style="string-set: doc-title content(); font-size: 22px; font-weight: 700; color: #0f172a;'
+                ' margin: 0; line-height: 1.25; letter-spacing: -0.01em;">'
+                + _e(self.form_title) +
+                '</h1>'
+                '</div>'
             )
+
+        # Meta-strip: ID, quien diligenció y fecha. El nombre lleva su PROPIO
+        # `string-set` (separado del título) para poder combinarlos en el
+        # margen de las hojas siguientes.
         meta_parts = []
         if self.filler_name:
-            meta_parts.append('<span>' + _e(self.filler_name) + '</span>')
+            meta_parts.append(
+                '<span style="string-set: doc-filler content();">'
+                + _e(self.filler_name) + '</span>'
+            )
         if resp_id:
             meta_parts.append('<span class="resp-badge">Respuesta #' + str(resp_id) + '</span>')
         if sub_at:
             meta_parts.append('<span>' + _e(sub_at) + '</span>')
-        if meta_parts:
-            header_bits.append(
-                '<div class="meta-strip" style="padding:0;background:transparent;border:0;'
-                'font-size: 8.5px; color: #64748b; margin-top: 3px;">'
-                + '<span class="dot">●</span>'.join(meta_parts) + '</div>'
-            )
-        fixed_header_html = (
-            '<div style="position:fixed;top:6mm;left:14mm;right:95px;">'
-            + "".join(header_bits) + '</div>'
-        ) if header_bits else ""
+        meta_html = ('<div class="meta-strip">' + '<span class="dot">●</span>'.join(meta_parts) + '</div>') if meta_parts else ""
 
         return (
             "<!DOCTYPE html>\n<html lang=\"es\">\n<head>\n"
             "<meta charset=\"UTF-8\"/>\n<style>\n" + css + "\n</style>\n</head>\n<body>\n"
             '<div class="page-wrapper">\n'
-            + fixed_header_html + "\n"
+            + title_html + "\n"
+            + meta_html + "\n"
             + '<div class="fields-area">'
             + self._header_html()
             + self._render_all_fields()
