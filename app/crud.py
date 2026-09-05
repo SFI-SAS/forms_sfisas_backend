@@ -124,6 +124,7 @@ def encrypt_object(data: Any) -> str:
             detail=f"Error encriptando datos: {str(e)}"
         )
 
+
         
 def decrypt_object(encrypted_string: str) -> Any:
     """
