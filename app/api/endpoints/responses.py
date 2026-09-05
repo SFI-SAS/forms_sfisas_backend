@@ -842,6 +842,7 @@ def create_file_serial(
         "file_serial_id": file_serial.id,
         "serial": file_serial.serial
     }
+
     
 @router.post("/file-serials/generate")
 def generate_serial(
