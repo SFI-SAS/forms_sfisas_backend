@@ -1264,8 +1264,16 @@ class FormPdfExporter:
             img.save(buf, format="PNG")
             b64 = base64.b64encode(buf.getvalue()).decode()
 
+            # `float:right` y NO `position:fixed`.
+            #
+            # En WeasyPrint un elemento fijo se repinta en TODAS las hojas, así
+            # que el QR salía en cada página del PDF. Flotado se compone una sola
+            # vez, en la hoja donde cae —la primera, porque se emite al principio
+            # del wrapper—, y además reserva su espacio: el título fluye a su lado
+            # en vez de quedar debajo. Medido con WeasyPrint sobre un documento de
+            # 6 hojas: 1 QR en la hoja 1, 0 en el resto, sin texto encima.
             return (
-                '<div style="position:fixed;top:8px;right:8px;text-align:center;opacity:0.9;">'
+                '<div style="float:right;text-align:center;opacity:0.9;margin:0 0 6px 10px;">'
                 f'<img src="data:image/png;base64,{b64}" style="width:78px;height:78px;"/>'
                 '<div style="font-size:6px;color:#94a3b8;margin-top:1px;">Verificar</div>'
                 '</div>'
@@ -1551,6 +1559,10 @@ img { max-width: 100%; }
             "<!DOCTYPE html>\n<html lang=\"es\">\n<head>\n"
             "<meta charset=\"UTF-8\"/>\n<style>\n" + css + "\n</style>\n</head>\n<body>\n"
             '<div class="page-wrapper">\n'
+            # El QR va PRIMERO: flotado, se compone en la hoja donde aparece, y
+            # emitirlo aquí lo ancla a la primera. Al final del documento caía en
+            # la última hoja.
+            + self._qr_html() + "\n"
             + title_html + "\n"
             + meta_html + "\n"
             + '<div class="fields-area">'
@@ -1558,7 +1570,6 @@ img { max-width: 100%; }
             + self._render_all_fields()
             + '</div>'
             + self._footer_html()
-            + self._qr_html()
             + "\n</div>\n</body>\n</html>"
         )
 

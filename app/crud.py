@@ -3381,23 +3381,25 @@ def get_related_or_filtered_answers_optimized(
         serials = []               # ← puede tener duplicados
         correlations_map = {}      # ← igual que answers
 
+        # Las answers de TODAS las respuestas en UNA sola consulta.
+        #
+        # Antes esto era un `db.query(Answer).filter_by(response_id=...)` DENTRO
+        # del bucle: una consulta por respuesta. En un formato con muchos envíos
+        # el endpoint tardaba tanto que el editor se quedaba "cargando" al
+        # vincular un campo de seriales, y si el usuario guardaba el formato en
+        # ese momento el campo quedaba sin `dataSource: 'serials'` y ya no
+        # autocompletaba. Mismo resultado, una consulta.
+        response_ids = [r.id for r in responses]
+        answers_por_response: dict = defaultdict(dict)
+        if response_ids:
+            for answer in db.query(Answer).filter(Answer.response_id.in_(response_ids)).all():
+                if answer.answer_text:
+                    answers_por_response[answer.response_id][answer.question_id] = answer.answer_text
+
         for response in responses:
             serial_value = str(response.id)  # 🔑 EL SERIAL
-
             serials.append(serial_value)
-
-            # 🔁 Correlaciones iguales a answers
-            answers = db.query(Answer).filter_by(
-                response_id=response.id
-            ).all()
-
-            response_answers_map = {}
-
-            for answer in answers:
-                if answer.answer_text:
-                    response_answers_map[answer.question_id] = answer.answer_text
-
-            correlations_map[serial_value] = response_answers_map
+            correlations_map[serial_value] = dict(answers_por_response.get(response.id, {}))
 
         return {
             "source": "serials",

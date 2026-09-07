@@ -1455,7 +1455,19 @@ def get_serials_for_field(
         db.query(Response)
         .filter(
             Response.form_id == relation.related_form_id,
+            # Los BORRADORES también se listan.
+            #
+            # En un formato abierto, "guardar como borrador" ya escribe las
+            # answers: el trabajo está hecho aunque no se haya cerrado con
+            # "enviar y cerrar". Dejarlos fuera obligaba a cerrar el formato para
+            # poder consumir desde otro formato lo que se venía digitando, que es
+            # justo lo contrario de para qué sirve un formato abierto.
+            #
+            # El resto del camino ya los admitía: ni /serial-autofill ni las
+            # relaciones por pregunta (crud.get_related_or_filtered_answers_*)
+            # filtran por estado. Este era el único punto que los excluía.
             Response.status.in_([
+                ResponseStatus.draft,
                 ResponseStatus.submitted,
                 ResponseStatus.approved
             ])
