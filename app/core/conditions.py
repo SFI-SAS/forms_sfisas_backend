@@ -84,19 +84,19 @@ def condition_mode(props: Optional[dict]) -> str:
 
 def matches_condition(condicion: dict, raw: Any) -> bool:
     """¿Se cumple UNA condición con el valor dado?"""
-    allowed = [v.strip() for v in str(condicion.get("valor") or "").split(",") if v.strip()]
+    allowed = [v.strip().lower() for v in str(condicion.get("valor") or "").split(",") if v.strip()]
     if not allowed:
         return False
 
     # Las casillas de verificación pueden llegar como lista: basta con que una
     # de las marcadas esté entre las permitidas.
     if isinstance(raw, (list, tuple, set)):
-        return any(str(v) in allowed for v in raw)
+        return any(str(v).lower() in allowed for v in raw)
 
     if raw is None or raw == "":
         return False
 
-    return str(raw) in allowed
+    return str(raw).lower() in allowed
 
 
 def is_visible_by_condition(
