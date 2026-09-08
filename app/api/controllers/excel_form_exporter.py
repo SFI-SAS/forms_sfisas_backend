@@ -19,6 +19,12 @@ except ImportError:
 
 
 # ── colores (mismo que frontend) ─────────────────────────────────────────────
+# Elementos que solo pintan texto o adorno: no guardan respuesta, así que dentro
+# de un repetidor NO son columnas. Antes se colaban como una columna más, con el
+# encabezado "Campo" y todas las celdas en "-", y su texto —que casi siempre es
+# el título de la sección— no salía por ninguna parte.
+_DECORATIVOS = ("label", "helpText", "divider", "image", "button")
+
 C_TEAL_DARK  = "0f8594"   # repeater header bg
 C_TEAL_LIGHT = "f0fdfa"   # sub-repeater header bg
 C_TEAL_TEXT  = "0f766e"   # sub-repeater header text
@@ -429,7 +435,7 @@ class FormExcelExporter:
 
     # ── renderDecorativeElement ───────────────────────────────────────────────
 
-    def _write_decorative(self, field: dict) -> None:
+    def _write_decorative(self, field: dict, col: int = 1) -> None:
         ftype = field.get("type", "")
         props = field.get("props") or {}
 
@@ -438,7 +444,7 @@ class FormExcelExporter:
             bold  = str(props.get("fontWeight", "normal")).lower() in ("bold", "700", "600")
             color = str(props.get("color") or "333333").lstrip("#")
             self._write_cell(
-                self._row, 1, text,
+                self._row, col, text,
                 bold=bold, font_color=color, font_size=12,
                 bg_color=None, border=False, col_span=6,
             )
@@ -449,7 +455,7 @@ class FormExcelExporter:
         if ftype == "helpText":
             text = str(props.get("text") or "")
             self._write_cell(
-                self._row, 1, text,
+                self._row, col, text,
                 italic=True, font_color=C_EMPTY, font_size=9,
                 bg_color=None, border=False, col_span=6,
             )
@@ -467,7 +473,7 @@ class FormExcelExporter:
             lbl = str(props.get("label") or "Imagen")
             src = str(props.get("src") or "")
             self._write_cell(
-                self._row, 1, "[Imagen: " + lbl + ("] → " + src if src else "]"),
+                self._row, col, "[Imagen: " + lbl + ("] → " + src if src else "]"),
                 italic=True, font_color="6B7280",
                 bg_color=C_LABEL_BG, border=False, col_span=6,
             )
@@ -478,7 +484,7 @@ class FormExcelExporter:
         if ftype == "button":
             text = str(props.get("text") or "Botón")
             self._write_cell(
-                self._row, 1, text + " (deshabilitado)",
+                self._row, col, text + " (deshabilitado)",
                 italic=True, font_color=C_EMPTY,
                 bg_color=C_LABEL_BG, border=False, col_span=6,
             )
@@ -550,8 +556,23 @@ class FormExcelExporter:
         props    = field.get("props") or {}
         children = field.get("children") or []
 
-        normal_ch = [c for c in children if c.get("type") != "repeater"]
+        def _es_columna(c: dict) -> bool:
+            t = c.get("type")
+            return t != "repeater" and t not in _DECORATIVOS
+
+        normal_ch = [c for c in children if _es_columna(c)]
         sub_ch    = [c for c in children if c.get("type") == "repeater"]
+
+        # Los decorativos se escriben como texto, no como columna. Se respeta
+        # dónde están puestos: los de antes de la primera columna van encima de
+        # la tabla (son títulos de sección) y el resto, debajo.
+        _primera_col = next(
+            (i for i, c in enumerate(children) if _es_columna(c)), len(children)
+        )
+        deco_arriba = [c for i, c in enumerate(children)
+                       if i < _primera_col and c.get("type") in _DECORATIVOS]
+        deco_abajo  = [c for i, c in enumerate(children)
+                       if i > _primera_col and c.get("type") in _DECORATIVOS]
 
         if not children:
             self._write_cell(
@@ -573,6 +594,9 @@ class FormExcelExporter:
             )
             self._set_row_height(self._row, 20)
             self._row += 1
+
+        for _d in deco_arriba:
+            self._write_decorative(_d, col=indent_col)
 
         # Construir parentRows — PORT EXACTO del frontend (ResponsesModal.tsx línea 735-808)
         col_ids  = [c["id"] for c in normal_ch if c.get("id")]
@@ -652,6 +676,8 @@ class FormExcelExporter:
         n_parent_rows = len(parent_rows)
 
         if not normal_ch and not sub_ch:
+            for _d in deco_abajo:
+                self._write_decorative(_d, col=indent_col)
             return
 
         # Encabezados de columnas
@@ -729,6 +755,9 @@ class FormExcelExporter:
                     self._write_sub_repeater(sf, 0, "", indent_col + 1,
                                              parent_field_id=pfid, n_parent_rows=1)
 
+        for _d in deco_abajo:
+            self._write_decorative(_d, col=indent_col)
+
         self._row += 1  # espacio post-repeater
 
     def _write_sub_repeater(
@@ -741,8 +770,12 @@ class FormExcelExporter:
         n_parent_rows: int = 1,        # len(parentRows) — para estrategia 3
     ) -> None:
         sub_children = sub_field.get("children") or []
-        sub_normal   = [c for c in sub_children if c.get("type") != "repeater"]
+        sub_normal   = [
+            c for c in sub_children
+            if c.get("type") != "repeater" and c.get("type") not in _DECORATIVOS
+        ]
         sub_col_ids  = [c["id"] for c in sub_normal if c.get("id")]
+        sub_deco     = [c for c in sub_children if c.get("type") in _DECORATIVOS]
 
         all_sub = [
             ans for ans in self.answers
@@ -804,6 +837,10 @@ class FormExcelExporter:
         )
         self._set_row_height(self._row, 16)
         self._row += 1
+
+        # Los decorativos del sub-repetidor van bajo su encabezado, como texto.
+        for _d in sub_deco:
+            self._write_decorative(_d, col=indent_col)
 
         # Encabezados de columnas del sub
         for ci, child in enumerate(sub_normal):

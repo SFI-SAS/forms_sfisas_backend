@@ -49,6 +49,12 @@ def _safe_url_fetcher(url: str, timeout: int = _URL_TIMEOUT, ssl_context=None):
         return {"string": _BLANK_PNG, "mime_type": "image/png"}
 
 
+# Elementos que solo pintan texto o adorno: no guardan respuesta, así que dentro
+# de un repetidor NO son columnas. Antes se colaban como una columna más, con el
+# encabezado "Campo" y todas las celdas en "-", y su texto —que casi siempre es
+# el título de la sección— no salía por ninguna parte.
+_DECORATIVOS = ("label", "helpText", "divider", "image", "button")
+
 # ── ancho: cortar repeaters muy anchos ───────────────────────────────────────
 # La hoja es letter landscape con 14mm de margen → ~251mm útiles. Pasado cierto
 # número de columnas la tabla se sale del papel y las de la derecha no se ven,
@@ -644,8 +650,27 @@ class FormPdfExporter:
         props    = field.get("props") or {}
         children = field.get("children") or []
 
-        normal_ch = [c for c in children if c.get("type") != "repeater"]
+        def _es_columna(c: dict) -> bool:
+            t = c.get("type")
+            return t != "repeater" and t not in _DECORATIVOS
+
+        normal_ch = [c for c in children if _es_columna(c)]
         sub_ch    = [c for c in children if c.get("type") == "repeater"]
+
+        # Los decorativos se pintan como texto, no como columna. Se respeta
+        # dónde están puestos: los que van antes de la primera columna salen
+        # encima de la tabla (son títulos de sección) y el resto, debajo.
+        _primera_col = next(
+            (i for i, c in enumerate(children) if _es_columna(c)), len(children)
+        )
+        deco_arriba = "".join(
+            self._decorative(c) for i, c in enumerate(children)
+            if i < _primera_col and c.get("type") in _DECORATIVOS
+        )
+        deco_abajo = "".join(
+            self._decorative(c) for i, c in enumerate(children)
+            if i > _primera_col and c.get("type") in _DECORATIVOS
+        )
 
         if not children:
             return (
@@ -978,7 +1003,11 @@ class FormPdfExporter:
                    '<path d="M3 9h18M3 15h18M9 3v18"/></svg>')
         header_div = ('<div class="repeater-header">' + REP_SVG + _e(lbl) + '</div>') if show_header else ""
 
-        return '<div class="repeater-wrap">' + header_div + table_html + '</div>'
+        return (
+            '<div class="repeater-wrap">' + header_div
+            + deco_arriba + table_html + deco_abajo
+            + '</div>'
+        )
 
     def _sub_repeater_for_row(
         self,
@@ -991,8 +1020,16 @@ class FormPdfExporter:
     ) -> str:
         # IDs de columnas normales del sub-repeater (línea 874 frontend)
         sub_children = sub_field.get("children") or []
-        sub_normal   = [c for c in sub_children if c.get("type") != "repeater"]
+        sub_normal   = [
+            c for c in sub_children
+            if c.get("type") != "repeater" and c.get("type") not in _DECORATIVOS
+        ]
         sub_col_ids  = [c["id"] for c in sub_normal if c.get("id")]
+        # Igual que en el repetidor: los decorativos son texto, no columnas.
+        sub_deco = "".join(
+            self._decorative(c) for c in sub_children
+            if c.get("type") in _DECORATIVOS
+        )
 
         # Todas las respuestas de columnas de este sub-repeater (línea 880 frontend)
         all_sub = [
@@ -1154,7 +1191,7 @@ class FormPdfExporter:
         return (
             '<div class="sub-wrap">'
             '<div class="sub-header">' + SUB_SVG + sub_lbl + '</div>'
-            + "".join(tables) +
+            + sub_deco + "".join(tables) +
             '</div>'
         )
 
