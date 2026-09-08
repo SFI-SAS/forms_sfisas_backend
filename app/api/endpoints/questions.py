@@ -860,6 +860,10 @@ def get_file_answers(
 @router.get("/question-table-relation/answers/{question_id}")
 def get_related_answers(
     question_id: int,
+    only_latest: bool = Query(
+        False,
+        description="Traer solo la respuesta más reciente en vez del listado completo",
+    ),
     db: Session = Depends(get_db), 
     current_user: User = Depends(get_current_user)
 ):
@@ -877,7 +881,7 @@ def get_related_answers(
         - `correlations`: mapeo de correlaciones entre respuestas
     """
     
-    return get_related_or_filtered_answers_optimized(db, question_id)
+    return get_related_or_filtered_answers_optimized(db, question_id, only_latest=only_latest)
 
 
 

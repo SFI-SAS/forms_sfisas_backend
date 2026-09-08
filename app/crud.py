@@ -3098,7 +3098,11 @@ def get_related_or_filtered_answers_optimized(
     include_forms: bool = False,
     page: int = 1,
     page_size: int = 50,
-    only_unique_answers: bool = False  # ✅ Cambiado a False por defecto para traer TODO
+    only_unique_answers: bool = False,  # ✅ Cambiado a False por defecto para traer TODO
+    # El diseño del campo pidió SOLO la última respuesta (props.onlyLatestAnswer).
+    # Es una decisión por campo, no por pregunta, así que viaja como parámetro y
+    # no se guarda en question_table_relations.
+    only_latest: bool = False,
 ):
     """
     Versión optimizada que trae TODOS los datos incluyendo duplicados.
@@ -3206,6 +3210,43 @@ def get_related_or_filtered_answers_optimized(
             "source": "usuario_logueado",
             "logged_user_part": relation.logged_user_part,
             "data": [],
+            "forms": [],
+            "correlations": {},
+        }
+
+    # Campo que trae SOLO LA ÚLTIMA RESPUESTA de la pregunta relacionada.
+    #
+    # Lo pide el diseño del campo (`props.onlyLatestAnswer` → `?only_latest=true`),
+    # no la relación: la misma pregunta del banco puede salir como listado
+    # completo en un formato y como valor único en otro.
+    #
+    # No es un listado con un único elemento: es un valor que el frontend pone
+    # en el campo y bloquea, igual que ya hace con `logged_user_part`. Se corta
+    # aquí, antes del recorrido completo de formatos y respuestas, porque ese
+    # camino arma correlaciones que este campo no usa y cuesta una consulta por
+    # cada respuesta del formato origen.
+    #
+    # "La última" = la de la respuesta con `submitted_at` más alto, sin importar
+    # quién la envió ni en qué formato esté la pregunta. Con empate de fecha
+    # gana el id de answer más alto.
+    if relation.related_question_id and only_latest:
+        ultima = (
+            db.query(Answer.answer_text)
+            .join(Response, Response.id == Answer.response_id)
+            .filter(
+                Answer.question_id == relation.related_question_id,
+                Answer.answer_text.isnot(None),
+                Answer.answer_text != '',
+            )
+            .order_by(Response.submitted_at.desc(), Answer.id.desc())
+            .first()
+        )
+        valor = ultima[0] if ultima else None
+        return {
+            "source": "ultima_respuesta",
+            "only_latest_answer": True,
+            "latest_answer": valor,
+            "data": [{"name": valor}] if valor else [],
             "forms": [],
             "correlations": {},
         }
