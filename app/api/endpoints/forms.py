@@ -5929,13 +5929,21 @@ def get_related_last_answers(
         .subquery()
     )
 
-    # Query principal que obtiene las respuestas usando la subquery
+    # Query principal que obtiene las respuestas usando la subquery.
+    #
+    # El orden importa: el front toma el ULTIMO elemento del arreglo como "la
+    # ultima respuesta". Sin ORDER BY, Postgres devuelve las filas en el orden
+    # que le convenga y el campo se llenaba con un envio cualquiera del mismo
+    # empleado, no con el mas reciente. Se ordena de mas viejo a mas nuevo por
+    # fecha de envio (y por id como desempate).
     last_answers = (
         db.query(Answer)
         .join(
             max_answer_subquery,
             Answer.id == max_answer_subquery.c.max_id
         )
+        .join(Response, Response.id == Answer.response_id)
+        .order_by(Response.submitted_at.asc(), Answer.id.asc())
         .all()
     )
 
