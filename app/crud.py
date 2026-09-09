@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, joinedload, defer
 from sqlalchemy.exc import IntegrityError
 from app import models
 from app.api.controllers.mail import send_action_notification_email, send_email_daily_forms, send_email_plain_approval_status, send_email_plain_approval_status_vencidos, send_email_with_attachment, send_rejection_email, send_welcome_email
+from app.core.aviso_pendiente import avisar_pendiente
 # from app.api.endpoints.pdf_router import generate_pdf_from_form_id
 from app.core.security import hash_password
 from app.core import field_access, response_scope
@@ -5217,6 +5218,15 @@ def get_next_mandatory_approver(response_id: int, db: Session):
             "status": fa.status,
             "mensaje": fa.message,
             "reviewed_at": fa.reviewed_at,
+            # Aprobador o recibidor. Sin esto los correos pintaban la cadena
+            # entera bajo el rotulo de "aprobadores" y no habia forma de saber
+            # quien solo recibia.
+            "papel": (getattr(fa, "participant_role", None) or "approver"),
+            "papel_texto": (
+                "Recibidor"
+                if (getattr(fa, "participant_role", None) or "approver") == "receiver"
+                else "Aprobador"
+            ),
         })
  
     return {
@@ -5298,17 +5308,26 @@ def build_email_html_approvers(aprobacion_info: dict, es_recibidor: bool = False
         fecha_revision = aprobador["reviewed_at"]
 
 
+        papel_texto = aprobador.get("papel_texto") or (
+            "Recibidor" if aprobador.get("papel") == "receiver" else "Aprobador"
+        )
         tabla_detallada_html += f"""
         <tr>
             <td style="padding: 8px; border: 1px solid #dce3ea; text-align: center;">{aprobador['secuencia']}</td>
             <td style="padding: 8px; border: 1px solid #dce3ea;">{aprobador['nombre']}</td>
             <td style="padding: 8px; border: 1px solid #dce3ea;">{aprobador['email']}</td>
             <td style="padding: 8px; border: 1px solid #dce3ea;">{aprobador.get('telefono', 'No disponible')}</td>
+            <td style="padding: 8px; border: 1px solid #dce3ea; text-align: center;">{papel_texto}</td>
             <td style="padding: 8px; border: 1px solid #dce3ea; text-align: center;">{aprobado}</td>
             <td style="padding: 8px; border: 1px solid #dce3ea; text-align: center;">{estado}</td>
 
         </tr>
         """
+
+    # Con las dos clases en la cadena no se puede titular "aprobadores": se
+    # dice "participantes", igual que en la interfaz.
+    papeles = {a.get("papel") or "approver" for a in todos_aprobadores}
+    cadena_mixta = "receiver" in papeles and "approver" in papeles
 
     # A cada quien lo suyo: el recibidor no aprueba, confirma que le llegó.
     if es_recibidor:
@@ -5325,7 +5344,11 @@ def build_email_html_approvers(aprobacion_info: dict, es_recibidor: bool = False
             "Usted ha sido designado como el próximo <strong>aprobador</strong> "
             "en el proceso de revisión del siguiente formato:"
         )
-        titulo_tabla = "Detalles del proceso de aprobación:"
+        titulo_tabla = (
+            "Participantes del formato:"
+            if cadena_mixta
+            else "Detalles del proceso de aprobación:"
+        )
         texto_boton = "Ingresar al Portal de Aprobaciones"
 
     html = f"""
@@ -5364,6 +5387,7 @@ def build_email_html_approvers(aprobacion_info: dict, es_recibidor: bool = False
                                 <th style="padding: 10px; border: 1px solid #dce3ea;">Nombre</th>
                                 <th style="padding: 10px; border: 1px solid #dce3ea;">Correo</th>
                                 <th style="padding: 10px; border: 1px solid #dce3ea;">Teléfono</th>
+                                <th style="padding: 10px; border: 1px solid #dce3ea;">Papel</th>
                                 <th style="padding: 10px; border: 1px solid #dce3ea;">¿Obligatorio?</th>
                                 <th style="padding: 10px; border: 1px solid #dce3ea;">Estado</th>
                                 
@@ -5418,17 +5442,22 @@ def send_mails_to_next_supporters(response_id: int, db: Session):
                 aprobacion_info, es_recibidor=es_recibidor
             )
 
-        exito = send_email_plain_approval_status_vencidos(
-            to_email=email,
-            name_form=titulo,
-            to_name=nombre,
-            body_html=cuerpos[es_recibidor],
+        # Antes esto salía por `send_email_plain_approval_status_vencidos`, que es
+        # la función de aprobaciones VENCIDAS y abre siempre con "Se han
+        # detectado aprobaciones vencidas...". Nada que ver con un pendiente
+        # recién llegado, y menos para un recibidor.
+        exito = avisar_pendiente(
+            correo=email,
+            nombre=nombre,
+            titulo_formato=titulo,
+            cuerpo_html=cuerpos[es_recibidor],
             # El recibidor no aprueba nada: se le avisa que tiene algo por recibir.
-            subject=(
+            asunto=(
                 f"Pendiente por recibir - {titulo}"
                 if es_recibidor
                 else asunto
-            )
+            ),
+            es_recibidor=es_recibidor,
         )
 
         if not exito:

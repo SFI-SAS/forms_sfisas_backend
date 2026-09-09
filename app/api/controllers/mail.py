@@ -619,26 +619,39 @@ def send_email_aprovall_next(
 # ═══════════════════════════════════════════════════════════════
 
 def _approvers_table(approvers: list) -> str:
-    """Genera tabla de cadena de aprobación."""
+    """Genera la tabla de la cadena.
+
+    Lleva columna de PAPEL: en la cadena conviven aprobadores y recibidores, y
+    sin esa columna el correo los pintaba a todos igual —el recibidor salía
+    listado como si aprobara—. `papel_texto` lo manda quien arma la lista; si no
+    viene (listas viejas), se asume aprobador, que es como fue siempre.
+    """
+    hay_recibidores = any(
+        (ap.get('papel') == 'receiver') or (ap.get('papel_texto') == 'Recibidor')
+        for ap in approvers
+    )
     rows = ""
     for ap in approvers:
         sv = ap['status'].value.capitalize() if hasattr(ap['status'], 'value') else str(ap['status'])
+        papel = ap.get('papel_texto') or ('Recibidor' if ap.get('papel') == 'receiver' else 'Aprobador')
         rows += f"""<tr>
             <td style="padding:7px 10px;border-bottom:1px solid {_C['border']};font-size:12px;text-align:center;">{ap['secuencia']}</td>
             <td style="padding:7px 10px;border-bottom:1px solid {_C['border']};font-size:12px;">{ap['nombre']}</td>
             <td style="padding:7px 10px;border-bottom:1px solid {_C['border']};font-size:12px;">{ap['email']}</td>
+            <td style="padding:7px 10px;border-bottom:1px solid {_C['border']};font-size:12px;text-align:center;">{papel}</td>
             <td style="padding:7px 10px;border-bottom:1px solid {_C['border']};font-size:12px;text-align:center;">{sv}</td>
             <td style="padding:7px 10px;border-bottom:1px solid {_C['border']};font-size:12px;">{ap.get('mensaje','—')}</td>
         </tr>"""
 
     hdr_s = f'padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:{_C["text_muted"]};text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid {_C["border"]};'
     return f"""<div style="margin:18px 0;">
-        <p style="margin:0 0 8px;font-size:12px;font-weight:600;color:{_C['text']};text-transform:uppercase;letter-spacing:.5px;">Cadena de aprobación</p>
+        <p style="margin:0 0 8px;font-size:12px;font-weight:600;color:{_C['text']};text-transform:uppercase;letter-spacing:.5px;">{"Participantes del formato" if hay_recibidores else "Cadena de aprobación"}</p>
         <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid {_C['border']};border-collapse:collapse;">
         <thead><tr style="background:{_C['bg']};">
             <th style="{hdr_s}text-align:center;">Seq</th>
             <th style="{hdr_s}">Nombre</th>
             <th style="{hdr_s}">Email</th>
+            <th style="{hdr_s}text-align:center;">Papel</th>
             <th style="{hdr_s}text-align:center;">Estado</th>
             <th style="{hdr_s}">Mensaje</th>
         </tr></thead>
