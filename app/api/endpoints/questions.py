@@ -1160,7 +1160,34 @@ def detect_select_relations(
             QuestionTableRelation.question_id == question.id
         ).first()
 
-        if not relation or not relation.related_question_id:
+        if not relation:
+            continue
+
+        # ── Campo de SERIALES ────────────────────────────────────────────────
+        # No trae una pregunta suelta: trae ENVÍOS enteros de un formato
+        # (`related_form_id`), así que no tiene `related_question_id` y por eso
+        # nunca entraba en ningún grupo. Pertenece al grupo de ESE formato: si
+        # el maestro del grupo se llena desde el mismo origen, el serial que le
+        # corresponde es el del envío de donde salieron los demás valores.
+        #
+        # Va sin `related_question_id` —no hay pregunta que copiar— y marcado
+        # con `is_serial`, que es lo que el cliente mira para resolverlo por
+        # `_serialMap` en vez de por correlación de pregunta.
+        if not relation.related_question_id:
+            if not relation.related_form_id:
+                continue
+
+            form_key = relation.related_form_id
+            formats_map.setdefault(form_key, [])
+            if not any(f["question_id"] == question.id for f in formats_map[form_key]):
+                formats_map[form_key].append({
+                    "question_id":           question.id,
+                    "question_text":         question.question_text,
+                    "question_type":         question.question_type,
+                    "related_question_id":   None,
+                    "related_question_text": "Serial del envío",
+                    "is_serial":             True,
+                })
             continue
 
         # 🔍 VERIFICAR: ¿La pregunta relacionada está en OTRO formato?

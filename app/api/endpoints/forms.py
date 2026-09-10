@@ -5906,11 +5906,74 @@ def get_related_last_answers(
         .first()
     )
 
-    if not relation or not relation.related_question_id:
+    if not relation:
         raise HTTPException(
             status_code=404,
             detail="La pregunta no tiene relación definida en QuestionTableRelation"
         )
+
+    # 2️⃣.b Campo de SERIALES: no lista respuestas de otra pregunta sino los
+    # ENVÍOS de un formato entero (`related_form_id`), etiquetados como en
+    # GET /questions/question-table-relation/serials/{id}.
+    #
+    # Su relación no tiene `related_question_id`, así que caía en el 404 de
+    # arriba y "Última respuesta" no se podía usar con un serial. Ahora se
+    # devuelve el SERIAL del envío más reciente que coincide con el valor
+    # elegido —p. ej. el último envío de esa cédula—, con la misma etiqueta que
+    # el desplegable, para que el cliente pueda reconocerlo entre sus opciones y
+    # disparar su autollenado de siempre.
+    if not relation.related_question_id:
+        if not relation.related_form_id:
+            raise HTTPException(
+                status_code=404,
+                detail="La pregunta no tiene relación definida en QuestionTableRelation"
+            )
+
+        envios = (
+            db.query(Response)
+            .filter(
+                Response.id.in_(response_ids),
+                Response.form_id == relation.related_form_id,
+                # Mismos estados que el desplegable de seriales: un borrador de
+                # formato abierto ya tiene sus answers escritas.
+                Response.status.in_([
+                    ResponseStatus.draft,
+                    ResponseStatus.submitted,
+                    ResponseStatus.approved,
+                ]),
+            )
+            .order_by(Response.submitted_at.asc(), Response.id.asc())
+            .all()
+        )
+
+        etiqueta_qid = None
+        if relation.field_name:
+            try:
+                etiqueta_qid = int(relation.field_name)
+            except (ValueError, TypeError):
+                etiqueta_qid = None
+
+        salida = []
+        for envio in envios:
+            label = str(envio.id)
+            if etiqueta_qid:
+                texto = next(
+                    (a.answer_text for a in envio.answers
+                     if a.question_id == etiqueta_qid and a.answer_text),
+                    None,
+                )
+                if texto:
+                    label = f"#{envio.id} — {texto}"
+            salida.append({
+                "response_id": envio.id,
+                "question_id": payload.question_id_lookup,
+                "answer_id":   None,
+                "answer_text": label,
+                "file_path":   None,
+                # Marca para el cliente: esto es un serial, no un valor suelto.
+                "is_serial":   True,
+            })
+        return salida
 
     related_question_id = relation.related_question_id
 

@@ -345,6 +345,18 @@ async def close_response(
                 firm_source_question_id=getattr(approver, "firm_source_question_id", None),
                 # Aprobador o recibidor: se congela al enviar.
                 participant_role=getattr(approver, "participant_role", "approver") or "approver",
+                # De quiénes recibe y cuándo le toca: también se congelan.
+                #
+                # Faltaban aquí (su gemelo en `crud.create_answer_in_db` sí los
+                # copiaba), así que un formato cerrado por esta vía —el botón
+                # "Cerrar formato" de un borrador— dejaba a sus recibidores con
+                # `receives_from_user_ids` en NULL: pasaban a parecer recibidores
+                # SUELTOS, esperaban a TODOS los aprobadores obligatorios en vez
+                # de solo a los suyos, perdían el `on_submit`, y en
+                # "Recibidos por mí" se le atribuían al diligenciador en vez de
+                # al aprobador del que colgaban.
+                receives_from_user_ids=getattr(approver, "receives_from_user_ids", None),
+                receive_timing=getattr(approver, "receive_timing", None) or "after_approvals",
             )
             db.add(response_approval)
 

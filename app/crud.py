@@ -3300,6 +3300,12 @@ def get_related_or_filtered_answers_optimized(
 
                 if related_answer_text not in correlations_map:
                     correlations_map[related_answer_text] = {}
+                    # De qué ENVÍO salió esta fila. Las demás claves son
+                    # question_id → respuesta; esta va aparte, con nombre
+                    # reservado, y la usan los campos de SERIALES: su valor no
+                    # es la respuesta de ninguna pregunta sino el envío entero,
+                    # que el cliente resuelve a etiqueta con su `_serialMap`.
+                    correlations_map[related_answer_text]["__response_id__"] = response_id
 
                 for q_id, answer_text in row.items():
                     if q_id != relation.related_question_id:
