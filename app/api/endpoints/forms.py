@@ -1,6 +1,7 @@
 
 import logging
 import os
+from collections import defaultdict
 from pathlib import Path
 import shutil
 
@@ -5976,6 +5977,71 @@ def get_related_last_answers(
         return salida
 
     related_question_id = relation.related_question_id
+
+    # 2️⃣.c SOLO EL ÚLTIMO REGISTRO DE CADA UNO
+    #
+    # Por defecto basta con que el valor elegido aparezca en CUALQUIER envío
+    # para que su gente salga en la lista. Aquí se invierte el punto de vista:
+    # de cada valor listado (cada empleado) se mira SOLO su envío más reciente,
+    # y entra únicamente si ese envío contiene el valor elegido.
+    #
+    # El caso que lo motiva: Neider registró {sm, medellín} y después {sm}. Al
+    # elegir "medellín" no debe salir, porque en su último registro ya no está;
+    # al elegir "sm", sí. Ojo: el valor a emparejar puede estar dentro de un
+    # repetidor, así que un envío tiene VARIAS respuestas para esa pregunta y
+    # basta con que alguna coincida.
+    if payload.only_latest_by_value:
+        envios = (
+            db.query(Response)
+            .filter(Response.form_id == payload.form_id)
+            .order_by(Response.submitted_at.desc(), Response.id.desc())
+            .all()
+        )
+        if not envios:
+            return []
+
+        ids_envios = [e.id for e in envios]
+
+        filas = (
+            db.query(Answer)
+            .filter(
+                Answer.response_id.in_(ids_envios),
+                Answer.question_id.in_([related_question_id, payload.question_id_match]),
+            )
+            .all()
+        )
+
+        listados_por_envio = defaultdict(list)   # envío → valores listados (empleados)
+        emparejables_por_envio = defaultdict(set)  # envío → valores a emparejar (proyectos)
+        for a in filas:
+            if not a.answer_text:
+                continue
+            if a.question_id == related_question_id:
+                listados_por_envio[a.response_id].append(a)
+            if a.question_id == payload.question_id_match:
+                emparejables_por_envio[a.response_id].add(a.answer_text)
+
+        # De más nuevo a más viejo: la primera vez que aparece un valor es su
+        # último registro, y es el único que cuenta.
+        ya_visto = set()
+        salida = []
+        for envio in envios:
+            for a in listados_por_envio.get(envio.id, []):
+                if a.answer_text in ya_visto:
+                    continue
+                ya_visto.add(a.answer_text)
+                if payload.value_base in emparejables_por_envio.get(envio.id, set()):
+                    salida.append({
+                        "response_id": envio.id,
+                        "question_id": related_question_id,
+                        "answer_id":   a.id,
+                        "answer_text": a.answer_text,
+                        "file_path":   a.file_path,
+                    })
+
+        # El cliente lee de viejo a nuevo (para `last` se queda con el último).
+        salida.reverse()
+        return salida
 
     # 3️⃣ Obtener TODAS las últimas respuestas en UNA SOLA QUERY (optimizado)
     # Subquery para obtener el máximo ID de Answer por cada response_id

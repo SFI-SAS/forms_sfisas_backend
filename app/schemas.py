@@ -1356,6 +1356,17 @@ class RelatedAnswerRequest(BaseModel):
     value_base: str
     question_id_match: int
     question_id_lookup: int
+    # "Respuestas relacionadas", modo SOLO EL ÚLTIMO REGISTRO DE CADA UNO.
+    #
+    # Sin esto, basta con que el valor elegido aparezca en CUALQUIER envío para
+    # que su gente salga listada. Con esto, de cada valor de la pregunta que se
+    # lista (p. ej. cada empleado) se mira ÚNICAMENTE su envío más reciente, y
+    # solo entra si ese envío contiene el valor elegido. Así, si Neider ya no
+    # tiene "Medellín" en su último registro, no aparece al elegir "Medellín".
+    #
+    # Opcional y por defecto apagado: es una decisión por campo del diseño
+    # (`props.allLatestOnly`), no un cambio de comportamiento general.
+    only_latest_by_value: bool = False
 
 class EmailAnswerItem(BaseModel):
     question_text: str
