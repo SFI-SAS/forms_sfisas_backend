@@ -66,6 +66,22 @@ router = APIRouter()
 # en BD porque la firma ya prueba que el enlace lo emitimos nosotros. Lo que
 # SI se mira en BD es el estado: un enlace ya usado no vuelve a escribir.
 
+# ───────────────────────────────────────────────────────────────────────────
+# A DÓNDE APUNTA EL BOTÓN DEL CORREO
+# ───────────────────────────────────────────────────────────────────────────
+# Es el frontend donde vive la página que abre el trabajador
+# (/public/registro/<token>). Se cambia AQUÍ y ya: no hay que configurar nada
+# en el servidor.
+#
+# Ese dominio TIENE que estar en CORS_ORIGINS del backend. La página carga
+# igual si no lo está, pero su llamada al API muere sin decir por qué y el
+# registro no se guarda.
+#
+# A propósito NO usa el valor por defecto de FRONTEND_URL, que comparte con el
+# QR de verificación de los PDF: son dos cosas distintas y cambiar una no tiene
+# por qué arrastrar la otra.
+FRONTEND_REGISTRO_EXTERNO = "https://safemetrics-sfi-dev.service.saferut.com"
+
 _SIGNOFF_SECRET = hashlib.sha256(f"external-signoff-{SECRET_KEY}".encode()).digest()
 # Tope duro del token. El vencimiento REAL es expires_at de la tarea (12h por
 # defecto); esto es solo para que una firma no viva para siempre.
@@ -98,10 +114,12 @@ def verify_signoff_token(token: str) -> Optional[int]:
 
 
 def build_signoff_link(task_id: int) -> str:
-    """URL publica que va dentro del boton del correo."""
-    base = os.getenv(
-        "FRONTEND_URL", "https://safemetrics-sfi-dev.service.saferut.com"
-    ).rstrip("/")
+    """URL publica que va dentro del boton del correo.
+
+    Manda la constante de arriba. FRONTEND_URL solo la anula, y existe para
+    probar en local contra http://localhost:4321 sin tener que editar código.
+    """
+    base = (os.getenv("FRONTEND_URL") or FRONTEND_REGISTRO_EXTERNO).rstrip("/")
     return f"{base}/public/registro/{generate_signoff_token(task_id)}"
 
 
