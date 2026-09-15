@@ -11,7 +11,7 @@
 -- autorización explícita.
 
 -- ── Saldo de la instalación ──────────────────────────────────────────────────
--- Una sola fila (id = 1). Cada cliente instala SafeMetrics en su propio hosting
+-- Una sola fila (id = 1). Cada cliente instala Safemetrics en su propio hosting
 -- y tiene su propio saldo.
 --
 -- En la fase de medición `tokens_totales` es solo informativo: sirve para

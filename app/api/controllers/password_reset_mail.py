@@ -33,7 +33,7 @@ def send_password_reset_email(email: str, name: str, new_password: str) -> bool:
     try:
         body = _p(
             f'Estimado/a <strong>{name}</strong>, un administrador ha '
-            f'restablecido su contraseña de acceso a SafeMetrics.'
+            f'restablecido su contraseña de acceso a Safemetrics.'
         )
         body += _info_block(
             "Nueva contraseña de acceso",
@@ -50,12 +50,12 @@ def send_password_reset_email(email: str, name: str, new_password: str) -> bool:
             'Si usted no solicitó este cambio, comuníquese con el administrador.',
             'warning',
         )
-        body += _btn(_APP_URL, "Ingresar a SafeMetrics")
+        body += _btn(_APP_URL, "Ingresar a Safemetrics")
 
         html = _base_email_html("Restablecimiento de contraseña", body)
-        msg = _new_msg("Restablecimiento de contraseña — SafeMetrics", email, name)
+        msg = _new_msg("Restablecimiento de contraseña — Safemetrics", email, name)
         msg.set_content(
-            f"Hola {name}. Su contraseña de SafeMetrics fue restablecida por un "
+            f"Hola {name}. Su contraseña de Safemetrics fue restablecida por un "
             f"administrador.\nCorreo: {email}\nNueva contraseña: {new_password}\n"
             f"Por seguridad, cámbiela después de ingresar."
         )

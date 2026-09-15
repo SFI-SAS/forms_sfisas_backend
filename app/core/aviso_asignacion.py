@@ -67,7 +67,7 @@ def avisar_formato_asignado(
 
         cuerpo = (
             _p(f"Hola {nombre_usuario or ''},".strip())
-            + _p("Te asignaron un formato en SafeMetrics. Ya puedes diligenciarlo.")
+            + _p("Te asignaron un formato en Safemetrics. Ya puedes diligenciarlo.")
             + _info_block("Detalle de la asignación", filas)
             + resumen_estructura_html(form_design)
             + _callout(
@@ -89,7 +89,7 @@ def avisar_formato_asignado(
         # y sin ella el mensaje llegaría en blanco.
         msg.set_content(
             f"Hola {nombre_usuario or ''},\n\n"
-            f"Te asignaron el formato \"{titulo_formato}\" en SafeMetrics.\n"
+            f"Te asignaron el formato \"{titulo_formato}\" en Safemetrics.\n"
             f"Ya puedes diligenciarlo desde la sección Diligenciar.\n"
         )
         msg.add_alternative(html, subtype="html")

@@ -1425,7 +1425,7 @@ class FormAlertConfirmation(Base):
 # ═══════════════════════════════════════════════════════════════════════════
 # CHAT DE SOPORTE
 #
-# La conversación vive aquí, en la base de SafeMetrics. WhatsApp solo se usa
+# La conversación vive aquí, en la base de Safemetrics. WhatsApp solo se usa
 # para avisarle al agente que hay algo nuevo (app/services/whatsapp.py), nunca
 # para transportar la conversación: si Meta no está configurado o se cae, el
 # chat sigue funcionando y el agente ve los tickets al entrar a su bandeja.
@@ -1508,4 +1508,185 @@ class SupportMessage(Base):
 
     __table_args__ = (
         Index('ix_support_messages_ticket_created', 'ticket_id', 'created_at'),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Registro externo por enlace
+# ───────────────────────────────────────────────────────────────────────────
+# Alguien que NO tiene usuario en Safemetrics (un trabajador de obra) recibe un
+# correo con un botón y, al tocarlo, deja su hora y su ubicación en la fila que
+# le corresponde de una respuesta ya enviada.
+#
+# Lo que escribe va como un Answer normal en la respuesta del diligenciador: así
+# aparece solo en PDF, Excel, "Consultar respuestas", aprobaciones y móvil. La
+# autoría vive aquí, no en el Answer.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class FormExternalSignoff(Base):
+    """Configuración del registro externo para un formato. Una fila por formato.
+
+    Sin fila = el formato no tiene registro externo y se comporta como siempre.
+    """
+    __tablename__ = 'form_external_signoff'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False)
+    is_enabled = Column(Boolean, nullable=False, default=True, server_default='true')
+
+    # Repetidor dueño de las filas. NULL = campos sueltos, la solicitud aplica a
+    # la respuesta entera y no a una fila.
+    repeater_id = Column(String(100), nullable=True)
+
+    # De dónde se saca a quién escribirle.
+    email_element_id = Column(String(100), nullable=False)
+    name_element_id = Column(String(100), nullable=True)
+
+    # Qué se escribe al confirmar.
+    time_element_id = Column(String(100), nullable=False)
+    location_element_id = Column(String(100), nullable=True)
+
+    # Condición de fila: solo se le puede pedir el registro a las filas donde
+    # este campo tenga uno de estos valores. Nace de "Requiere quedarse = Sí"
+    # en una asistencia diaria de 40 trabajadores.
+    #
+    # NULL = sin condición, todas las filas se pueden pedir (comportamiento
+    # anterior a la condición).
+    row_condition_element_id = Column(String(100), nullable=True)
+    # Arreglo JSON de valores que dejan pasar la fila. Varios = O.
+    row_condition_values = Column(AutoJSON, nullable=True)
+
+    # 'on_demand' → lo pide el ingeniero fila por fila (default)
+    # 'on_submit' → sale solo al enviar la respuesta, a todo el que tenga la
+    #               columna de hora vacía
+    trigger_mode = Column(
+        String(20), nullable=False, default='on_demand', server_default='on_demand'
+    )
+    expires_hours = Column(Integer, nullable=False, default=12, server_default='12')
+    email_subject = Column(String(255), nullable=True)
+    action_label = Column(
+        String(80), nullable=False,
+        default='Registrar mi salida', server_default='Registrar mi salida',
+    )
+
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), onupdate=func.now(), nullable=True)
+
+    form = relationship('Form')
+
+    __table_args__ = (
+        UniqueConstraint('form_id', name='uq_form_external_signoff'),
+    )
+
+
+class ResponseExternalTask(Base):
+    """Una solicitud concreta de registro externo, y su evidencia.
+
+    El enlace del correo no lleva el id: lleva un token HMAC firmado sobre él
+    (mismo esquema que el QR de verificación del PDF). Se usa una sola vez —
+    al confirmar, `status` deja de ser 'pending' y el enlace muere.
+    """
+    __tablename__ = 'response_external_tasks'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    response_id = Column(BigInteger, ForeignKey('responses.id', ondelete='CASCADE'), nullable=False)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False)
+
+    # La fila la manda repeater_row_index, nunca la posición visual.
+    repeater_id = Column(String(100), nullable=True)
+    repeater_row_index = Column(Integer, nullable=True)
+
+    recipient_email = Column(String(255), nullable=False)
+    recipient_name = Column(String(255), nullable=True)
+
+    # Congelados al crear la tarea: si reconfiguran el formato después, esta
+    # solicitud sigue escribiendo donde se pactó.
+    time_element_id = Column(String(100), nullable=False)
+    time_question_id = Column(
+        BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True
+    )
+    location_element_id = Column(String(100), nullable=True)
+    location_question_id = Column(
+        BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True
+    )
+
+    # 'pending' | 'done' | 'expired' | 'cancelled'
+    status = Column(String(20), nullable=False, default='pending', server_default='pending')
+
+    requested_by_user_id = Column(
+        BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True
+    )
+    requested_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(TIMESTAMP(timezone=True), nullable=False)
+    email_sent = Column(Boolean, nullable=False, default=False, server_default='false')
+
+    confirmed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    confirmed_time = Column(String(20), nullable=True)
+    confirmed_location = Column(String(100), nullable=True)
+    # 'denied' | 'unavailable' | 'timeout' | 'unsupported'. La hora se guarda
+    # igual: perderla porque el GPS falló sería peor que no tener coordenadas.
+    location_error = Column(String(30), nullable=True)
+
+    client_ip = Column(String(64), nullable=True)
+    user_agent = Column(Text, nullable=True)
+
+    response = relationship('Response')
+    form = relationship('Form')
+    requested_by = relationship('User', foreign_keys=[requested_by_user_id])
+
+    __table_args__ = (
+        Index('ix_response_external_tasks_response', 'response_id'),
+        Index('ix_response_external_tasks_status', 'status', 'expires_at'),
+    )
+
+
+class ResponseEditRequest(Base):
+    """Solicitud de un usuario para editar una respuesta suya ya enviada.
+
+    La pantalla solo deja editar en borrador. Cuando alguien ve un error en algo
+    que ya mandó, pide permiso: elige qué campos necesita tocar y el
+    administrador aprueba o rechaza desde su bandeja.
+
+    El permiso que concede el administrador es de UN SOLO USO y acotado a los
+    campos pedidos. Por eso `status` tiene 'used' aparte de 'approved': sin ese
+    estado no se podría distinguir un permiso vigente de uno ya gastado.
+    """
+    __tablename__ = 'response_edit_requests'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    response_id = Column(BigInteger, ForeignKey('responses.id', ondelete='CASCADE'), nullable=False)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False)
+    # Siempre el dueño de la respuesta: pedir permiso sobre lo ajeno no aplica.
+    requester_id = Column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+
+    # 'all' (la respuesta completa) | 'fields' (solo los de `fields`)
+    scope = Column(String(10), nullable=False, default='fields', server_default='fields')
+
+    # [{"element_id": "...", "question_id": 12, "label": "Hora de salida"}]
+    #
+    # Guarda la ETIQUETA junto al id a propósito: si el formato cambia después,
+    # el administrador tiene que poder leer qué fue lo que autorizó aunque ese
+    # campo ya no exista en el diseño.
+    fields = Column(AutoJSON, nullable=True)
+
+    requester_message = Column(Text, nullable=True)
+
+    # 'pending' | 'approved' | 'rejected' | 'used' | 'cancelled'
+    status = Column(String(20), nullable=False, default='pending', server_default='pending')
+
+    reviewed_by = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    reviewed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    review_message = Column(Text, nullable=True)
+
+    used_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    response = relationship('Response')
+    form = relationship('Form')
+    requester = relationship('User', foreign_keys=[requester_id])
+    reviewer = relationship('User', foreign_keys=[reviewed_by])
+
+    __table_args__ = (
+        Index('ix_response_edit_requests_response', 'response_id'),
+        Index('ix_response_edit_requests_status', 'status', 'created_at'),
     )

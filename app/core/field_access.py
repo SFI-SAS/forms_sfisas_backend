@@ -1300,7 +1300,7 @@ def resolve_dynamic_approvers(
             # ni por nombre único. Se avisa en vez de dejarlo pasar en silencio;
             # antes el formato se enviaba sin aprobador y nadie se enteraba.
             aviso = (
-                f'No se encontró en SafeMetrics al aprobador "{texto}" '
+                f'No se encontró en Safemetrics al aprobador "{texto}" '
                 f'del campo "{selector["label"]}". El formato quedó sin ese aprobador.'
             )
             logger.warning(

@@ -21,7 +21,7 @@ import app.models_audit  # noqa: F401  — registra NotificationSendLog en Base
 from app.api.endpoints import (
     alias, approvers, consultants, download_template, form_alerts, home_dashboard, integrations, list_form, pdf_router, profiles, projects, responses,
     responsibilitytransfer, users, forms, auth, questions, generic_activities, security, question_requests, rut,
-    tokens, support, public_view
+    tokens, support, public_view, external_signoff, edit_requests
 )
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -194,6 +194,14 @@ app.include_router(tokens.router, prefix="/tokens", tags=["tokens"])
 app.include_router(form_alerts.router, tags=["Form Alerts"])
 # Vista publica de respuestas via QR (sin autenticacion)
 app.include_router(public_view.router, prefix="/public", tags=["Public View"])
+# Registro externo por enlace: el trabajador sin usuario deja su hora y su
+# ubicacion desde el boton de un correo. Las rutas /registro/** de este router
+# son PUBLICAS a proposito (se autentican con el token HMAC del enlace); las de
+# /config y /tasks piden sesion.
+app.include_router(external_signoff.router, prefix="/external", tags=["Registro externo"])
+# Solicitudes de edicion: un usuario pide permiso al admin para corregir una
+# respuesta suya ya enviada, eligiendo que campos necesita tocar.
+app.include_router(edit_requests.router, prefix="/edit-requests", tags=["Solicitudes de edicion"])
 
 # ========================================
 # CREAR TABLAS

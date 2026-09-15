@@ -16,6 +16,8 @@ from app.schemas import UpdateMathOperationRequest, AnswerHistoryChangeSchema, A
 from app.models import Answer, AnswerFileSerial, AnswerHistory, ApprovalStatus, BitacoraLogsSimple, ClasificacionBitacoraRelacion, Form, FormAnswerEditor, FormApproval, FormCategory, FormQuestion, FormatType, PalabrasClave, Question, QuestionFilterCondition, QuestionType, RelationBitacora, RelationOperationMath, Response, ResponseApproval, ResponseApprovalRequirement, ResponseStatus, UploadedFile, User, UserType
 from app.core.security import get_current_user, require_roles
 from app.core import field_access, response_scope
+# Registro externo por enlace (correo con boton a quien no tiene usuario).
+from app.api.endpoints import external_signoff
 from typing import Dict
 from sqlalchemy import delete, cast, Text as SAText
 from app.redis_client import redis_client
@@ -277,7 +279,7 @@ async def create_answer(
 
     # Retornar respuesta. `avisos` viaja para que el frontend pueda decirle a
     # quien diligencia que un aprobador quedó sin asignar porque el valor del
-    # campo no corresponde a ningún usuario de SafeMetrics.
+    # campo no corresponde a ningún usuario de Safemetrics.
     if isinstance(payload, list):
         salida = {"message": f"{len(answers_list)} answers created", "count": len(answers_list)}
     else:
@@ -375,6 +377,14 @@ async def close_response(
     # ninguna fila: se resuelven solos para que la cadena no quede esperando.
     # No-op si el formato no usa filtros por aprobador.
     field_access.auto_resolve_empty_approvals(db, response_id)
+
+    # Registro externo en modo 'on_submit': al enviar, a toda fila que quedo sin
+    # hora le sale el correo con el boton. No-op si el formato no lo configuro o
+    # si esta en 'on_demand' (el ingeniero lo pide fila por fila).
+    #
+    # Nunca levanta: la respuesta YA se guardo y no se puede tumbar un envio
+    # porque un correo falle.
+    external_signoff.dispatch_on_submit(db, response_id)
 
     # Enviar notificaciones
     send_mails_to_next_supporters(response_id, db)

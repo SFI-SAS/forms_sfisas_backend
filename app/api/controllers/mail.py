@@ -1,5 +1,5 @@
 """
-email_service.py — SafeMetrics
+email_service.py — Safemetrics
 v3.1 — Adjuntos FUNCIONALES en correos de cierre de formato
 
 FIX v3.1:
@@ -86,7 +86,7 @@ def _base_email_html(title: str, body_content: str, footer_note: str = "") -> st
     <tr><td style="padding:20px 32px;border-bottom:2px solid {_C['brand']};">
         <table width="100%" cellpadding="0" cellspacing="0">
         <tr>
-            <td style="font-size:17px;font-weight:700;color:{_C['brand']};letter-spacing:-0.2px;">SafeMetrics</td>
+            <td style="font-size:17px;font-weight:700;color:{_C['brand']};letter-spacing:-0.2px;">Safemetrics</td>
             <td align="right" style="font-size:12px;color:{_C['text_muted']};">{date_str}</td>
         </tr>
         </table>
@@ -105,7 +105,7 @@ def _base_email_html(title: str, body_content: str, footer_note: str = "") -> st
     <!-- FOOTER -->
     <tr><td style="padding:18px 32px;background-color:{_C['bg']};border-top:1px solid {_C['border']};">
         {f'<p style="margin:0 0 6px;font-size:11px;color:{_C["text_muted"]};text-align:center;">{footer_note}</p>' if footer_note else ''}
-        <p style="margin:0;font-size:11px;color:{_C['text_muted']};text-align:center;">&copy; {year} SafeMetrics &mdash; Correo generado automáticamente.</p>
+        <p style="margin:0;font-size:11px;color:{_C['text_muted']};text-align:center;">&copy; {year} Safemetrics &mdash; Correo generado automáticamente.</p>
     </td></tr>
 
 </table>
@@ -148,7 +148,7 @@ def _callout(text: str, style: str = "info") -> str:
     return f'<div style="margin:14px 0;padding:11px 14px;border-left:3px solid {bdr};background:{bg};border-radius:2px;"><p style="margin:0;font-size:13px;color:{clr};">{text}</p></div>'
 
 
-def _btn(url: str, label: str = "Ir a SafeMetrics") -> str:
+def _btn(url: str, label: str = "Ir a Safemetrics") -> str:
     return f"""<div style="margin:22px 0;text-align:center;">
         <a href="{url}" style="display:inline-block;padding:10px 26px;background-color:{_C['brand']};color:#fff;text-decoration:none;border-radius:4px;font-size:13px;font-weight:600;">{label}</a>
     </div>"""
@@ -173,7 +173,7 @@ def _send_msg(msg: EmailMessage) -> bool:
 def _new_msg(subject: str, to_email: str, to_name: str = "") -> EmailMessage:
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = formataddr(("SafeMetrics", MAIL_FROM_ADDRESS_ALT))
+    msg["From"] = formataddr(("Safemetrics", MAIL_FROM_ADDRESS_ALT))
     msg["To"] = formataddr((to_name, to_email)) if to_name else to_email
     return msg
 
@@ -436,7 +436,7 @@ def send_email_daily_forms(user_email: str, user_name: str, forms: List[Dict]) -
 
         html = _base_email_html("Formularios pendientes", body)
         msg = _new_msg(f"Formularios pendientes — {datetime.now().strftime('%d/%m/%Y')}", user_email, user_name)
-        msg.set_content(f"Tiene {len(forms)} formularios pendientes. Ingrese a SafeMetrics para completarlos.")
+        msg.set_content(f"Tiene {len(forms)} formularios pendientes. Ingrese a Safemetrics para completarlos.")
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
     except Exception as e:
@@ -485,10 +485,10 @@ def send_welcome_email(email: str, name: str, password: str) -> bool:
             _info_row("Contraseña", f'<code style="background:{_C["bg"]};padding:2px 8px;border-radius:3px;font-family:monospace;font-size:13px;">{password}</code>')
         )
         body += _callout('Se recomienda cambiar la contraseña después del primer ingreso.', 'warning')
-        body += _btn(_APP_URL, "Ingresar a SafeMetrics")
+        body += _btn(_APP_URL, "Ingresar a Safemetrics")
 
-        html = _base_email_html("Bienvenido a SafeMetrics", body)
-        msg = _new_msg("Bienvenido a SafeMetrics", email, name)
+        html = _base_email_html("Bienvenido a Safemetrics", body)
+        msg = _new_msg("Bienvenido a Safemetrics", email, name)
         msg.set_content(f"Bienvenido {name}. Email: {email} | Contraseña: {password}")
         msg.add_alternative(html, subtype="html")
         return _send_msg(msg)
@@ -526,11 +526,11 @@ def send_generic_activity_assignment_email(
             "Formato a diligenciar" if n == 1 else "Formatos a diligenciar", rows
         )
         body += _callout(
-            "Ingresa a SafeMetrics para diligenciar "
+            "Ingresa a Safemetrics para diligenciar "
             + ("el formato asignado." if n == 1 else "los formatos asignados."),
             "info",
         )
-        body += _btn(_APP_URL, "Ir a SafeMetrics")
+        body += _btn(_APP_URL, "Ir a Safemetrics")
 
         subject = f"Nueva asignación · {activity_name}"
         html = _base_email_html("Te asignaron un formato", body)
@@ -602,7 +602,7 @@ def send_email_aprovall_next(
     try:
         body = _p(f'Tiene una aprobación pendiente para el formato <strong>"{name_form}"</strong>.')
         body += body_html
-        body += _btn(_APP_URL, "Revisar en SafeMetrics")
+        body += _btn(_APP_URL, "Revisar en Safemetrics")
 
         html = _base_email_html(subject, body)
         msg = _new_msg(subject, to_email, to_name)
@@ -720,7 +720,7 @@ def send_reconsideration_email(
         )
         body += _approvers_table(todos_los_aprobadores)
         body += _callout('Se solicita revisar nuevamente las respuestas considerando la justificación proporcionada.', 'info')
-        body += _btn(_APP_URL, "Revisar en SafeMetrics")
+        body += _btn(_APP_URL, "Revisar en Safemetrics")
 
         html = _base_email_html(f"Solicitud de reconsideración — {formato['titulo']}", body)
         msg = _new_msg(f"Reconsideración solicitada: {formato['titulo']}", to_email, to_name)
@@ -1148,7 +1148,7 @@ def send_rule_notification_email(
 
         html = _base_email_html(
             f"{urg}: Vencimiento próximo — {form_title}", body,
-            footer_note="Alerta generada por el sistema de reglas de SafeMetrics."
+            footer_note="Alerta generada por el sistema de reglas de Safemetrics."
         )
         msg = _new_msg(f"{urg}: Vencimiento próximo — {form_title}", user_email, user_name)
         msg.set_content(f"{urg}: Quedan {days_remaining} {day_word} para {form_title}. Respuesta #{response_id}.")

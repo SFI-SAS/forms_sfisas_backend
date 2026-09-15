@@ -1,5 +1,5 @@
 """
-Chat de soporte dentro de SafeMetrics.
+Chat de soporte dentro de Safemetrics.
 
 La conversación vive aquí, en la base: el usuario escribe desde la ventana
 flotante y quien atiende responde desde `/home/soporte`. No depende de ningún
