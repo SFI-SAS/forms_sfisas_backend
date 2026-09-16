@@ -1671,6 +1671,16 @@ class ResponseEditRequest(Base):
 
     requester_message = Column(Text, nullable=True)
 
+    # Foto de lo que valía cada campo pedido EN EL MOMENTO de la solicitud.
+    #
+    # Se congela y no se lee en vivo: después de la corrección, leer en vivo
+    # mostraría el valor NUEVO y no habría forma de saber qué se cambió. Esta
+    # foto es la única prueba de cómo estaba antes, y es lo que hace que el
+    # historial sirva de algo.
+    #
+    # [{"element_id","label","repeater_id","valores":[{"fila","valor"}]}]
+    snapshot = Column(AutoJSON, nullable=True)
+
     # 'pending' | 'approved' | 'rejected' | 'used' | 'cancelled'
     status = Column(String(20), nullable=False, default='pending', server_default='pending')
 

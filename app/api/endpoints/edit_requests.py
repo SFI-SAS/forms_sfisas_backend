@@ -69,6 +69,130 @@ class RevisarIn(BaseModel):
     review_message: Optional[str] = None
 
 
+def _tomar_foto(db: Session, response_id: int, form_id: int,
+                element_ids: Optional[List[str]],
+                etiquetas_pedidas: Optional[dict] = None) -> list:
+    """Qué vale cada campo pedido, AHORA MISMO.
+
+    `element_ids` None = todos los campos que tengan respuesta (alcance 'all').
+
+    Lo que hace esto menos trivial de lo que parece: en un repetidor un campo
+    NO tiene un valor, tiene uno POR FILA. Pedir "editar la hora de salida" en
+    una asistencia de 40 trabajadores son 40 valores, y el administrador
+    necesita verlos para saber cuál está mal.
+
+    La fila se identifica por `repeater_row_index` y nunca por el orden en que
+    llegan las answers: con huecos, el orden no corresponde a las filas.
+
+    `etiquetas_pedidas` son los nombres que venían en la solicitud. Hacen falta
+    para un caso real: un campo que YA NO ESTÁ en el diseño porque alguien
+    editó el formato. Sus respuestas siguen ahí, pero el diseño no sabe cómo se
+    llamaba, y sin esto el administrador vería un uuid.
+    """
+    from app.models import Answer
+
+    form = db.query(Form).filter(Form.id == form_id).first()
+    design = field_access.collect_design(form.form_design if form else [])
+
+    etiquetas = {f["element_id"]: f["label"] for f in design.fields}
+    repetidor = {f["element_id"]: f["repeater_id"] for f in design.fields}
+    nombre_rep = {r["id"]: r["label"] for r in design.repeaters}
+    # Los answers viejos pueden no traer form_design_element_id; por eso se
+    # guarda también el camino por question_id.
+    por_pregunta = {}
+    for f in design.fields:
+        if isinstance(f.get("question_id"), int):
+            por_pregunta.setdefault(f["question_id"], f["element_id"])
+
+    answers = db.query(Answer).filter(Answer.response_id == response_id).all()
+
+    # Nombre de la pregunta, para los campos que YA NO están en el diseño y que
+    # tampoco venían en la solicitud: sin esto la bandeja mostraba un uuid
+    # crudo, que no le dice nada a nadie. La respuesta sí sabe de qué pregunta
+    # es, y la pregunta sabe cómo se llama.
+    from app.models import Question
+    qids = {a.question_id for a in answers if a.question_id}
+    texto_pregunta = {}
+    if qids:
+        for q in db.query(Question).filter(Question.id.in_(qids)).all():
+            texto_pregunta[q.id] = q.question_text
+    nombre_por_elemento = {}
+    for a in answers:
+        el = a.form_design_element_id or por_pregunta.get(a.question_id)
+        if el and el not in nombre_por_elemento and a.question_id in texto_pregunta:
+            nombre_por_elemento[el] = texto_pregunta[a.question_id]
+
+    agrupado: dict = {}
+    for a in answers:
+        el = a.form_design_element_id or por_pregunta.get(a.question_id)
+        if not el:
+            continue
+        # Se agrupa TODO, no solo lo pedido: la foto lleva el formato completo
+        # para dar contexto, y el filtro por lo pedido se aplica más abajo
+        # marcando `pedido`, no descartando.
+        agrupado.setdefault(el, []).append(a)
+
+    # Se recorre el DISEÑO COMPLETO y en su orden, no solo lo pedido: el
+    # administrador necesita ver el formato entero para ubicar el campo.
+    # "Quiere cambiar la hora de salida" no dice nada; "la hora de salida de
+    # Juan, que entró a las 6 y tiene registrada la salida a las 4" sí.
+    #
+    # Los campos NO pedidos viajan igual, marcados con `pedido: false`, para
+    # que la pantalla los pinte en segundo plano.
+    pedidos = set(element_ids) if element_ids is not None else None
+    claves = [f["element_id"] for f in design.fields]
+
+    # Answers de campos que ya no están en el diseño (alguien editó el formato
+    # después de responder). Van al final: se perderían del todo si no.
+    huerfanos = [el for el in agrupado.keys() if el not in etiquetas]
+    claves = claves + sorted(huerfanos)
+
+    foto = []
+    for el in claves:
+        grupo = agrupado.get(el, [])
+        valores = [
+            {
+                "fila": a.repeater_row_index,
+                "valor": (a.answer_text or ""),
+            }
+            for a in sorted(
+                grupo,
+                key=lambda x: (x.repeater_row_index is None, x.repeater_row_index or 0),
+            )
+        ]
+        en_diseno = el in etiquetas
+        # Sin alcance ('all') todo lo respondido cuenta como pedido.
+        es_pedido = True if pedidos is None else (el in pedidos)
+
+        # Un campo que ni se pidió ni tiene respuesta no aporta nada y solo
+        # alarga la tarjeta. Los pedidos sí aparecen aunque estén vacíos: que
+        # no tengan respuesta es justamente el dato.
+        if not es_pedido and not valores:
+            continue
+
+        foto.append({
+            "element_id": el,
+            "pedido": es_pedido,
+            # Diseño primero (es la fuente viva), luego lo que decía la
+            # solicitud, y solo si no hay nada el uuid.
+            # Diseño → lo que decía la solicitud → el nombre de la pregunta →
+            # y solo si no hay nada, el uuid.
+            "label": (
+                etiquetas.get(el)
+                or (etiquetas_pedidas or {}).get(el)
+                or nombre_por_elemento.get(el)
+                or el
+            ),
+            "repeater_id": repetidor.get(el),
+            "repeater_label": nombre_rep.get(repetidor.get(el)) if repetidor.get(el) else None,
+            # El administrador tiene que saber que está autorizando algo que ya
+            # no está en el formato: puede ser justo la razón del problema.
+            "en_diseno": en_diseno,
+            "valores": valores,
+        })
+    return foto
+
+
 def _es_admin(user: User) -> bool:
     return getattr(user.user_type, "name", None) == "admin"
 
@@ -81,6 +205,9 @@ def _salida(req: ResponseEditRequest, *, con_formato: bool = False) -> dict:
         "scope": req.scope,
         "fields": req.fields or [],
         "requester_message": req.requester_message,
+        # Lo que valían los campos cuando se pidió. Es lo que el administrador
+        # mira para decidir, y lo que deja constancia en el historial.
+        "snapshot": req.snapshot or [],
         "status": req.status,
         "created_at": req.created_at.isoformat() if req.created_at else None,
         "reviewed_at": req.reviewed_at.isoformat() if req.reviewed_at else None,
@@ -153,6 +280,17 @@ def crear_solicitud(
             ),
         )
 
+    # La foto se toma AHORA, al pedir, no al atender: entre una cosa y otra la
+    # respuesta puede cambiar, y después de la corrección ya no habría manera
+    # de reconstruir cómo estaba.
+    ids_pedidos = (
+        [f.element_id for f in payload.fields] if payload.scope == "fields" else None
+    )
+    foto = _tomar_foto(
+        db, payload.response_id, response.form_id, ids_pedidos,
+        {f.element_id: f.label for f in payload.fields if f.label},
+    )
+
     req = ResponseEditRequest(
         response_id=payload.response_id,
         form_id=response.form_id,
@@ -161,6 +299,7 @@ def crear_solicitud(
         fields=(
             [f.model_dump() for f in payload.fields] if payload.scope == "fields" else None
         ),
+        snapshot=foto,
         requester_message=(payload.requester_message or "").strip() or None,
         status="pending",
     )
