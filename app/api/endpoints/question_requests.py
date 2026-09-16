@@ -34,6 +34,53 @@ def _build_final_question_text(original_text: str, form_id: int | None) -> str:
     return f"{form_id}_{original_text}"
 
 
+def _recalcular_estado_solicitud(db: Session, request_id: int) -> str | None:
+    """Pone la cabecera al dia a partir del estado de SUS campos.
+
+    La aprobacion es por campo, no por solicitud: el administrador puede
+    aprobar tres campos de una solicitud de cinco y rechazar los otros dos. Por
+    eso el estado de verdad siempre vivio en `question_request_fields`, y
+    `question_requests.status` se quedaba en 'pending' de por vida porque nadie
+    lo escribia nunca. Quien consultaba la cabecera veia como pendientes
+    solicitudes ya resueltas del todo.
+
+    Se deriva, no se decide: la cabecera es un resumen de sus campos.
+
+        pending   quedan campos sin atender
+        approved  todos aprobados
+        rejected  todos rechazados
+        partial   se atendieron todos, unos si y otros no
+
+    No hace commit: lo hace quien la llama, dentro de su misma transaccion, para
+    que el campo y su cabecera no puedan quedar descuadrados.
+    """
+    req = db.query(QuestionRequest).filter(QuestionRequest.id == request_id).first()
+    if not req:
+        return None
+
+    estados = [
+        e for (e,) in db.query(QuestionRequestField.status)
+        .filter(QuestionRequestField.request_id == request_id)
+        .all()
+    ]
+    # Una solicitud sin campos no deberia existir (se crean juntas), pero si
+    # aparece se la deja como esta antes que inventarle un desenlace.
+    if not estados:
+        return req.status
+
+    if any(e == 'pending' for e in estados):
+        nuevo = 'pending'
+    elif all(e == 'approved' for e in estados):
+        nuevo = 'approved'
+    elif all(e == 'rejected' for e in estados):
+        nuevo = 'rejected'
+    else:
+        nuevo = 'partial'
+
+    req.status = nuevo
+    return nuevo
+
+
 def _find_duplicate_question(db: Session, text: str, exclude_id: int | None = None):
     def _norm(t: str) -> str:
         if not t:
@@ -441,6 +488,8 @@ def approve_field(
     field.created_question_id = new_question.id
     field.reviewed_by = current_user.id
     field.reviewed_at = datetime.now(timezone.utc)
+    db.flush()  # que el recalculo vea este campo ya aprobado
+    _recalcular_estado_solicitud(db, field.request_id)
 
     db.commit()
     db.refresh(new_question)
@@ -478,6 +527,8 @@ def reject_field(
     field.rejection_reason = payload.rejection_reason
     field.reviewed_by = current_user.id
     field.reviewed_at = datetime.now(timezone.utc)
+    db.flush()  # que el recalculo vea este campo ya rechazado
+    _recalcular_estado_solicitud(db, field.request_id)
 
     db.commit()
 
@@ -511,6 +562,8 @@ def mark_field_as_approved(
     field.created_question_id = payload.created_question_id
     field.reviewed_by = current_user.id
     field.reviewed_at = datetime.now(timezone.utc)
+    db.flush()  # que el recalculo vea este campo ya aprobado
+    _recalcular_estado_solicitud(db, field.request_id)
 
     db.commit()
     db.refresh(field)
