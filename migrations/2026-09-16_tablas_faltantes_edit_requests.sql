@@ -12,11 +12,16 @@
 -- Va entero en una transaccion: si la BD ya tenia las tablas, los ADD CONSTRAINT
 -- revientan y el BEGIN/COMMIT revierte todo sin dejar nada a medias.
 --
--- APLICADO EN:  dairo_safemetrics (2026-09-16) y ya presentes en forms_sfisas_dev.
--- PENDIENTE EN: andres / daniel / prueba4 / prueba5 (Hetzner). Hoy no las
---               necesitan: corren cc53e477 (2026-09-02) y su openapi.json no
---               publica /edit-requests/* ni /external/*. Aplicar ANTES o JUNTO
---               con el proximo deploy de main a esas 4, o repiten el 500.
+-- APLICADO EN (2026-09-16): dairo_safemetrics, andres_safemetrics,
+-- daniel_safemetrics, prueba4_safemetrics, prueba5_safemetrics. Las 4 del
+-- Hetzner por app efimera (scripts/migra_app.py + scripts/migra_hetzner/),
+-- que es la unica via: ese Postgres no publica puerto. Las 3 tablas estaban
+-- FALTA en las 4 y quedaron ok. forms_sfisas_dev ya las tenia.
+-- forms_sfisas queda fuera a proposito: api-forms-sfi esta congelada en la
+-- v142 del 2026-01-30 y no conoce estos modelos.
+--
+-- Correrla de nuevo sobre una BD que ya las tiene aborta con
+-- "relation ... already exists" y revierte entera. Es lo esperado.
 -- =============================================================================
 
 BEGIN;
