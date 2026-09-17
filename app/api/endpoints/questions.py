@@ -1734,3 +1734,110 @@ def update_question_endpoint(
         "id": question.id,
         "question_text": question.question_text
     }
+
+
+# ── Campos huérfanos (sin uso) ───────────────────────────────────────────────
+
+def _extract_question_ids_from_design(items: list, result: set):
+    """Recorre recursivamente el form_design y extrae todos los id_question."""
+    for item in items:
+        if isinstance(item, dict):
+            qid = item.get("id_question")
+            if qid is not None:
+                try:
+                    result.add(int(qid))
+                except (ValueError, TypeError):
+                    pass
+            children = item.get("children")
+            if isinstance(children, list):
+                _extract_question_ids_from_design(children, result)
+
+
+@router.get("/orphaned/list", summary="Campos creados que no están en uso")
+def list_orphaned_questions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """
+    Devuelve las preguntas que NO están vinculadas a ningún formulario,
+    ni referenciadas en ningún form_design, ni tienen respuestas,
+    ni tienen reglas de notificación.
+    """
+    from sqlalchemy import distinct
+
+    all_questions = db.query(Question).options(joinedload(Question.category)).all()
+
+    # 1. IDs en form_questions (vinculadas a un formato)
+    linked_ids = set(
+        r[0] for r in db.query(FormQuestion.question_id).all()
+    )
+
+    # 2. IDs referenciadas en form_design JSON de TODOS los formatos
+    design_ids: set = set()
+    forms_with_design = db.query(Form.form_design).filter(Form.form_design.isnot(None)).all()
+    for (design,) in forms_with_design:
+        if design and isinstance(design, list):
+            _extract_question_ids_from_design(design, design_ids)
+
+    # 3. IDs con respuestas (answers)
+    answered_ids = set(
+        r[0] for r in db.query(distinct(Answer.question_id)).all()
+    )
+
+    # 4. IDs en relation_question_rule (reglas de notificación)
+    rule_ids = set(
+        r[0] for r in db.query(RelationQuestionRule.id_question).all()
+    )
+
+    in_use = linked_ids | design_ids | answered_ids | rule_ids
+
+    orphaned = []
+    for q in all_questions:
+        if q.id not in in_use:
+            orphaned.append({
+                "id": q.id,
+                "question_text": q.question_text,
+                "question_type": q.question_type.value if q.question_type else None,
+                "description": q.description,
+                "required": q.required,
+                "id_form": q.id_form,
+                "category": {
+                    "id": q.category.id,
+                    "name": q.category.name,
+                } if q.category else None,
+            })
+
+    return {"count": len(orphaned), "questions": orphaned}
+
+
+@router.delete("/orphaned/delete-all", summary="Eliminar todos los campos huérfanos")
+def delete_all_orphaned_questions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """
+    Elimina TODOS los campos que no están en uso en ningún lugar del sistema.
+    """
+    orphaned_response = list_orphaned_questions(db, current_user)
+    orphaned = orphaned_response["questions"]
+
+    if not orphaned:
+        return {"message": "No hay campos huérfanos para eliminar", "deleted_count": 0}
+
+    deleted_ids = []
+    errors = []
+
+    for q in orphaned:
+        try:
+            delete_question_from_db(db, q["id"])
+            deleted_ids.append(q["id"])
+        except Exception as e:
+            db.rollback()
+            errors.append({"id": q["id"], "error": str(e)})
+
+    return {
+        "message": f"Se eliminaron {len(deleted_ids)} campos huérfanos",
+        "deleted_count": len(deleted_ids),
+        "deleted_ids": deleted_ids,
+        "errors": errors,
+    }
