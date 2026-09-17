@@ -4,6 +4,7 @@ Endpoints que alimentan las vistas del Home rediseñado de forms_sfi
 
 - GET    /home/pending-forms       → To-Do: formatos asignados sin responder en el período actual.
 - GET    /home/upcoming-events     → Calendario: eventos expandidos por rango de fechas.
+- GET    /home/date-alerts         → Calendario: fechas puestas al diligenciar que disparan correo.
 - DELETE /home/schedules/{id}      → Borra una programación periódica.
 - DELETE /home/schedules/by-form-user → Borra schedule por (form_id, user_id).
 
@@ -18,11 +19,11 @@ from datetime import date, datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.security import get_current_user
 from app.database import get_db
-from app.models import ApprovalStatus, BitacoraLogsSimple, EstadoEvento, Form, FormSchedule, Response, ResponseApproval, ResponseStatus, User, UserType
+from app.models import ApprovalStatus, BitacoraLogsSimple, EstadoEvento, Form, FormSchedule, RelationQuestionRule, Response, ResponseApproval, ResponseStatus, User, UserType
 from sqlalchemy import and_, func, or_
 
 router = APIRouter()
@@ -459,6 +460,122 @@ def get_user_upcoming_events(
 
     events.sort(key=lambda e: (e["date"], e["title"].lower()))
     return events
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Fechas que disparan correo (relation_question_rule)
+# ────────────────────────────────────────────────────────────────────────────
+
+def _dias_de_alerta(raw) -> Optional[int]:
+    """`time_alert` es una columna de TEXTO que guarda días. Una regla vieja
+    puede traer cualquier cosa ahí; si no es un entero, se ignora el aviso en
+    vez de tumbar la respuesta (el job de correo hace `int()` y revienta)."""
+    if raw is None:
+        return None
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+@router.get("/date-alerts")
+def get_user_date_alerts(
+    start_date: date = Query(..., description="Inicio del rango (ISO YYYY-MM-DD)"),
+    end_date: date = Query(..., description="Fin del rango (ISO YYYY-MM-DD)"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Fechas que alguien puso AL DILIGENCIAR un formato y que disparan un correo
+    (tabla `relation_question_rule`). Cubre los dos mecanismos, porque los dos
+    escriben en la misma tabla:
+
+      - "Alerta de fecha" (`props.alert_date` en un campo date/datetime): la
+        fecha del campo + los días de antelación.
+      - "Correo destinatario" (`props.email_notification`): la fecha del
+        recordatorio + el correo al que va.
+
+    Va en un endpoint APARTE de /upcoming-events a propósito: ese expande
+    formatos periódicos y sus contadores ("Vencidas / Pendientes / Completadas"
+    del Resumen del mes) cuentan formatos, no fechas de correo.
+
+    Se devuelven las del usuario: las de las respuestas que él diligenció y
+    aquellas cuyo correo destinatario es el suyo.
+
+    Retorna ordenado por fecha:
+        [ { "rule_id", "form_id", "form_title", "question_text",
+            "date" (la fecha configurada, ISO),
+            "alert_date" (cuándo sale el correo, ISO o null),
+            "days_before", "response_id", "recipient_email",
+            "custom_recipient" (bool), "notified" (bool) }, ... ]
+    """
+    if end_date < start_date:
+        raise HTTPException(
+            status_code=400, detail="end_date debe ser >= start_date"
+        )
+    if (end_date - start_date).days > 366:
+        raise HTTPException(
+            status_code=400, detail="Rango máximo 366 días"
+        )
+
+    mi_correo = (current_user.email or "").strip().lower()
+
+    rules = (
+        db.query(RelationQuestionRule)
+        .outerjoin(Response, RelationQuestionRule.id_response == Response.id)
+        .filter(
+            RelationQuestionRule.date_notification.isnot(None),
+            func.date(RelationQuestionRule.date_notification) >= start_date,
+            func.date(RelationQuestionRule.date_notification) <= end_date,
+            or_(
+                Response.user_id == current_user.id,
+                func.lower(func.trim(RelationQuestionRule.notification_email)) == mi_correo,
+            ),
+        )
+        .options(
+            joinedload(RelationQuestionRule.question),
+            joinedload(RelationQuestionRule.related_form),
+            joinedload(RelationQuestionRule.related_response).joinedload(Response.user),
+        )
+        .all()
+    )
+
+    alerts = []
+    for rule in rules:
+        fecha = _to_date(rule.date_notification)
+        if fecha is None:
+            continue
+
+        dias = _dias_de_alerta(rule.time_alert)
+        aviso = (fecha - timedelta(days=dias)) if dias is not None else None
+
+        correo_custom = (rule.notification_email or "").strip()
+        if correo_custom:
+            destinatario = correo_custom
+        else:
+            dueno = rule.related_response.user if rule.related_response else None
+            destinatario = dueno.email if dueno else None
+
+        form = rule.related_form
+        alerts.append({
+            "rule_id":          rule.id,
+            "form_id":          rule.id_form,
+            "form_title":       form.title if form else "Formato",
+            "category_id":      form.id_category if form else None,
+            "question_text":    rule.question.question_text if rule.question else "",
+            "date":             fecha.isoformat(),
+            "alert_date":       aviso.isoformat() if aviso else None,
+            "days_before":      dias,
+            "response_id":      rule.id_response,
+            "recipient_email":  destinatario,
+            "custom_recipient": bool(correo_custom),
+            # El job de correo apaga la regla al enviarla: `enabled=False`
+            # significa "este aviso ya salió".
+            "notified":         not bool(rule.enabled),
+        })
+
+    alerts.sort(key=lambda a: (a["date"], a["form_title"].lower()))
+    return alerts
 
 
 # ────────────────────────────────────────────────────────────────────────────
