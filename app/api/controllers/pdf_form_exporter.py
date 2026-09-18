@@ -295,8 +295,12 @@ def _render_cell_value(cell_data: Any) -> str:
         if atext:
             parts.append(_e(atext))
         if fpath:
+            # El serial es lo que permite cotejar el PDF con el documento que se
+            # subió, así que va junto al adjunto y no como dato suelto.
+            serial = str(cell_data.get("file_serial") or "")
+            etiqueta = ("&#128206; Archivo adjunto &middot; Serial " + _e(serial)) if serial else "&#128206; Archivo adjunto"
             parts.append('<span style="font-size:9px;color:#2563EB;background:#EFF6FF;'
-                         'padding:1px 6px;border-radius:3px;border:1px solid #BFDBFE;">&#128206; Archivo adjunto</span>')
+                         'padding:1px 6px;border-radius:3px;border:1px solid #BFDBFE;">' + etiqueta + '</span>')
         return "\n".join(parts) if parts else '<span style="color:#9CA3AF;font-style:italic;">-</span>'
 
     return _e(str(cell_data))
@@ -330,6 +334,7 @@ def _build_sub_rows(filtered: list, sub_normal: list) -> List[Dict]:
                 if m:
                     rd[cid] = {"answer_text": m.get("answer_text"),
                                "file_path":   m.get("file_path"),
+                               "file_serial": m.get("file_serial"),
                                "question_type": m.get("question_type")}
             if rd:
                 sub_rows.append(rd)
@@ -351,6 +356,7 @@ def _build_sub_rows(filtered: list, sub_normal: list) -> List[Dict]:
                     a = by_col[cid][i]
                     rd[cid] = {"answer_text": a.get("answer_text"),
                                "file_path":   a.get("file_path"),
+                               "file_serial": a.get("file_serial"),
                                "question_type": a.get("question_type")}
             if rd:
                 sub_rows.append(rd)
@@ -615,7 +621,15 @@ class FormPdfExporter:
             else:
                 content_html = '<span class="field-empty">Sin respuesta</span>'
 
-            file_html = (' <span class="file-badge">&#128206; Archivo adjunto</span>' if fpath else "")
+            serial = str(answer.get("file_serial") or "")
+            if fpath:
+                etiqueta_archivo = (
+                    "&#128206; Archivo adjunto &middot; Serial " + _e(serial)
+                    if serial else "&#128206; Archivo adjunto"
+                )
+                file_html = ' <span class="file-badge">' + etiqueta_archivo + '</span>'
+            else:
+                file_html = ""
             value_html = content_html + file_html
         else:
             value_html = '<span class="field-empty">Sin respuesta registrada</span>'
@@ -739,6 +753,7 @@ class FormPdfExporter:
             return {
                 "answer_text":   a.get("answer_text"),
                 "file_path":     a.get("file_path"),
+                "file_serial":   a.get("file_serial"),
                 "question_type": a.get("question_type"),
             }
 
@@ -800,6 +815,7 @@ class FormPdfExporter:
                         row_data[cid] = {
                             "answer_text":  a.get("answer_text"),
                             "file_path":    a.get("file_path"),
+                            "file_serial":  a.get("file_serial"),
                             "question_type": a.get("question_type"),
                         }
                 if row_data:

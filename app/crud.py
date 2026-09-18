@@ -9450,6 +9450,19 @@ def _get_repeated_question_ids(db, form_id: int) -> set:
 # FUNCIÓN AUXILIAR: Serializar answers del ORM al formato del exportador
 # ═══════════════════════════════════════════════════════════════
 
+def _serial_de_archivo(ans) -> str:
+    """Serial que se le generó al archivo de una answer, o "" si no tiene.
+
+    Va con `try` porque `_serialize_answers` lo llaman varios exportadores y no
+    todos cargan la relación por adelantado; si la sesión ya se cerró, el PDF no
+    se puede caer por un dato decorativo."""
+    try:
+        serial = getattr(ans, "file_serial", None)
+        return getattr(serial, "serial", "") or ""
+    except Exception:
+        return ""
+
+
 def _serialize_answers(answers_orm, db, form_id: int, form_design: list) -> list:
     """
     Convierte answers ORM a dicts y reconstruye repeated_id.
@@ -9467,6 +9480,9 @@ def _serialize_answers(answers_orm, db, form_id: int, form_design: list) -> list
             ),
             "answer_text":            ans.answer_text,
             "file_path":              ans.file_path or "",
+            # Serial del archivo (tabla `answer_file_serials`). Va vacío cuando
+            # la answer no tiene archivo o nadie le generó serial.
+            "file_serial":            _serial_de_archivo(ans),
             "repeated_id":            None,  # Se reconstruye abajo
             "form_design_element_id": getattr(ans, "form_design_element_id", None),
             # Estas dos columnas existen en la tabla y los exportadores YA las

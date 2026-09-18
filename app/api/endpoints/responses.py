@@ -157,6 +157,24 @@ def _enforce_edit_permission(response: Response, form: Form, current_user: User,
     )
 
 
+def _id_de_answer_creada(resultado) -> Optional[int]:
+    """Saca el id de la answer de lo que devuelve `create_answer_in_db`, que
+    cambia de forma según la rama: un dict con `answer_id`, un dict con la lista
+    `answers` (cuando la pregunta es de las que crean varias), o el objeto
+    Answer. Si no se reconoce, se devuelve None y el frontend sigue igual que
+    hasta ahora."""
+    if resultado is None:
+        return None
+    if isinstance(resultado, dict):
+        if resultado.get("answer_id") is not None:
+            return resultado["answer_id"]
+        answers = resultado.get("answers") or []
+        if answers and isinstance(answers[0], dict):
+            return answers[0].get("id")
+        return None
+    return getattr(resultado, "id", None)
+
+
 @router.post("/save-answers/")
 async def create_answer(
     request: Request,
@@ -179,6 +197,10 @@ async def create_answer(
     # valor no corresponde a ningún usuario). Viajan en la respuesta del
     # endpoint; si van vacíos, no se incluye la clave.
     avisos_participantes: list[str] = []
+
+    # Id de la answer creada (solo interesa en el envío de a una, que es como
+    # diligencia el web). Ver `_id_de_answer_creada`.
+    answer_id_creada: Optional[int] = None
 
     # NOTA: /save-answers/ es el endpoint de CREACIÓN de answers. El frontend lo
     # invoca UNA VEZ POR ANSWER al diligenciar (incluyendo varias filas de
@@ -237,7 +259,7 @@ async def create_answer(
             )
 
         # Pasar id_relation_bitacora
-        await create_answer_in_db(
+        creada = await create_answer_in_db(
             answer,
             db,
             current_user,
@@ -245,6 +267,11 @@ async def create_answer(
             send_emails,
             relation_bitacora.id  # 👈 NUEVO
         )
+        # El id de la answer recién creada se devuelve al frontend (ver el
+        # retorno del endpoint). Lo necesita el serial de archivos, que se
+        # guarda aparte en `answer_file_serials` y va amarrado a la answer.
+        # `create_answer_in_db` ya lo tenía; este endpoint lo botaba.
+        answer_id_creada = _id_de_answer_creada(creada)
 
         # ── Recibidor elegido en un campo ────────────────────────────────────
         # Si esta answer es la de un campo marcado como "elige al recibidor", ya
@@ -283,7 +310,12 @@ async def create_answer(
     if isinstance(payload, list):
         salida = {"message": f"{len(answers_list)} answers created", "count": len(answers_list)}
     else:
-        salida = {"message": "Answer created", "answer": payload}
+        # `answer` ha sido siempre el payload de entrada, tal cual llegó; se deja
+        # así para no cambiarle la forma a nadie, y el id va AGREGADO al lado.
+        cuerpo = payload.model_dump()
+        if answer_id_creada is not None:
+            cuerpo["answer_id"] = answer_id_creada
+        salida = {"message": "Answer created", "answer": cuerpo}
     if avisos_participantes:
         salida["avisos"] = avisos_participantes
     return salida
@@ -1652,7 +1684,12 @@ def download_response_pdf(
 
     answers_orm = (
         db.query(Answer)
-        .options(joinedload(Answer.question))
+        .options(
+            joinedload(Answer.question),
+            # El serial del archivo sale en el PDF; se trae de una vez para no
+            # consultar uno por answer.
+            joinedload(Answer.file_serial),
+        )
         .filter(Answer.response_id == response_id)
         .all()
     )

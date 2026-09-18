@@ -34,7 +34,7 @@ def _tiene_estructura(formato) -> bool:
 import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, Query, File, status, Form as FastAPIForm
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, joinedload, defer
+from sqlalchemy.orm import Session, joinedload, defer, selectinload
 from typing import List, Optional
 from app.api.controllers.excel_form_exporter import generate_form_excel
 from app.api.controllers.mail import send_response_answers_email
@@ -1390,6 +1390,9 @@ def get_responses_with_answers(
         .where(Response.form_id == form_id, Response.user_id == current_user.id)
         .options(
             joinedload(Response.answers).joinedload(Answer.question),
+            # El serial del archivo se pide de una vez: es uno por answer y
+            # buscarlo al pintar sería una consulta por cada una.
+            joinedload(Response.answers).selectinload(Answer.file_serial),
             joinedload(Response.approvals).joinedload(ResponseApproval.user)
         )
     )
@@ -1547,6 +1550,9 @@ def get_responses_with_answers(
                     "question_type": a.question.question_type,
                     "answer_text": process_regisfacial_answer(a.answer_text, a.question.question_type),
                     "file_path": a.file_path,
+                    # Serial que se le generó al archivo al diligenciar, para
+                    # poder cotejar el documento con lo que quedó guardado.
+                    "file_serial": a.file_serial.serial if a.file_serial else None,
                     "form_design_element_id": a.form_design_element_id,
                     # Autoría: NULL = lo escribió quien diligenció el formato.
                     # Solo los aprobadores escriben con autor, así que el nombre
