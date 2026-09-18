@@ -876,6 +876,11 @@ class FormExcelExporter:
         if not ftype or not field.get("id"):
             return
 
+        # "No mostrar": no sale en el Excel, igual que no sale en pantalla ni en
+        # el PDF. La respuesta sigue guardada en la base.
+        if (field.get("props") or {}).get("noMostrar"):
+            return
+
         if ftype == "verticalLayout":
             if not self._should_render(field):
                 return

@@ -1219,6 +1219,11 @@ class FormPdfExporter:
             return ""
         props = field.get("props") or {}
 
+        # "No mostrar": el campo se guarda pero no se le ensena a nadie, y el PDF
+        # es justamente para que alguien lo lea. La respuesta sigue en la base.
+        if props.get("noMostrar"):
+            return ""
+
         if ftype == "verticalLayout":
             if not self._should_render(field):
                 return ""

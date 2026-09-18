@@ -3223,16 +3223,21 @@ def get_related_or_filtered_answers_optimized(
     #
     # No es un listado con un único elemento: es un valor que el frontend pone
     # en el campo y bloquea, igual que ya hace con `logged_user_part`. Se corta
-    # aquí, antes del recorrido completo de formatos y respuestas, porque ese
-    # camino arma correlaciones que este campo no usa y cuesta una consulta por
-    # cada respuesta del formato origen.
+    # aquí, antes del recorrido completo de formatos y respuestas, que cuesta
+    # una consulta por cada respuesta del formato origen.
+    #
+    # Pero SÍ van las correlaciones de ESE valor: si el campo pertenece a un
+    # grupo de autocompletado, son las que llenan a sus compañeros. Devolverlas
+    # vacías —como se hacía— dejaba el grupo mudo: el valor llegaba solo y los
+    # demás campos del grupo se quedaban en blanco, sin error ni aviso. Solo se
+    # arma la fila de la que salió el valor, no el mapa completo.
     #
     # "La última" = la de la respuesta con `submitted_at` más alto, sin importar
     # quién la envió ni en qué formato esté la pregunta. Con empate de fecha
     # gana el id de answer más alto.
     if relation.related_question_id and only_latest:
         ultima = (
-            db.query(Answer.answer_text)
+            db.query(Answer.answer_text, Answer.response_id)
             .join(Response, Response.id == Answer.response_id)
             .filter(
                 Answer.question_id == relation.related_question_id,
@@ -3243,13 +3248,35 @@ def get_related_or_filtered_answers_optimized(
             .first()
         )
         valor = ultima[0] if ultima else None
+        response_id_origen = ultima[1] if ultima else None
+
+        correlaciones_ultima = {}
+        if valor and response_id_origen:
+            answers_origen = (
+                db.query(Answer)
+                .filter(Answer.response_id == response_id_origen)
+                .all()
+            )
+            # Por fila, igual que el camino largo: dentro de un repetidor cada
+            # fila es un juego de respuestas distinto y hay que emparejar las de
+            # la MISMA fila, no las del último renglón.
+            for fila in _reconstruct_answer_rows(answers_origen):
+                if fila.get(relation.related_question_id) != valor:
+                    continue
+                correlacion = {"__response_id__": response_id_origen}
+                for q_id, texto in fila.items():
+                    if q_id != relation.related_question_id:
+                        correlacion.setdefault(q_id, texto)
+                correlaciones_ultima[valor] = correlacion
+                break
+
         return {
             "source": "ultima_respuesta",
             "only_latest_answer": True,
             "latest_answer": valor,
             "data": [{"name": valor}] if valor else [],
             "forms": [],
-            "correlations": {},
+            "correlations": correlaciones_ultima,
         }
 
     if relation.related_question_id:
