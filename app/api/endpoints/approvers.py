@@ -2148,6 +2148,63 @@ class ApproverAnswerItem(BaseModel):
     parent_repeated_id: Optional[str] = None
 
 
+def _firma_por_codigo_verificada(answer_text: Optional[str], element_id: str) -> Optional[str]:
+    """Para las firmas por CODIGO que escriben aprobadores y recibidores.
+
+    Devuelve el texto que hay que guardar, o levanta 400 si el comprobante no
+    sirve. Si la respuesta no es una firma por codigo, devuelve None y el
+    guardado sigue su curso normal — esto no toca nada mas.
+
+    El comprobante viaja DENTRO del JSON que manda el campo de firma, no en un
+    campo aparte: asi no hay que cambiarle la forma al payload del aprobador,
+    que lleva muchas respuestas juntas. Se valida y se quita antes de guardar,
+    porque `answer_text` es varchar(255) y un JWT no cabe ahi.
+    """
+    if not answer_text or "firmData" not in answer_text:
+        return None
+
+    try:
+        datos = json.loads(answer_text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    firma = datos.get("firmData") if isinstance(datos, dict) else None
+    if not isinstance(firma, dict) or firma.get("metodo") != "codigo":
+        return None
+
+    from app.api.endpoints.signature_codes import comprobante_valido
+
+    # El formato no viaja en este payload; se valida contra la persona y el
+    # campo, que es lo que impide reusar el comprobante en otra firma.
+    if not comprobante_valido(
+        firma.get("comprobante") or "",
+        person_id=firma.get("person_id") or "",
+        element_id=element_id,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "La firma por codigo no trae un comprobante valido. "
+                "Vuelva a digitar el codigo para firmar este campo."
+            ),
+        )
+
+    return json.dumps(
+        {
+            "firmData": {
+                "success": True,
+                "person_id": str(firma.get("person_id", "")),
+                "person_name": str(firma.get("person_name", "")),
+                "qr_url": "",
+                "metodo": "codigo",
+                "verificado_en": str(firma.get("verificado_en", "")),
+            }
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )[:255]
+
+
 class ApproverAnswersSchema(BaseModel):
     answers: List[ApproverAnswerItem] = PydanticField(default_factory=list)
 
@@ -2323,14 +2380,18 @@ def save_approver_field_answers(
             None
         )
 
+        # Firma por codigo: se verifica aqui y se guarda ya limpia de comprobante.
+        texto_firma = _firma_por_codigo_verificada(item.answer_text, item.element_id)
+        texto_a_guardar = texto_firma if texto_firma is not None else item.answer_text
+
         if existing:
-            existing.answer_text = item.answer_text
+            existing.answer_text = texto_a_guardar
             existing.answered_at = now
         else:
             new_answer = Answer(
                 response_id=my_response.id,
                 question_id=question_id,
-                answer_text=item.answer_text,
+                answer_text=texto_a_guardar,
                 form_design_element_id=item.element_id,
                 repeated_id=item.repeated_id,
                 repeater_row_index=item.repeater_row_index,

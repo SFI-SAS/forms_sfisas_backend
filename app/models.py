@@ -891,6 +891,98 @@ class RelationQuestionRule(Base):
         back_populates="question_rules"
     )
 
+class SignatureCodePerson(Base):
+    """Firmante que NO acepta el registro biométrico y firma con un código.
+
+    El registro facial no tiene tabla propia: es una answer de una pregunta
+    `regisfacial` cuyo JSON lleva `person_id`, nombre y documento, y de ahí sale
+    el directorio de firmantes. Para que esta persona sea un firmante más —y no
+    haya que tocar nada de lo facial—, su alta escribe esa MISMA answer, marcada
+    `metodo: "codigo"` y con el `person_id` que se guarda aquí. Lo único que
+    cambia es el momento de firmar: en vez de la cámara, el código.
+
+    El código es FIJO: se genera al registrar y se queda hasta que un
+    administrador genere otro. Por eso se guarda como una contraseña (bcrypt) y
+    no se puede volver a leer: si se pierde, se genera uno nuevo y se reenvía.
+    """
+
+    __tablename__ = "signature_code_persons"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    # El id con el que esta persona viaja en las answers, igual que el
+    # `person_id` que emite la API facial para los demás.
+    person_id = Column(String(64), nullable=False, unique=True)
+
+    full_name = Column(String(255), nullable=False)
+    document = Column(String(50), nullable=False)
+    email = Column(String(255), nullable=False)
+
+    # bcrypt del código de 6 dígitos. Nunca se guarda en claro ni se devuelve.
+    code_hash = Column(String(255), nullable=False)
+    code_generated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    code_generated_by_user_id = Column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Un código fijo de 6 dígitos se adivina si se deja intentar sin freno.
+    failed_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    locked_until = Column(TIMESTAMP(timezone=True), nullable=True)
+    last_signed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+
+    created_by_user_id = Column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    created_by = relationship("User", foreign_keys=[created_by_user_id])
+    code_generated_by = relationship("User", foreign_keys=[code_generated_by_user_id])
+
+    __table_args__ = (
+        Index("ix_signature_code_persons_document", "document"),
+        Index("ix_signature_code_persons_email", "email"),
+    )
+
+
+class SignatureCodeEvent(Base):
+    """Rastro de lo que pasa con un firmante por código.
+
+    Existe para poder responder después "¿quién firmó esto y cómo?": cada firma
+    válida, cada intento fallido y cada vez que se generó un código quedan aquí
+    con hora, IP y navegador. Es lo que hace auditable una firma que no tiene
+    biometría detrás.
+    """
+
+    __tablename__ = "signature_code_events"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    person_id = Column(String(64), nullable=False)
+
+    # 'code_generated' | 'sign_ok' | 'sign_failed' | 'locked'
+    event = Column(String(30), nullable=False)
+
+    response_id = Column(BigInteger, ForeignKey("responses.id", ondelete="SET NULL"), nullable=True)
+    form_design_element_id = Column(String(100), nullable=True)
+    repeater_row_index = Column(Integer, nullable=True)
+
+    acted_by_user_id = Column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    client_ip = Column(String(64), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    detail = Column(Text, nullable=True)
+
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_signature_code_events_person", "person_id", "created_at"),
+        Index("ix_signature_code_events_response", "response_id"),
+    )
+
+
 class TemplateScope(str, enum.Enum):
     private = "private"
     company = "company"

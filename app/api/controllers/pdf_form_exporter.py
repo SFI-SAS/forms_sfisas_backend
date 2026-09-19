@@ -93,6 +93,24 @@ def _block_caption(start: int, end: int, total: int) -> str:
 
 # ── formateadores de tipos de campo ──────────────────────────────────────────
 
+def _fecha_verificacion(iso: str | None) -> str:
+    """"19 de septiembre de 2026, 10:42" a partir del ISO que guarda la firma.
+
+    Si viene vacia o ilegible se devuelve "" y el PDF simplemente no menciona la
+    hora: por un dato de adorno no se deja de emitir el documento.
+    """
+    if not iso:
+        return ""
+    try:
+        from datetime import datetime
+        d = datetime.fromisoformat(str(iso))
+    except (ValueError, TypeError):
+        return ""
+    meses = ("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+             "agosto", "septiembre", "octubre", "noviembre", "diciembre")
+    return f"{d.day} de {meses[d.month - 1]} de {d.year}, {d.hour:02d}:{d.minute:02d}"
+
+
 def _fmt_firm(answer_text: str) -> str:
     """Renderiza firma igual que renderInputFieldResponse caso firm.
 
@@ -112,6 +130,26 @@ def _fmt_firm(answer_text: str) -> str:
             person_id   = inner.get("person_id", "")
         else:
             qr_url = person_name = person_id = ""
+
+        # Firma por codigo: quien no acepta el registro biometrico firma con el
+        # codigo que le llego al correo. No hay QR porque no hay certificado
+        # facial, y el PDF tiene que decirlo: una firma por codigo y una facial
+        # no prueban lo mismo, y este documento es el que se audita.
+        interna = firm.get("firmData") if isinstance(firm.get("firmData"), dict) else firm
+        if isinstance(interna, dict) and interna.get("metodo") == "codigo":
+            nombre = _e(interna.get("person_name") or "Sin nombre")
+            cuando = _fecha_verificacion(interna.get("verificado_en"))
+            return (
+                '<div>'
+                '<span style="font-size:10px;font-weight:600;color:#065F46;background:#D1FAE5;'
+                'padding:2px 7px;border-radius:4px;">&#10003; Firmada con código</span>'
+                '<span style="font-size:11px;color:#374151;">&nbsp;por ' + nombre + '</span>'
+                '<div style="font-size:9px;color:#6B7280;margin-top:4px;">'
+                'Verificada con el código enviado a su correo'
+                + (' el ' + cuando if cuando else '')
+                + '. Sin verificación facial.'
+                '</div></div>'
+            )
 
         if qr_url:
             qr_img = "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=" + _url_quote(qr_url)
@@ -163,6 +201,21 @@ def _fmt_firm_cell(answer_text: str) -> str:
             person_id   = inner.get("person_id", "")
         else:
             qr_url = person_name = person_id = ""
+
+        # Igual que arriba, en version compacta.
+        interna = firm.get("firmData") if isinstance(firm.get("firmData"), dict) else firm
+        if isinstance(interna, dict) and interna.get("metodo") == "codigo":
+            nombre = _e(interna.get("person_name") or "")
+            return (
+                '<div style="text-align:center;padding:2px 0;">'
+                '<span style="font-size:9px;font-weight:600;color:#15803D;background:#F0FDF4;'
+                'padding:1px 5px;border-radius:99px;border:1px solid #BBF7D0;'
+                'display:inline-block;">&#10003; Firmó con código</span>'
+                + (('<div style="font-size:9px;color:#374151;font-weight:500;margin-top:2px;">'
+                    + nombre + '</div>') if nombre else '')
+                + '<div style="font-size:8px;color:#9CA3AF;">Sin verificación facial</div>'
+                '</div>'
+            )
 
         if not qr_url:
             return '<span style="font-size:9px;color:#DC2626;background:#FEF2F2;padding:1px 5px;border-radius:4px;">Firma sin QR</span>'

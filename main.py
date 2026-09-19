@@ -21,7 +21,7 @@ import app.models_audit  # noqa: F401  — registra NotificationSendLog en Base
 from app.api.endpoints import (
     alias, approvers, consultants, download_template, form_alerts, home_dashboard, integrations, list_form, pdf_router, profiles, projects, responses,
     responsibilitytransfer, users, forms, auth, questions, generic_activities, security, question_requests, rut,
-    tokens, support, public_view, external_signoff, edit_requests
+    tokens, support, public_view, external_signoff, edit_requests, signature_codes
 )
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -202,6 +202,9 @@ app.include_router(external_signoff.router, prefix="/external", tags=["Registro 
 # Solicitudes de edicion: un usuario pide permiso al admin para corregir una
 # respuesta suya ya enviada, eligiendo que campos necesita tocar.
 app.include_router(edit_requests.router, prefix="/edit-requests", tags=["Solicitudes de edicion"])
+# Firma por codigo: alternativa para quien no acepta el registro biometrico.
+# No toca el camino facial; convive con el.
+app.include_router(signature_codes.router, prefix="/signature-codes", tags=["Firma por codigo"])
 
 # ========================================
 # CREAR TABLAS

@@ -157,6 +157,57 @@ def _enforce_edit_permission(response: Response, form: Form, current_user: User,
     )
 
 
+def _exigir_comprobante_de_firma_por_codigo(answer, form) -> None:
+    """Una firma hecha con código solo se guarda si el servidor la verificó.
+
+    La firma facial se guarda tal como la manda el cliente (lo marcó la
+    auditoría de julio). Para el camino nuevo eso no basta: si el cliente
+    pudiera decir "ya validé el código", el código no protegería nada. Por eso
+    `POST /signature-codes/verify` devuelve un comprobante firmado con la llave
+    del servidor, y aquí se exige antes de aceptar la answer.
+
+    No toca las firmas faciales ni ninguna otra answer: solo mira las que se
+    declaran a sí mismas como firmadas con código.
+    """
+    texto = getattr(answer, "answer_text", None)
+    if not texto or not isinstance(texto, str) or "firmData" not in texto:
+        return
+
+    try:
+        datos = json.loads(texto)
+    except (json.JSONDecodeError, TypeError):
+        return
+
+    firma = datos.get("firmData") if isinstance(datos, dict) else None
+    if not isinstance(firma, dict) or firma.get("metodo") != "codigo":
+        return
+
+    from app.api.endpoints.signature_codes import comprobante_valido
+
+    # El comprobante llega aparte del texto de la respuesta: es un JWT y
+    # `answer_text` es varchar(255), donde no cabe junto con el resto. Se acepta
+    # tambien dentro del JSON por si algun cliente viejo lo manda asi.
+    comprobante = (
+        getattr(answer, "signature_proof", None)
+        or firma.get("comprobante")
+        or ""
+    )
+
+    if not comprobante_valido(
+        comprobante,
+        person_id=firma.get("person_id") or "",
+        form_id=form.id if form else None,
+        element_id=getattr(answer, "form_design_element_id", None),
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "La firma por codigo no trae un comprobante valido. Vuelva a "
+                "digitar el codigo para firmar este campo."
+            ),
+        )
+
+
 def _id_de_answer_creada(resultado) -> Optional[int]:
     """Saca el id de la answer de lo que devuelve `create_answer_in_db`, que
     cambia de forma según la rama: un dict con `answer_id`, un dict con la lista
@@ -257,6 +308,9 @@ async def create_answer(
                 status_code=404,
                 detail="RelationBitacora not found for this response"
             )
+
+        # Una firma por codigo no se guarda con la palabra del cliente.
+        _exigir_comprobante_de_firma_por_codigo(answer, form)
 
         # Pasar id_relation_bitacora
         creada = await create_answer_in_db(

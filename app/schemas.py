@@ -233,6 +233,11 @@ class PostCreate(BaseModel):
     answer_text: str | None = None
     file_path: str | None = None
     form_design_element_id: Optional[str] = None
+    # Comprobante de una firma por codigo (ver `signature_codes.py`). Viaja
+    # aparte y NO se guarda: solo sirve para que el servidor compruebe, en este
+    # momento, que fue el quien valido el codigo. Ademas no cabria: `answer_text`
+    # es varchar(255) y el comprobante es un JWT.
+    signature_proof: Optional[str] = None
     # Fila del repetidor a la que pertenece la answer. El frontend SIEMPRE los
     # mandó; hasta el 2026-08-12 no estaban declarados aquí y Pydantic los
     # descartaba, así que todo lo diligenciado desde el web quedaba sin
