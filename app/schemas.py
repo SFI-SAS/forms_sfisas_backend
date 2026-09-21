@@ -292,6 +292,15 @@ class UserUpdateInfo(BaseModel):
     telephone: str = Field(..., min_length=7)
 
 
+class QuestionTableRelationUpdate(BaseModel):
+    """Cuerpo del PUT: el question_id va en la ruta, no en el body."""
+    name_table: str
+    related_question_id: Optional[int] = None
+    related_form_id: Optional[int] = None
+    field_name: Optional[str] = None
+    logged_user_part: Optional[str] = None
+
+
 class QuestionTableRelationCreate(BaseModel):
     question_id: int
     name_table: str

@@ -2780,6 +2780,103 @@ def create_question_table_relation_logic(
 
     return new_relation
 
+
+def update_question_table_relation_logic(
+    db: Session,
+    question_id: int,
+    name_table: str,
+    related_question_id: Optional[int] = None,
+    related_form_id: Optional[int] = None,
+    field_name: Optional[str] = None,
+    logged_user_part: Optional[str] = None,
+) -> QuestionTableRelation:
+    """RE-APUNTA la relación de una pregunta (o la crea si no tenía).
+
+    Hasta ahora una relación se creaba UNA vez y quedaba congelada: el POST responde
+    400 si ya existe y no había PUT ni DELETE. Consecuencias reales:
+
+    - "el precio ahora sale de F3 y no de F7" obligaba a borrar el campo y rehacerlo,
+      perdiendo su posición en el diseño y sus respuestas;
+    - un formato reconstruido reusa las preguntas del anterior (el texto de pregunta es
+      único global) y se traía la relación vieja apuntando a un formato ya borrado: el
+      campo quedaba MUDO, sin error visible, y el grupo de autocompletado no se armaba.
+
+    Mismas validaciones que el create (existencia, campos bloqueados, logged_user_part)
+    y las mismas reglas de permiso en el endpoint.
+    """
+    question = db.query(Question).filter(Question.id == question_id).first()
+    if not question:
+        raise HTTPException(status_code=404, detail="Question not found")
+
+    if related_form_id:
+        related_form = db.query(Form).filter(Form.id == related_form_id).first()
+        if not related_form:
+            raise HTTPException(status_code=404, detail="Related form not found")
+
+    if related_question_id:
+        related_question = db.query(Question).filter(Question.id == related_question_id).first()
+        if not related_question:
+            raise HTTPException(status_code=404, detail="Related question not found")
+
+    if field_name and field_name.lower() in _BLOCKED_RELATION_FIELDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Campo '{field_name}' no se puede usar en QuestionTableRelation por motivos de seguridad",
+        )
+
+    if logged_user_part:
+        if name_table != "users":
+            raise HTTPException(
+                status_code=400,
+                detail="logged_user_part solo aplica cuando name_table es 'users'",
+            )
+        _PARTES_USUARIO_LOGUEADO = {
+            "full_name", "first_names", "first_name", "second_name",
+            "first_surname", "second_surname",
+            "num_document", "email",
+        }
+        if logged_user_part not in _PARTES_USUARIO_LOGUEADO:
+            raise HTTPException(
+                status_code=400,
+                detail=f"logged_user_part '{logged_user_part}' no es válido",
+            )
+
+    relation = db.query(QuestionTableRelation).filter(
+        QuestionTableRelation.question_id == question_id
+    ).first()
+
+    if relation is None:
+        return create_question_table_relation_logic(
+            db=db, question_id=question_id, name_table=name_table,
+            related_question_id=related_question_id, related_form_id=related_form_id,
+            field_name=field_name, logged_user_part=logged_user_part,
+        )
+
+    relation.name_table = name_table
+    relation.related_question_id = related_question_id
+    relation.related_form_id = related_form_id
+    relation.field_name = field_name
+    relation.logged_user_part = logged_user_part
+    db.commit()
+    db.refresh(relation)
+    return relation
+
+
+def delete_question_table_relation_logic(db: Session, question_id: int) -> bool:
+    """Quita la relación de una pregunta: el campo vuelve a ser uno normal.
+
+    Devuelve True si había algo que borrar, False si no tenía relación (así el caller
+    puede responder 200 idempotente en vez de 404: el estado deseado ya está)."""
+    relation = db.query(QuestionTableRelation).filter(
+        QuestionTableRelation.question_id == question_id
+    ).first()
+    if relation is None:
+        return False
+    db.delete(relation)
+    db.commit()
+    return True
+
+
 def get_related_or_filtered_answers_with_forms(db: Session, question_id: int):
     """
     Obtiene respuestas dinámicas relacionadas o filtradas para una pregunta,
