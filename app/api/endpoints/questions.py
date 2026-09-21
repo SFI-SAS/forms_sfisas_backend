@@ -1571,10 +1571,30 @@ def get_answers_map_for_serial(
 
     useful = [a for a in answers if is_useful(a)]
 
+    # ── Apartar lo que viene de un SUB-repetidor ─────────────────────────────
+    # Sus answers son las unicas que traen `parent_repeated_id`: lo escribe el
+    # diligenciar al serializar el sub-repetidor, con el id de la fila del padre
+    # de la que cuelgan. Si se dejan mezcladas, el conteo de abajo las toma por
+    # filas del repetidor padre y el autollenado sale desalineado (el padre se
+    # queda con las filas del hijo y el hijo, vacio).
+    #
+    # Para un envio SIN sub-repetidores esta lista queda vacia y todo lo que
+    # sigue se comporta exactamente igual que antes.
+    def is_sub(a) -> bool:
+        v = getattr(a, "parent_repeated_id", None)
+        return v is not None and str(v).strip() not in ("", "null", "None")
+
+    from collections import Counter
+    # Conteo sobre TODO el envio, antes de apartar nada: hace falta mas abajo
+    # para no cambiarle el trato a las preguntas que solo aparecen una vez.
+    conteo_total = Counter(a.question_id for a in useful)
+
+    sub_answers = [a for a in useful if is_sub(a)]
+    useful = [a for a in useful if not is_sub(a)]
+
     # ── Detectar campos de repetidor ─────────────────────────────────────────
     # Un question_id que aparece MÁS DE UNA VEZ en el mismo response
     # necesariamente proviene de filas de un repetidor.
-    from collections import Counter
     q_count = Counter(a.question_id for a in useful)
     repeater_qids = {qid for qid, cnt in q_count.items() if cnt > 1}
 
@@ -1583,6 +1603,15 @@ def get_answers_map_for_serial(
 
     # Mapa plano: question_id → answer_text  (solo campos no-repetidor)
     source_map = {str(a.question_id): a.answer_text for a in flat_answers}
+
+    # Compatibilidad: una pregunta que aparece UNA sola vez en todo el envio se
+    # trataba como campo suelto aunque esa unica answer viniera de un
+    # sub-repetidor, y asi llenaba un campo suelto del formato destino. Apartar
+    # el sub-repetidor se la habria quitado. Se conserva, y ademas sigue yendo
+    # en su bloque de filas: quien la use como columna la recibe por ahi.
+    for a in sub_answers:
+        if conteo_total.get(a.question_id) == 1:
+            source_map.setdefault(str(a.question_id), a.answer_text)
 
     # ── Reconstruir filas del repetidor sin depender de repeater_row_index ───
     # Para cada question_id repetido, ordenar sus answers por PK (orden de inserción).
@@ -1609,9 +1638,90 @@ def get_answers_map_for_serial(
         {"__repeater__": repeater_rows_raw} if repeater_rows_raw else {}
     )
 
+    # ── Filas del SUB-repetidor, agrupadas por la fila del padre ─────────────
+    # `parent_repeated_id` identifica la FILA del padre y lo comparten todas las
+    # filas del hijo que cuelgan de ella. Ese id no aparece en las answers del
+    # padre, asi que el ORDEN de los grupos se resuelve por la PK mas baja de
+    # cada uno: las answers se insertan fila por fila, de modo que ese es el
+    # orden en que se diligenciaron. Es el mismo criterio que ya usa el resto
+    # del endpoint para ordenar filas.
+    #
+    # El resultado es una lista por CADA fila del padre:
+    #   sub_rows_raw[i] = [ {question_id: valor}, ... ]  ← filas del hijo de la
+    #                                                      fila i del padre
+    def _filas_del_grupo(lista: list) -> list:
+        """Filas de un grupo del hijo.
+
+        Manda `repeater_row_index` cuando lo traen TODAS las answers del grupo;
+        si le falta a alguna (respuestas viejas, que es el motivo por el que
+        este endpoint ordena por PK), se cae al orden de insercion por pregunta.
+        """
+        if lista and all(getattr(a, "repeater_row_index", None) is not None for a in lista):
+            por_indice: dict = defaultdict(dict)
+            for a in lista:
+                por_indice[int(a.repeater_row_index)][str(a.question_id)] = a.answer_text
+            return [por_indice[i] for i in sorted(por_indice)]
+
+        por_q: dict = defaultdict(list)
+        for a in lista:
+            por_q[a.question_id].append(a)
+        for qid in por_q:
+            por_q[qid].sort(key=get_pk)
+        total = max((len(v) for v in por_q.values()), default=0)
+        filas = []
+        for i in range(total):
+            fila = {str(q): l[i].answer_text for q, l in por_q.items() if i < len(l)}
+            if fila:
+                filas.append(fila)
+        return filas
+
+    def _id_del_sub(a) -> str:
+        """Id del sub-repetidor en el diseño de ORIGEN.
+
+        El diligenciar guarda `repeated_id = "<id del sub>-<id de la fila del
+        padre>"`, asi que se le quita el sufijo. Si no encaja —otra convencion,
+        p. ej. la del movil— vale el `repeated_id` entero: lo unico que importa
+        aqui es distinguir un sub-repetidor de otro.
+        """
+        rep = str(getattr(a, "repeated_id", "") or "")
+        padre = str(a.parent_repeated_id or "")
+        if padre and rep.endswith("-" + padre):
+            return rep[: -(len(padre) + 1)]
+        return rep
+
+    # Un envio puede traer VARIOS sub-repetidores y el id de la fila del padre
+    # NO es unico entre ellos: en produccion se ve `row-0` repetido en el mismo
+    # envio con dos sub-repetidores distintos. Por eso se agrupa por
+    # (sub-repetidor, fila del padre) y cada sub-repetidor ordena SUS grupos por
+    # su cuenta; despues se juntan por posicion. Asi uno no le corre las filas
+    # al otro.
+    grupos: dict = defaultdict(list)
+    for a in sub_answers:
+        grupos[(_id_del_sub(a), str(a.parent_repeated_id))].append(a)
+
+    por_sub: dict = defaultdict(list)
+    for (sub_id, _fila_padre), lista in grupos.items():
+        por_sub[sub_id].append(lista)
+    for sub_id in por_sub:
+        por_sub[sub_id].sort(key=lambda l: min(get_pk(a) for a in l))
+
+    # Bloque i = lo que los sub-repetidores aportan a la fila i del padre. Van
+    # juntos porque el formato DESTINO puede tener otros ids de diseño; quien
+    # los recibe reparte cada fila por sus columnas.
+    total_bloques = max((len(v) for v in por_sub.values()), default=0)
+    sub_rows_raw: list = []
+    for i in range(total_bloques):
+        bloque: list = []
+        for sub_id in sorted(por_sub):
+            if i < len(por_sub[sub_id]):
+                bloque.extend(_filas_del_grupo(por_sub[sub_id][i]))
+        sub_rows_raw.append(bloque)
+
     # ── Resolver hacia IDs del formulario destino ─────────────────────────────
     local_map: dict = {}
     repeater_rows_local: list = []
+    # Una lista de filas del hijo POR CADA fila del padre (mismo indice).
+    subrepeater_rows_local: list = []
 
     if target_form_id:
         form_q_ids = [
@@ -1642,7 +1752,7 @@ def get_answers_map_for_serial(
                 local_map[src_qid] = val
 
         # Filas del repetidor resueltas
-        for source_row in repeater_rows_raw:
+        def _a_ids_locales(source_row: dict) -> dict:
             local_row: dict = {}
             for src_qid, val in source_row.items():
                 local_qid = rel_map.get(src_qid)
@@ -1650,8 +1760,20 @@ def get_answers_map_for_serial(
                     local_row[local_qid] = val
                 elif src_qid in form_q_ids_set:
                     local_row[src_qid] = val
+            return local_row
+
+        for source_row in repeater_rows_raw:
+            local_row = _a_ids_locales(source_row)
             if local_row:
                 repeater_rows_local.append(local_row)
+
+        # Filas del sub-repetidor: misma traduccion, conservando el anidado.
+        # El bloque vacio SI se conserva: la posicion en la lista es la fila del
+        # padre a la que pertenece, y saltarsela correria todas las de despues.
+        for filas_del_padre in sub_rows_raw:
+            subrepeater_rows_local.append(
+                [fila for fila in map(_a_ids_locales, filas_del_padre) if fila]
+            )
 
     return {
         "response_id": response_id,
@@ -1659,6 +1781,9 @@ def get_answers_map_for_serial(
         "answers_by_local_question_id": local_map,
         "repeater_rows_local": repeater_rows_local,
         "repeater_rows_source": {str(k): v for k, v in repeater_rows_source.items()},
+        # Aditivo: un cliente viejo que no lo lea se comporta como antes.
+        "subrepeater_rows_local": subrepeater_rows_local,
+        "subrepeater_rows_source": sub_rows_raw,
     }
     
     
