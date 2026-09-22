@@ -1288,7 +1288,9 @@ class FormPdfExporter:
             # Sin flex (ver _fmt_firm_cell): apilar en bloque y separar con
             # margen es equivalente aqui, y no pasa por el layout flex de
             # WeasyPrint, que se cae cuando un hijo no alcanza a caber.
-            return '<div style="margin-bottom:16px;">{i}</div>'.format(i=inner)
+            # Sin `margin-bottom` propio: lo pone el contenedor de fuera. Los
+            # hijos entre si ya se separan con `spacing`, arriba.
+            return '<div>{i}</div>'.format(i=inner)
 
         if ftype == "horizontalLayout":
             if not self._should_render(field):
@@ -1310,7 +1312,9 @@ class FormPdfExporter:
             return (
                 '<div style="'
                 'margin-left:-{h}px;margin-right:-{h}px;'
-                'width:calc(100% + {g}px);box-sizing:border-box;margin-bottom:16px;">{ch}</div>'
+                # Sin `margin-bottom`: lo pone el contenedor de fuera. Con los
+                # dos, entre dos layouts quedaba el doble de aire del debido.
+                'width:calc(100% + {g}px);box-sizing:border-box;">{ch}</div>'
             ).format(h=gap / 2, g=gap, ch=ch_html)
 
         if ftype in ("label", "helpText", "divider", "image", "button"):
@@ -1449,9 +1453,11 @@ body {
 .field-row {
     display: block;
     width: 100%;
-    /* Era 16px. Se repite por CADA campo, así que es lo que más hojas
-       gastaba: en un formato de 20 campos son ~140px recuperados. */
-    margin-bottom: 9px;
+    /* Sin separación propia: el ritmo vertical lo marca UN solo sitio, el
+       contenedor de `_render_all_fields`. Antes se sumaban tres márgenes
+       —el del campo, el del layout y el del contenedor—, y entre dos
+       layouts horizontales quedaban ~35px de aire. */
+    margin-bottom: 0;
 }
 .field-label {
     display: block;
