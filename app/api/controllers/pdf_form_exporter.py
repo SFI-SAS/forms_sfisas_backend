@@ -904,7 +904,7 @@ class FormPdfExporter:
                  "vertical-align:{cva};border:{bd};font-size:11px;").format(
             cbg=ts.get("cellBackgroundColor", "#ffffff"),
             ctc=ts.get("cellTextColor", "#374151"),
-            cta=ts.get("cellTextAlign", "left"),
+            cta=ts.get("cellTextAlign", "center"),
             cp=ts.get("cellPadding", "8px"),
             cva=ts.get("cellVerticalAlign", "middle"),
             bd=bd,
@@ -944,7 +944,7 @@ class FormPdfExporter:
                     ).format(
                         cbg=cbg,
                         ctc=ts.get("cellTextColor", "#374151"),
-                        cta=ts.get("cellTextAlign", "left"),
+                        cta=ts.get("cellTextAlign", "center"),
                         cp=ts.get("cellPadding", "8px"),
                         cva=ts.get("cellVerticalAlign", "middle"),
                         bc=ts.get("borderColor", "#d1d5db"),
@@ -1178,7 +1178,7 @@ class FormPdfExporter:
                  "text-align:{ta};padding:{p};border:{bd};font-size:10px;").format(
             b=sts.get("cellBackgroundColor", "#ffffff"),
             c=sts.get("cellTextColor", "#374151"),
-            ta=sts.get("cellTextAlign", "left"),
+            ta=sts.get("cellTextAlign", "center"),
             p=sts.get("cellPadding", "6px 8px"),
             bd=sbd,
         )
@@ -1205,7 +1205,7 @@ class FormPdfExporter:
         ).format(
             b=scbg,
             c=sts.get("cellTextColor", "#374151"),
-            ta=sts.get("cellTextAlign", "left"),
+            ta=sts.get("cellTextAlign", "center"),
             p=sts.get("cellPadding", "6px 10px"),
             bc=sbc,
         )
@@ -1467,6 +1467,9 @@ body {
 }
 .field-value {
     display: block;
+    /* La respuesta va CENTRADA en su recuadro. Antes heredaba la alineación
+       del documento y quedaba pegada a la izquierda. */
+    text-align: center;
     padding: 12px;             /* p-3 */
     font-size: 11px;
     color: #1f2937;            /* text-gray-800 */
