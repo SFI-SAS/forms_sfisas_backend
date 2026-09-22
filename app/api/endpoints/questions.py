@@ -18,8 +18,8 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from app.database import get_db
 from app.models import Answer, Response, Form, FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationQuestionRule, User, UserType
-from app.crud import  create_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_answers_by_question_id, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers_optimized, get_related_or_filtered_answers_with_forms, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
-from app.schemas import AnswerByQuestionResponse, AnswerSchema, DetectSelectRelationsRequest, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionUpdatePayload, QuestionWithCategory, RelationQuestionRuleCreate, RelationQuestionRuleResponse, UpdateQuestionCategory
+from app.crud import  create_question_table_relation_logic, update_question_table_relation_logic, delete_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_answers_by_question_id, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers_optimized, get_related_or_filtered_answers_with_forms, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
+from app.schemas import AnswerByQuestionResponse, AnswerSchema, DetectSelectRelationsRequest, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionTableRelationUpdate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionUpdatePayload, QuestionWithCategory, RelationQuestionRuleCreate, RelationQuestionRuleResponse, UpdateQuestionCategory
 from app.core.security import get_current_user, require_roles
 
 router = APIRouter()
@@ -714,6 +714,85 @@ def create_question_table_relation(
             "logged_user_part": relation.logged_user_part
         }
     }
+
+
+@router.put("/question-table-relation/{question_id}")
+def update_question_table_relation(
+    question_id: int,
+    relation_data: QuestionTableRelationUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    RE-APUNTA la lista de una pregunta a otro origen (o la crea si no tenía).
+
+    Hasta ahora la relación se creaba UNA vez y quedaba congelada: el POST responde
+    `400 Relation already exists` y no había forma de cambiarla. Eso obligaba a borrar
+    el campo y rehacerlo —perdiendo su posición en el diseño y sus respuestas— cada vez
+    que el origen cambiaba ("el precio ahora sale de F3 y no de F7"), y dejaba mudos los
+    campos de un formato reconstruido, que reusa las preguntas del anterior con su
+    relación vieja apuntando a un formato ya borrado.
+
+    Es UPSERT: si la pregunta no tenía relación, la crea. Idempotente.
+
+    Permisos: admin o creator (igual que el POST — muta el diseño del formato).
+    """
+    if current_user.user_type not in (UserType.admin, UserType.creator):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo admin o creator pueden modificar relaciones de tabla",
+        )
+    relation = update_question_table_relation_logic(
+        db=db,
+        question_id=question_id,
+        name_table=relation_data.name_table,
+        related_question_id=relation_data.related_question_id,
+        related_form_id=relation_data.related_form_id,
+        field_name=relation_data.field_name,
+        logged_user_part=relation_data.logged_user_part,
+    )
+    return {
+        "message": "Relation updated successfully",
+        "data": {
+            "id": relation.id,
+            "question_id": relation.question_id,
+            "related_question_id": relation.related_question_id,
+            "related_form_id": relation.related_form_id,
+            "name_table": relation.name_table,
+            "field_name": relation.field_name,
+            "logged_user_part": relation.logged_user_part,
+        },
+    }
+
+
+@router.delete("/question-table-relation/{question_id}")
+def delete_question_table_relation(
+    question_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Quita la relación de una pregunta: el campo deja de listar y vuelve a ser normal.
+
+    Idempotente: si la pregunta no tenía relación responde 200 con `deleted: false`
+    (el estado deseado ya está) en vez de 404. Sirve además para limpiar relaciones
+    que quedaron apuntando a formatos borrados.
+
+    Permisos: admin o creator.
+    """
+    if current_user.user_type not in (UserType.admin, UserType.creator):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo admin o creator pueden borrar relaciones de tabla",
+        )
+    borrada = delete_question_table_relation_logic(db=db, question_id=question_id)
+    return {
+        "message": ("Relation deleted successfully" if borrada
+                    else "La pregunta no tenía relación; no hay nada que borrar"),
+        "deleted": borrada,
+        "question_id": question_id,
+    }
+
 
 @router.get("/question-table-relation/answers/all")
 def get_all_related_answers(
