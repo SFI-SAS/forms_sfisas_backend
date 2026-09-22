@@ -1449,16 +1449,18 @@ body {
 .field-row {
     display: block;
     width: 100%;
-    margin-bottom: 16px;       /* mb-4 */
+    /* Era 16px. Se repite por CADA campo, así que es lo que más hojas
+       gastaba: en un formato de 20 campos son ~140px recuperados. */
+    margin-bottom: 9px;
 }
 .field-label {
     display: block;
     font-weight: 500;          /* font-medium */
     font-size: 11px;           /* label-text */
     color: #1f2937;            /* gray-800 — default Tailwind label color */
-    margin-bottom: 4px;
+    margin-bottom: 2px;
     word-break: break-word;
-    line-height: 1.4;
+    line-height: 1.35;
 }
 .field-label .req {
     color: #ef4444;            /* text-red-500, igual que en FormResponseRenderer */
@@ -1470,14 +1472,14 @@ body {
     /* La respuesta va CENTRADA en su recuadro. Antes heredaba la alineación
        del documento y quedaba pegada a la izquierda. */
     text-align: center;
-    padding: 12px;             /* p-3 */
+    padding: 7px 10px;         /* era 12px por los cuatro lados */
     font-size: 11px;
     color: #1f2937;            /* text-gray-800 */
     background: #f9fafb;       /* bg-gray-50 — igual al UI */
     border: 1px solid #e5e7eb; /* border-gray-200 — igual al UI */
     border-radius: 6px;        /* rounded-md */
-    min-height: 30px;
-    line-height: 1.5;
+    min-height: 20px;
+    line-height: 1.35;
     word-break: break-word;
 }
 .field-value > * { vertical-align: middle; }
@@ -1512,7 +1514,7 @@ body {
 
 /* ── Repeater wrapper ── */
 .repeater-wrap {
-    margin-bottom: 16px;
+    margin-bottom: 10px;
     border: 1px solid #cbd5e1;
     border-radius: 8px;
     overflow: hidden;
@@ -1618,7 +1620,9 @@ body {
    heredan ese texto en su margen superior automáticamente. */
 @page {
     size: letter """ + self.orientation + """;
-    margin: 20mm 14mm 12mm 14mm;
+    /* Apretado para que quepa más por hoja. Arriba tiene que seguir
+       cabiendo el encabezado que se repite (8.5px + 6mm de padding). */
+    margin: 14mm 12mm 9mm 12mm;
     @top-left {
         content: string(doc-title) "   •   " string(doc-filler);
         font-size: 8.5px;
@@ -1629,7 +1633,7 @@ body {
 @page :first {
     /* La hoja 1 ya muestra el título grande en el cuerpo — repetirlo chiquito
        arriba sería redundante, así que aquí no reserva ese espacio extra. */
-    margin-top: 12mm;
+    margin-top: 8mm;
 }
 @page :first {
     @top-left { content: normal; }
@@ -1646,7 +1650,7 @@ img { max-width: 100%; }
         title_html = ""
         if self.form_title:
             title_html = (
-                '<div style="padding: 18px 18px 6px 18px;">'
+                '<div style="padding: 10px 14px 4px 14px;">'
                 '<h1 style="string-set: doc-title content(); font-size: 22px; font-weight: 700; color: #0f172a;'
                 ' margin: 0; line-height: 1.25; letter-spacing: -0.01em;">'
                 + _e(self.form_title) +
