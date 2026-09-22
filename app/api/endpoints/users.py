@@ -116,6 +116,11 @@ def get_user_endpoint(
 @router.get("/{form_id}/questions-answers/pdf/user")
 def download_user_responses_pdf(
     form_id: int,
+    orientation: str = Query(
+        "landscape",
+        pattern="^(landscape|portrait)$",
+        description="Vertical u horizontal, igual que en el PDF de una respuesta.",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -205,6 +210,7 @@ def download_user_responses_pdf(
         style_config=style_config,
         form_title=form.title,
         response_id=latest.id,
+        orientation=orientation,
     )
 
     filename = f"Formato_{form.title.replace(' ', '_')}_{form_id}.pdf"
@@ -224,6 +230,11 @@ def download_user_responses_pdf(
 def download_user_responses_pdf_by_admin(
     form_id: int,
     id_user: int,
+    orientation: str = Query(
+        "landscape",
+        pattern="^(landscape|portrait)$",
+        description="Vertical u horizontal, igual que en el PDF de una respuesta.",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -311,6 +322,7 @@ def download_user_responses_pdf_by_admin(
         style_config=style_config,
         form_title=form.title,
         response_id=latest.id,
+        orientation=orientation,
     )
 
     safe_name = "".join(c for c in user_name if c.isalnum() or c in " _-")
@@ -329,6 +341,11 @@ def download_user_responses_pdf_by_admin(
 @router.get("/{form_id}/questions-answers/pdf/all-users")
 def download_all_responses_pdf(
     form_id: int,
+    orientation: str = Query(
+        "landscape",
+        pattern="^(landscape|portrait)$",
+        description="Vertical u horizontal, igual que en el PDF de una respuesta.",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
@@ -394,6 +411,7 @@ def download_all_responses_pdf(
             style_config=style_config,
             form_title=form.title,
             response_id=resp.id,
+            orientation=orientation,
         )
 
         import html as _html_mod
