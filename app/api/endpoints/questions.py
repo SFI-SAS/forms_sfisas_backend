@@ -4,6 +4,7 @@
 
 import logging
 import unicodedata
+import re
 from collections import defaultdict
 import hashlib
 from datetime import datetime
@@ -1613,26 +1614,47 @@ def get_answers_map_for_serial(
         if conteo_total.get(a.question_id) == 1:
             source_map.setdefault(str(a.question_id), a.answer_text)
 
-    # ── Reconstruir filas del repetidor sin depender de repeater_row_index ───
-    # Para cada question_id repetido, ordenar sus answers por PK (orden de inserción).
-    # La i-ésima answer de cada campo corresponde a la fila i del repetidor.
-    per_q: dict = defaultdict(list)
-    for a in repeater_answers:
-        per_q[a.question_id].append(a)
-
-    for qid in per_q:
-        per_q[qid].sort(key=get_pk)
-
-    num_rows = max((len(v) for v in per_q.values()), default=0)
-
+    # ── Reconstruir las filas del repetidor ─────────────────────────────────
+    #
+    # Manda `repeater_row_index` cuando lo traen TODAS las answers del envio,
+    # porque es el unico dato fiable: el diligenciar manda las answers EN
+    # PARALELO (`responses.map(async …)` en ListForms), asi que el orden en que
+    # el servidor las inserta —y por tanto el de las PK— no es el de las filas.
+    # Ordenar por PK devolvia las filas barajadas.
+    #
+    # Si a alguna le falta el indice (respuestas viejas, de antes de que se
+    # guardara), se cae al orden de insercion, que es como funcionaba antes.
+    # Asi los envios antiguos siguen comportandose igual.
     repeater_rows_raw: list = []
-    for row_idx in range(num_rows):
-        row: dict = {}
-        for qid, ans_list in per_q.items():
-            if row_idx < len(ans_list):
-                row[str(qid)] = ans_list[row_idx].answer_text
-        if row:
-            repeater_rows_raw.append(row)
+
+    todas_con_indice = bool(repeater_answers) and all(
+        getattr(a, "repeater_row_index", None) is not None for a in repeater_answers
+    )
+
+    if todas_con_indice:
+        por_fila: dict = defaultdict(dict)
+        for a in repeater_answers:
+            por_fila[int(a.repeater_row_index)][str(a.question_id)] = a.answer_text
+        repeater_rows_raw = [por_fila[i] for i in sorted(por_fila) if por_fila[i]]
+    else:
+        # Para cada question_id repetido, ordenar sus answers por PK (orden de
+        # insercion). La i-esima answer de cada campo es la fila i.
+        per_q: dict = defaultdict(list)
+        for a in repeater_answers:
+            per_q[a.question_id].append(a)
+
+        for qid in per_q:
+            per_q[qid].sort(key=get_pk)
+
+        num_rows = max((len(v) for v in per_q.values()), default=0)
+
+        for row_idx in range(num_rows):
+            row: dict = {}
+            for qid, ans_list in per_q.items():
+                if row_idx < len(ans_list):
+                    row[str(qid)] = ans_list[row_idx].answer_text
+            if row:
+                repeater_rows_raw.append(row)
 
     repeater_rows_source = (
         {"__repeater__": repeater_rows_raw} if repeater_rows_raw else {}
@@ -1699,11 +1721,29 @@ def get_answers_map_for_serial(
     for a in sub_answers:
         grupos[(_id_del_sub(a), str(a.parent_repeated_id))].append(a)
 
+    def _indice_de_la_fila_padre(clave: str):
+        """Numero de fila que lleva dentro el id de la fila del padre.
+
+        El diligenciar las nombra `row-0`, `row-1-<timestamp>`, `row-11-<ts>`…
+        asi que el numero de delante ES la fila. Vale mas que el orden de
+        insercion: las answers se mandan EN PARALELO y las PK salen barajadas.
+        Devuelve None si el id no sigue ese patron (otra convencion).
+        """
+        m = re.match(r"^row-(\d+)", str(clave or ""))
+        return int(m.group(1)) if m else None
+
     por_sub: dict = defaultdict(list)
-    for (sub_id, _fila_padre), lista in grupos.items():
-        por_sub[sub_id].append(lista)
+    for (sub_id, fila_padre), lista in grupos.items():
+        por_sub[sub_id].append((fila_padre, lista))
+
     for sub_id in por_sub:
-        por_sub[sub_id].sort(key=lambda l: min(get_pk(a) for a in l))
+        entradas = por_sub[sub_id]
+        indices = [_indice_de_la_fila_padre(k) for k, _ in entradas]
+        if all(i is not None for i in indices):
+            entradas.sort(key=lambda kv: _indice_de_la_fila_padre(kv[0]))
+        else:
+            entradas.sort(key=lambda kv: min(get_pk(a) for a in kv[1]))
+        por_sub[sub_id] = [lista for _clave, lista in entradas]
 
     # Bloque i = lo que los sub-repetidores aportan a la fila i del padre. Van
     # juntos porque el formato DESTINO puede tener otros ids de diseño; quien
