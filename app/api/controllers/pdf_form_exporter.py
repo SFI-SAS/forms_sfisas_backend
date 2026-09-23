@@ -77,6 +77,25 @@ def _split_columns(n_cols: int, max_per_block: int) -> List[tuple]:
     return out
 
 
+def _ancho_de_columna(col: dict, columnas: list) -> str:
+    """Ancho de una columna del repetidor, en % del bloque.
+
+    Se reparte segun el `space` que tiene cada campo en el diseno (la rejilla de
+    12 del disenador), que es lo mismo que mira el repetidor al diligenciar.
+    Sin esto el PDF no ponia ningun ancho y WeasyPrint los repartia por
+    contenido: las columnas salian de otro tamano que en pantalla.
+    """
+    def espacio(c: dict) -> int:
+        try:
+            v = int((c.get("props") or {}).get("space") or 0)
+        except Exception:
+            v = 0
+        return min(max(v, 1), 12)
+
+    total = sum(espacio(c) for c in columnas) or 1
+    return "width:{:.4f}%;".format(espacio(col) / total * 100)
+
+
 def _density(n_cols: int, base_font: float = 10.0) -> str:
     """Aprieta letra y padding cuando el bloque lleva muchas columnas."""
     if n_cols <= 6:
@@ -295,6 +314,49 @@ def _formato_numerico(props: dict) -> str:
     return "currency" if props.get("peso") else "none"
 
 
+def _numero_desde_texto(texto: str):
+    """Texto de un campo numerico -> numero, con la convencion del sistema.
+
+    Traduccion de `parseNumeroFormateado` (src/lib/numberFormat.ts). Hace falta
+    porque el valor se guarda YA FORMATEADO y el PDF lo volvia a leer con
+    `float()`:
+
+      · "58.412"        -> float da 58.412 y con 0 decimales salia "58".
+      · "COP $ 58.412"  -> float fallaba y el texto pasaba TAL CUAL, asi que un
+                           campo configurado como "separador de miles" seguia
+                           mostrando el "COP $" de cuando fue moneda.
+
+    Reglas: si hay coma, la coma es el decimal y los puntos son miles; sin coma,
+    los puntos son miles solo si separan grupos de TRES digitos; si no, el punto
+    se respeta como decimal. Devuelve None si no es un numero.
+    """
+    import re as _re
+    limpio = str(texto or "").strip()
+    if not limpio:
+        return None
+
+    limpio = _re.sub(r"[A-Z]{3}", "", limpio)
+    limpio = _re.sub(r"[$€£¥₹]", "", limpio)
+    limpio = _re.sub(r"\s", "", limpio)
+    if not limpio:
+        return None
+
+    negativo = limpio.startswith("-")
+    if negativo:
+        limpio = limpio[1:]
+
+    if "," in limpio:
+        limpio = limpio.replace(".", "").replace(",", ".")
+    elif _re.fullmatch(r"\d{1,3}(\.\d{3})+", limpio):
+        limpio = limpio.replace(".", "")
+
+    try:
+        valor = float(limpio)
+    except Exception:
+        return None
+    return -valor if negativo else valor
+
+
 def _fmt_number(answer_text: str, props: dict) -> str:
     """Formato de los campos numéricos.
 
@@ -312,9 +374,8 @@ def _fmt_number(answer_text: str, props: dict) -> str:
     if formato == "none":
         return _e(answer_text)
 
-    try:
-        numero = float(str(answer_text).strip())
-    except Exception:
+    numero = _numero_desde_texto(answer_text)
+    if numero is None:
         # Un resultado en formato hora (08:30) o fecha pasa intacto.
         return _e(answer_text)
 
@@ -1111,7 +1172,7 @@ class FormPdfExporter:
                 ths = ('<th style="' + num_th_s + dens + '">#</th>') if multi else ""
                 ths += "".join(
                     '<th style="{s}">{lbl}{req}</th>'.format(
-                        s=th_s + dens,
+                        s=th_s + dens + _ancho_de_columna(c, cols),
                         lbl=_e((c.get("props") or {}).get("label") or "Campo"),
                         req=('<span style="color:#ef4444;margin-left:3px;">*</span>' if (c.get("props") or {}).get("required") else ""),
                     )
@@ -1349,7 +1410,7 @@ class FormPdfExporter:
 
             ths = ('<th style="' + sth_s + dens + 'width:20px;text-align:center;">#</th>') if multi else ""
             ths += "".join(
-                '<th style="' + sth_s + dens + '">'
+                '<th style="' + sth_s + dens + _ancho_de_columna(c, cols) + '">'
                 + _e((c.get("props") or {}).get("label") or "Campo") + '</th>'
                 for c in cols
             )

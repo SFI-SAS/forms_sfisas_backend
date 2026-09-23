@@ -116,15 +116,115 @@ def _fmt_checkbox_text(answer_text: str) -> str:
     return str(answer_text)
 
 
-def _fmt_number_text(answer_text: str, props: dict) -> str:
+# Formato numerico: MISMA regla que el PDF y que el frontend
+# (src/lib/numberFormat.ts). Antes esto tenia su propia version, con
+# `currencyPrefix`, dos decimales fijos y separador ingles.
+# Símbolos de moneda — mismos que `src/lib/numberFormat.ts` del frontend.
+_SIMBOLOS_MONEDA = {
+    "COP": "$", "USD": "$", "EUR": "€", "GBP": "£", "MXN": "$", "ARS": "$",
+    "BRL": "R$", "CLP": "$", "PEN": "S/", "JPY": "¥", "CNY": "¥", "INR": "₹",
+    "CAD": "$", "AUD": "$", "CHF": "Fr",
+}
+
+
+def _formato_numerico(props: dict) -> str:
+    """'none' | 'thousands' | 'currency', contando la marca antigua `peso`."""
+    props = props or {}
+    formato = props.get("numberFormat")
+    if formato in ("none", "thousands", "currency"):
+        return formato
+    return "currency" if props.get("peso") else "none"
+
+
+def _numero_desde_texto(texto: str):
+    """Texto de un campo numerico -> numero, con la convencion del sistema.
+
+    Traduccion de `parseNumeroFormateado` (src/lib/numberFormat.ts). Hace falta
+    porque el valor se guarda YA FORMATEADO y el PDF lo volvia a leer con
+    `float()`:
+
+      · "58.412"        -> float da 58.412 y con 0 decimales salia "58".
+      · "COP $ 58.412"  -> float fallaba y el texto pasaba TAL CUAL, asi que un
+                           campo configurado como "separador de miles" seguia
+                           mostrando el "COP $" de cuando fue moneda.
+
+    Reglas: si hay coma, la coma es el decimal y los puntos son miles; sin coma,
+    los puntos son miles solo si separan grupos de TRES digitos; si no, el punto
+    se respeta como decimal. Devuelve None si no es un numero.
+    """
+    import re as _re
+    limpio = str(texto or "").strip()
+    if not limpio:
+        return None
+
+    limpio = _re.sub(r"[A-Z]{3}", "", limpio)
+    limpio = _re.sub(r"[$€£¥₹]", "", limpio)
+    limpio = _re.sub(r"\s", "", limpio)
+    if not limpio:
+        return None
+
+    negativo = limpio.startswith("-")
+    if negativo:
+        limpio = limpio[1:]
+
+    if "," in limpio:
+        limpio = limpio.replace(".", "").replace(",", ".")
+    elif _re.fullmatch(r"\d{1,3}(\.\d{3})+", limpio):
+        limpio = limpio.replace(".", "")
+
     try:
-        num      = float(answer_text)
-        prefix   = str(props.get("currencyPrefix") or "")
-        suffix   = str(props.get("currencySuffix") or "")
-        decimals = int(props.get("decimalPlaces") or 2)
-        return prefix + "{:,.{d}f}".format(num, d=decimals) + suffix
+        valor = float(limpio)
     except Exception:
+        return None
+    return -valor if negativo else valor
+
+
+def _fmt_number_text(answer_text: str, props: dict) -> str:
+    """Formato de los campos numéricos.
+
+    Traducción EXACTA de `formatNumberValue` (src/lib/numberFormat.ts), que es
+    lo que se ve al consultar en pantalla. Antes esto iba por su cuenta: metía
+    siempre `currencyPrefix`/`currencySuffix`, dos decimales fijos y el
+    separador inglés (1,234.00), así que un campo con "separador de miles"
+    salía en el PDF como si fuera moneda y con decimales que nadie pidió.
+
+    Convención del sistema: punto para los miles, coma para los decimales, y la
+    moneda como "COP $ 1.234.567".
+    """
+    props = props or {}
+    formato = _formato_numerico(props)
+    if formato == "none":
         return str(answer_text)
+
+    numero = _numero_desde_texto(answer_text)
+    if numero is None:
+        # Un resultado en formato hora (08:30) o fecha pasa intacto.
+        return str(answer_text)
+
+    crudos = props.get("decimals")
+    decimales = min(6, int(crudos)) if isinstance(crudos, (int, float)) and crudos >= 0 else 0
+
+    negativo = numero < 0
+    # ROUND_HALF_UP para empatar con el navegador: Python redondea 1234.5 a
+    # 1234 (al par) y `toFixed` de JS lo sube a 1235. Sin esto, el mismo dato
+    # salia distinto en pantalla y en el PDF.
+    from decimal import Decimal, ROUND_HALF_UP
+    cuantia = Decimal(1).scaleb(-decimales) if decimales else Decimal(1)
+    redondeado = Decimal(str(abs(numero))).quantize(cuantia, rounding=ROUND_HALF_UP)
+    entero_str, _, dec_str = "{:.{d}f}".format(redondeado, d=decimales).partition(".")
+    # Punto como separador de miles.
+    con_miles = "{:,}".format(int(entero_str)).replace(",", ".")
+    cuerpo = (con_miles + "," + dec_str) if dec_str else con_miles
+    if negativo:
+        cuerpo = "-" + cuerpo
+
+    if formato == "currency":
+        codigo = str(props.get("currency") or "COP")
+        simbolo = _SIMBOLOS_MONEDA.get(codigo, "$")
+        return str("{c} {s} {v}".format(c=codigo, s=simbolo, v=cuerpo))
+    return str(cuerpo)
+
+
 
 
 def _fmt_date_text(answer_text: str) -> str:
