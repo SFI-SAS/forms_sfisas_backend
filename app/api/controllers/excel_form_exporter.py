@@ -146,8 +146,34 @@ def _fmt_datetime_text(answer_text: str) -> str:
         return str(answer_text)
 
 
-def _cell_value_text(cell_data: Any) -> str:
-    """Texto plano para celdas de repeater (renderRepeaterCell)."""
+def _cell_value_text(cell_data: Any, tipo_columna: str = "") -> str:
+    """Texto plano para celdas de repeater (renderRepeaterCell).
+
+    `tipo_columna` es el `type` de la columna en el diseño. Sin él las FECHAS
+    salían crudas, en ISO con guiones, mientras que las de fuera del repetidor
+    salían como DD/MM/AAAA: en un mismo archivo convivían los dos formatos.
+    """
+    def _fecha(texto: str, tipo: str):
+        if not texto:
+            return None
+        if tipo == "date":
+            return _fmt_date_text(texto)
+        if tipo in ("datetime", "datetimelocal"):
+            return _fmt_datetime_text(texto)
+        return None
+
+    if isinstance(cell_data, str):
+        formateada = _fecha(cell_data, tipo_columna)
+        if formateada is not None:
+            return formateada
+    elif isinstance(cell_data, dict):
+        formateada = _fecha(
+            str(cell_data.get("answer_text") or ""),
+            tipo_columna or cell_data.get("question_type", ""),
+        )
+        if formateada is not None and not str(cell_data.get("file_path") or ""):
+            return formateada
+
     if cell_data is None:
         return "-"
     if isinstance(cell_data, str):
@@ -705,7 +731,7 @@ class FormExcelExporter:
                         cid      = child.get("id", "")
                         lex      = str(child.get("linkExternalId") or "")
                         cell_val = row_data.get(cid) or (row_data.get(lex) if lex else None)
-                        text     = _cell_value_text(cell_val)
+                        text     = _cell_value_text(cell_val, child.get("type", ""))
                         is_empty = (text == "-")
                         self._write_cell(
                             self._row, indent_col + ci, text,
@@ -859,7 +885,7 @@ class FormExcelExporter:
             for ci, child in enumerate(sub_normal):
                 cid      = child.get("id", "")
                 cell_val = rd.get(cid)
-                text     = _cell_value_text(cell_val)
+                text     = _cell_value_text(cell_val, child.get("type", ""))
                 is_empty = (text == "-")
                 self._write_cell(
                     self._row, indent_col + ci, text,

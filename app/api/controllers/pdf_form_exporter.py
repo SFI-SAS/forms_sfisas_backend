@@ -278,16 +278,68 @@ def _fmt_checkbox(answer_text: str) -> str:
     return _e(answer_text)
 
 
+# Símbolos de moneda — mismos que `src/lib/numberFormat.ts` del frontend.
+_SIMBOLOS_MONEDA = {
+    "COP": "$", "USD": "$", "EUR": "€", "GBP": "£", "MXN": "$", "ARS": "$",
+    "BRL": "R$", "CLP": "$", "PEN": "S/", "JPY": "¥", "CNY": "¥", "INR": "₹",
+    "CAD": "$", "AUD": "$", "CHF": "Fr",
+}
+
+
+def _formato_numerico(props: dict) -> str:
+    """'none' | 'thousands' | 'currency', contando la marca antigua `peso`."""
+    props = props or {}
+    formato = props.get("numberFormat")
+    if formato in ("none", "thousands", "currency"):
+        return formato
+    return "currency" if props.get("peso") else "none"
+
+
 def _fmt_number(answer_text: str, props: dict) -> str:
-    try:
-        num      = float(answer_text)
-        prefix   = str(props.get("currencyPrefix") or "")
-        suffix   = str(props.get("currencySuffix") or "")
-        decimals = int(props.get("decimalPlaces") or 2)
-        formatted = "{:,.{d}f}".format(num, d=decimals)
-        return _e(prefix + formatted + suffix)
-    except Exception:
+    """Formato de los campos numéricos.
+
+    Traducción EXACTA de `formatNumberValue` (src/lib/numberFormat.ts), que es
+    lo que se ve al consultar en pantalla. Antes esto iba por su cuenta: metía
+    siempre `currencyPrefix`/`currencySuffix`, dos decimales fijos y el
+    separador inglés (1,234.00), así que un campo con "separador de miles"
+    salía en el PDF como si fuera moneda y con decimales que nadie pidió.
+
+    Convención del sistema: punto para los miles, coma para los decimales, y la
+    moneda como "COP $ 1.234.567".
+    """
+    props = props or {}
+    formato = _formato_numerico(props)
+    if formato == "none":
         return _e(answer_text)
+
+    try:
+        numero = float(str(answer_text).strip())
+    except Exception:
+        # Un resultado en formato hora (08:30) o fecha pasa intacto.
+        return _e(answer_text)
+
+    crudos = props.get("decimals")
+    decimales = min(6, int(crudos)) if isinstance(crudos, (int, float)) and crudos >= 0 else 0
+
+    negativo = numero < 0
+    # ROUND_HALF_UP para empatar con el navegador: Python redondea 1234.5 a
+    # 1234 (al par) y `toFixed` de JS lo sube a 1235. Sin esto, el mismo dato
+    # salia distinto en pantalla y en el PDF.
+    from decimal import Decimal, ROUND_HALF_UP
+    cuantia = Decimal(1).scaleb(-decimales) if decimales else Decimal(1)
+    redondeado = Decimal(str(abs(numero))).quantize(cuantia, rounding=ROUND_HALF_UP)
+    entero_str, _, dec_str = "{:.{d}f}".format(redondeado, d=decimales).partition(".")
+    # Punto como separador de miles.
+    con_miles = "{:,}".format(int(entero_str)).replace(",", ".")
+    cuerpo = (con_miles + "," + dec_str) if dec_str else con_miles
+    if negativo:
+        cuerpo = "-" + cuerpo
+
+    if formato == "currency":
+        codigo = str(props.get("currency") or "COP")
+        simbolo = _SIMBOLOS_MONEDA.get(codigo, "$")
+        return _e("{c} {s} {v}".format(c=codigo, s=simbolo, v=cuerpo))
+    return _e(cuerpo)
 
 
 def _fmt_date(answer_text: str) -> str:
@@ -309,12 +361,50 @@ def _fmt_datetime(answer_text: str) -> str:
         return _e(answer_text)
 
 
-def _render_cell_value(cell_data: Any) -> str:
-    """Puerto de renderRepeaterCell del frontend."""
+def _render_cell_value(cell_data: Any, tipo_columna: str = "", props_columna: dict | None = None) -> str:
+    """Puerto de renderRepeaterCell del frontend.
+
+    `tipo_columna` es el `type` que tiene la columna en el diseño. Hace falta
+    para las FECHAS: fuera del repetidor se formatean a DD/MM/AAAA, pero aquí
+    no se miraba el tipo y salían crudas, en ISO con guiones —`2026-09-22`—.
+    En un mismo PDF convivían los dos formatos según el campo estuviera dentro
+    o fuera de un repetidor.
+    """
     if cell_data is None:
         return '<span style="color:#9CA3AF;font-style:italic;">-</span>'
 
+    def _con_formato_de_celda(texto: str, tipo: str, props_col: dict):
+        """Formatos que dependen del TIPO de la columna, no del texto.
+
+        Sin esto, dentro de un repetidor un número con separador de miles salía
+        crudo, el resultado de una fórmula salía con los decimales que trajera
+        y una casilla salía escribiendo 'true'.
+        """
+        if not texto:
+            return None
+        if tipo in ("number", "mathoperations"):
+            return _fmt_number(texto, props_col or {})
+        if tipo == "checkbox":
+            marcada = str(texto).strip().lower() in ("true", "1", "si", "sí", "x", "on", "checked")
+            return ('<span class="check-caja">' + ("&#10003;" if marcada else "&nbsp;") + '</span>')
+        return None
+
+    def _con_formato_de_fecha(texto: str, tipo: str) -> str | None:
+        """Devuelve el texto formateado si la columna es de fecha; None si no."""
+        if not texto:
+            return None
+        if tipo == "date":
+            return _fmt_date(texto)
+        if tipo in ("datetime", "datetimelocal"):
+            return _fmt_datetime(texto)
+        return None
+
     if isinstance(cell_data, str):
+        formateada = _con_formato_de_fecha(cell_data, tipo_columna)
+        if formateada is None:
+            formateada = _con_formato_de_celda(cell_data, tipo_columna, props_columna)
+        if formateada is not None:
+            return formateada
         try:
             parsed = json.loads(cell_data)
             fd = parsed.get("firmData", {})
@@ -328,6 +418,14 @@ def _render_cell_value(cell_data: Any) -> str:
         qtype = cell_data.get("question_type", "")
         atext = str(cell_data.get("answer_text") or "")
         fpath = str(cell_data.get("file_path") or "")
+
+        # El tipo del DISEÑO manda sobre el de la BD: un campo de fecha puede
+        # estar guardado como texto en `questions` y aun así ser una fecha aquí.
+        formateada = _con_formato_de_fecha(atext, tipo_columna or qtype)
+        if formateada is None:
+            formateada = _con_formato_de_celda(atext, tipo_columna or qtype, props_columna)
+        if formateada is not None and not fpath:
+            return formateada
 
         if qtype == "firm" and atext:
             try:
@@ -650,6 +748,22 @@ class FormPdfExporter:
         answer = self._get_answer(field)
         ftype  = field.get("type", "")
 
+        # ── Casilla de verificación ──────────────────────────────────────────
+        # Es un sí/no con etiqueta, no un campo con respuesta escrita. Salía
+        # dentro del recuadro grande diciendo "true" la marcada y "Sin
+        # respuesta" las demás; ahora es una casilla chiquita al lado del texto.
+        if ftype == "checkbox" and not (props.get("options") or []):
+            crudo = ""
+            if answer is not None:
+                crudo = str(answer.get("answer_text") or "").strip().lower()
+            marcada = crudo in ("true", "1", "si", "sí", "x", "on", "checked")
+            return (
+                '<div class="field-row field-check">'
+                '<span class="check-caja">' + ("&#10003;" if marcada else "&nbsp;") + '</span>'
+                '<span class="check-texto">' + label + req + '</span>'
+                '</div>'
+            )
+
         if answer is not None:
             atext = str(answer.get("answer_text") or "")
             fpath = str(answer.get("file_path") or "")
@@ -662,6 +776,10 @@ class FormPdfExporter:
             elif qtype in ("checkbox", "multiselect") and atext:
                 content_html = _fmt_checkbox(atext)
             elif qtype == "number" and atext:
+                content_html = _fmt_number(atext, props)
+            elif ftype == "mathoperations" and atext:
+                # El resultado de una fórmula se formatea igual que un número:
+                # si el campo pidió "sin decimales", el PDF tiene que respetarlo.
                 content_html = _fmt_number(atext, props)
             elif qtype == "date" and atext:
                 content_html = _fmt_date(atext)
@@ -896,7 +1014,7 @@ class FormPdfExporter:
             htc=ts.get("headerTextColor", "#374151"),
             hfw=ts.get("headerFontWeight", "bold"),
             hta=ts.get("headerTextAlign", "left"),
-            hp=ts.get("headerPadding", "12px"),
+            hp=ts.get("headerPadding", "8px"),
             bd=bd,
         )
         td_s  = ("background:{cbg};color:{ctc};"
@@ -904,8 +1022,8 @@ class FormPdfExporter:
                  "vertical-align:{cva};border:{bd};font-size:11px;").format(
             cbg=ts.get("cellBackgroundColor", "#ffffff"),
             ctc=ts.get("cellTextColor", "#374151"),
-            cta=ts.get("cellTextAlign", "center"),
-            cp=ts.get("cellPadding", "8px"),
+            cta=ts.get("cellTextAlign", "left"),
+            cp=ts.get("cellPadding", "6px"),
             cva=ts.get("cellVerticalAlign", "middle"),
             bd=bd,
         )
@@ -944,8 +1062,8 @@ class FormPdfExporter:
                     ).format(
                         cbg=cbg,
                         ctc=ts.get("cellTextColor", "#374151"),
-                        cta=ts.get("cellTextAlign", "center"),
-                        cp=ts.get("cellPadding", "8px"),
+                        cta=ts.get("cellTextAlign", "left"),
+                        cp=ts.get("cellPadding", "6px"),
                         cva=ts.get("cellVerticalAlign", "middle"),
                         bc=ts.get("borderColor", "#d1d5db"),
                     )
@@ -954,7 +1072,10 @@ class FormPdfExporter:
                         cid      = child.get("id", "")
                         lex      = str(child.get("linkExternalId") or "")
                         cell_val = row_data.get(cid) or (row_data.get(lex) if lex else None)
-                        cell_html = _render_cell_value(cell_val) if cell_val else '<span class="cell-empty">-</span>'
+                        cell_html = (
+                            _render_cell_value(cell_val, child.get("type", ""), child.get("props") or {})
+                            if cell_val else '<span class="cell-empty">-</span>'
+                        )
                         cells.append(cell_html)
 
                     sub_html = ""
@@ -1178,8 +1299,8 @@ class FormPdfExporter:
                  "text-align:{ta};padding:{p};border:{bd};font-size:10px;").format(
             b=sts.get("cellBackgroundColor", "#ffffff"),
             c=sts.get("cellTextColor", "#374151"),
-            ta=sts.get("cellTextAlign", "center"),
-            p=sts.get("cellPadding", "6px 8px"),
+            ta=sts.get("cellTextAlign", "left"),
+            p=sts.get("cellPadding", "6px"),
             bd=sbd,
         )
         salt = sts.get("alternateRowColor", "#f9fafb")
@@ -1194,7 +1315,7 @@ class FormPdfExporter:
             c=sts.get("headerTextColor", "#374151"),
             fw=sts.get("headerFontWeight", "bold"),
             ta=sts.get("headerTextAlign", "left"),
-            p=sts.get("headerPadding", "7px 10px"),
+            p=sts.get("headerPadding", "8px"),
             bc=sbc,
         )
         salt  = sts.get("alternateRowColor", "#f9fafb")
@@ -1205,8 +1326,8 @@ class FormPdfExporter:
         ).format(
             b=scbg,
             c=sts.get("cellTextColor", "#374151"),
-            ta=sts.get("cellTextAlign", "center"),
-            p=sts.get("cellPadding", "6px 10px"),
+            ta=sts.get("cellTextAlign", "left"),
+            p=sts.get("cellPadding", "6px"),
             bc=sbc,
         )
 
@@ -1243,7 +1364,7 @@ class FormPdfExporter:
                 ) if multi else ""
                 tds += "".join(
                     '<td style="' + row_td + '">'
-                    + _render_cell_value(rd.get(c.get("id", ""))) + '</td>'
+                    + _render_cell_value(rd.get(c.get("id", "")), c.get("type", ""), c.get("props") or {}) + '</td>'
                     for c in cols
                 )
                 trs += '<tr>' + tds + '</tr>'
@@ -1475,9 +1596,7 @@ body {
 }
 .field-value {
     display: block;
-    /* La respuesta va CENTRADA en su recuadro. Antes heredaba la alineación
-       del documento y quedaba pegada a la izquierda. */
-    text-align: center;
+    text-align: left;
     padding: 7px 10px;         /* era 12px por los cuatro lados */
     font-size: 11px;
     color: #1f2937;            /* text-gray-800 */
@@ -1489,6 +1608,28 @@ body {
     word-break: break-word;
 }
 .field-value > * { vertical-align: middle; }
+.field-check {
+    display: block;
+    line-height: 1.3;
+}
+.check-caja {
+    display: inline-block;
+    width: 11px;
+    height: 11px;
+    border: 1px solid #9ca3af;
+    border-radius: 2px;
+    margin-right: 5px;
+    text-align: center;
+    font-size: 9px;
+    line-height: 11px;
+    vertical-align: -1px;
+    color: #0f8594;
+    font-weight: 700;
+}
+.check-texto {
+    font-size: 11px;
+    color: #1f2937;
+}
 .field-empty {
     color: #9ca3af;            /* text-gray-400 */
     font-style: italic;
