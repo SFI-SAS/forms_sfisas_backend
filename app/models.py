@@ -785,6 +785,11 @@ class RelationOperationMath(Base):
     # Si es True, un resultado negativo se presenta y se guarda como 0.
     # Migración: scripts/db_migrations/2026-08-06_add_clamp_negativos_a_math.sql
     clamp_negativos = Column(Boolean, nullable=False, default=False)
+    # En qué unidad se devuelve una resta ENTRE FECHAS: 'days' (como siempre),
+    # 'years' (años cumplidos: la edad) o 'months'. Se elige en el editor de
+    # fórmulas para no tener que escribir el /365.25 a mano.
+    # Migración: scripts/db_migrations/2026-09-24_unidad_de_fecha_en_math.sql
+    date_unit = Column(String(10), nullable=False, default="days", server_default="days")
 
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

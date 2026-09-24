@@ -2864,7 +2864,8 @@ def crear_operacion_matematica(
         id_questions=data.id_questions,
         operations=data.operations.strip(),
         color_rules=data.color_rules,
-        clamp_negativos=bool(data.clamp_negativos) if data.clamp_negativos is not None else False
+        clamp_negativos=bool(data.clamp_negativos) if data.clamp_negativos is not None else False,
+        date_unit=(data.date_unit or "days"),
     )
 
     db.add(nueva_operacion)
@@ -3050,6 +3051,7 @@ def verificar_operaciones_matematicas(
             "color_rules": op.color_rules,
         "clamp_negativos": bool(op.clamp_negativos),
             "clamp_negativos": bool(op.clamp_negativos),
+            "date_unit": op.date_unit or "days",
             "created_at": op.created_at.isoformat() if op.created_at else None
         }
         for op in operaciones
@@ -3124,6 +3126,7 @@ def obtener_operaciones_por_preguntas(
                 "color_rules": op.color_rules,
         "clamp_negativos": bool(op.clamp_negativos),
             "clamp_negativos": bool(op.clamp_negativos),
+                "date_unit": op.date_unit or "days",
                 "created_at": op.created_at.isoformat() if op.created_at else None,
                 "updated_at": op.updated_at.isoformat() if op.updated_at else None
             })
@@ -3193,6 +3196,9 @@ def editar_operacion_matematica(
     # Igual que color_rules: None = no provisto (no tocar); True/False = fijar.
     if body.clamp_negativos is not None:
         operacion.clamp_negativos = bool(body.clamp_negativos)
+    # Mismo criterio: solo se fija si el cliente lo mandó.
+    if body.date_unit is not None:
+        operacion.date_unit = body.date_unit if body.date_unit in ("days", "years", "months") else "days"
     db.commit()
     db.refresh(operacion)
 
@@ -3203,6 +3209,7 @@ def editar_operacion_matematica(
         "operations": operacion.operations,
         "color_rules": operacion.color_rules,
         "clamp_negativos": bool(operacion.clamp_negativos),
+        "date_unit": operacion.date_unit or "days",
         "updated_at": operacion.updated_at.isoformat() if operacion.updated_at else None,
     }
 

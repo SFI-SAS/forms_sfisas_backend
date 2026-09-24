@@ -1138,6 +1138,7 @@ class RelationOperationMathCreate(BaseModel):
     operations: str = Field(..., min_length=1, max_length=500, description="Fórmula u operación matemática")
     color_rules: Optional[list] = Field(None, description="Reglas de color condicional sobre el resultado")
     clamp_negativos: Optional[bool] = Field(None, description="Si el resultado es negativo, mostrarlo como 0")
+    date_unit: Optional[str] = Field(None, description="Unidad de una resta entre fechas: days | years | months")
 
     class Config:
         example = {
@@ -1154,6 +1155,7 @@ class RelationOperationMathOut(BaseModel):
     operations: str
     color_rules: Optional[list] = None
     clamp_negativos: bool = False
+    date_unit: str = "days"
     created_at: datetime
     updated_at: datetime
 
@@ -1177,6 +1179,7 @@ class RelationOperationMathCreate(BaseModel):
     operations: str = Field(..., description="Fórmula matemática")
     color_rules: Optional[list] = Field(None, description="Reglas de color condicional sobre el resultado")
     clamp_negativos: Optional[bool] = Field(None, description="Si el resultado es negativo, mostrarlo como 0")
+    date_unit: Optional[str] = Field(None, description="Unidad de una resta entre fechas: days | years | months")
 
 class RelationOperationMathOut(BaseModel):
     id: int
@@ -1185,6 +1188,7 @@ class RelationOperationMathOut(BaseModel):
     operations: str
     color_rules: Optional[list] = None
     clamp_negativos: bool = False
+    date_unit: str = "days"
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
 
@@ -1551,6 +1555,7 @@ class UpdateMathOperationRequest(BaseModel):
     # None = el cliente no lo envió (no tocar); True/False = fijar el valor.
     # Mismo criterio que color_rules.
     clamp_negativos: Optional[bool] = None
+    date_unit: Optional[str] = None
 
 
 class QuestionUpdatePayload(BaseModel):
