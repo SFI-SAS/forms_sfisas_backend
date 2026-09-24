@@ -306,10 +306,10 @@ _SIMBOLOS_MONEDA = {
 
 
 def _formato_numerico(props: dict) -> str:
-    """'none' | 'thousands' | 'currency', contando la marca antigua `peso`."""
+    """'none' | 'thousands' | 'currency' | 'percent', contando la marca antigua `peso`."""
     props = props or {}
     formato = props.get("numberFormat")
-    if formato in ("none", "thousands", "currency"):
+    if formato in ("none", "thousands", "currency", "percent"):
         return formato
     return "currency" if props.get("peso") else "none"
 
@@ -347,7 +347,7 @@ def _numero_desde_texto(texto: str):
 
     if "," in limpio:
         limpio = limpio.replace(".", "").replace(",", ".")
-    elif _re.fullmatch(r"\d{1,3}(\.\d{3})+", limpio):
+    elif _re.fullmatch(r"(?!0\.)\d{1,3}(\.\d{3})+", limpio):
         limpio = limpio.replace(".", "")
 
     try:
@@ -376,8 +376,23 @@ def _fmt_number(answer_text: str, props: dict) -> str:
 
     numero = _numero_desde_texto(answer_text)
     if numero is None:
-        # Un resultado en formato hora (08:30) o fecha pasa intacto.
+        # Un resultado en formato hora (08:30) o fecha pasa intacto. Tambien un
+        # porcentaje YA escrito ("30 %"): el campo numero lo guarda asi, con el
+        # signo, y aqui no hay nada que rehacer.
         return _e(answer_text)
+
+    # Porcentaje: el campo tipo numero guarda los puntos ("30 %") y un campo de
+    # calculo guarda la fraccion cruda (0.3). El signo en el texto es el que
+    # dice cual de los dos es; sin el, hay que llevarlo a puntos para pintarlo.
+    if formato == "percent" and "%" not in str(answer_text or ""):
+        # Un resultado de formula se guarda tal como lo escribe JavaScript, con
+        # el PUNTO de decimal: "0.075". La regla de los miles lo leeria como
+        # 75 (0 + grupo de tres), asi que aqui manda el float de toda la vida.
+        try:
+            numero = float(str(answer_text).strip())
+        except Exception:
+            pass
+        numero = numero * 100
 
     crudos = props.get("decimals")
     decimales = min(6, int(crudos)) if isinstance(crudos, (int, float)) and crudos >= 0 else 0
@@ -400,8 +415,34 @@ def _fmt_number(answer_text: str, props: dict) -> str:
         codigo = str(props.get("currency") or "COP")
         simbolo = _SIMBOLOS_MONEDA.get(codigo, "$")
         return _e("{c} {s} {v}".format(c=codigo, s=simbolo, v=cuerpo))
+    if formato == "percent":
+        return _e(cuerpo + " %")
     return _e(cuerpo)
 
+
+
+def _fecha_visible(texto: str) -> str:
+    """Fecha guardada -> fecha que se lee (dia/mes/anio).
+
+    Solo toca lo que encaja EXACTO con un patron de fecha: "2026-09-24",
+    "2026-09-24T14:30" o "24-09-2026" (asi salian las operaciones con fechas).
+    Cualquier otra cosa pasa intacta, asi que se puede llamar a ciegas sobre el
+    resultado de una formula sin miedo a estropear un numero.
+    """
+    import re as _re
+    t = str(texto or "").strip()
+    if not t:
+        return t
+    m = _re.match(r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})", t)
+    if m:
+        return "{d}/{mo}/{a} {h}:{mi}".format(d=m.group(3), mo=m.group(2), a=m.group(1), h=m.group(4), mi=m.group(5))
+    m = _re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", t)
+    if m:
+        return "{d}/{mo}/{a}".format(d=m.group(3), mo=m.group(2), a=m.group(1))
+    m = _re.fullmatch(r"(\d{2})-(\d{2})-(\d{4})", t)
+    if m:
+        return "{d}/{mo}/{a}".format(d=m.group(1), mo=m.group(2), a=m.group(3))
+    return t
 
 def _fmt_date(answer_text: str) -> str:
     from datetime import datetime
@@ -444,7 +485,9 @@ def _render_cell_value(cell_data: Any, tipo_columna: str = "", props_columna: di
         if not texto:
             return None
         if tipo in ("number", "mathoperations"):
-            return _fmt_number(texto, props_col or {})
+            # `_fecha_visible` no toca lo que no es fecha: un numero pasa igual
+            # y un resultado de formula que dio una FECHA sale en dia/mes/anio.
+            return _fmt_number(_fecha_visible(texto), props_col or {})
         if tipo == "checkbox":
             marcada = str(texto).strip().lower() in ("true", "1", "si", "sí", "x", "on", "checked")
             return ('<span class="check-caja">' + ("&#10003;" if marcada else "&nbsp;") + '</span>')
@@ -841,7 +884,9 @@ class FormPdfExporter:
             elif ftype == "mathoperations" and atext:
                 # El resultado de una fórmula se formatea igual que un número:
                 # si el campo pidió "sin decimales", el PDF tiene que respetarlo.
-                content_html = _fmt_number(atext, props)
+                # Y si la fórmula devolvió una FECHA (fecha ± días), se lee en
+                # día/mes/año como todas las demás.
+                content_html = _fmt_number(_fecha_visible(atext), props)
             elif qtype == "date" and atext:
                 content_html = _fmt_date(atext)
             elif qtype in ("datetime", "datetimelocal") and atext:
