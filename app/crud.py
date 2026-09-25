@@ -3206,6 +3206,13 @@ def get_related_or_filtered_answers_optimized(
     # las opciones descarta los duplicados al recibirlo. Mandar 6.000 items para
     # que el navegador se quede con 20 era gasto puro: medido, 457 KB por campo.
     unique_data: bool = False,
+    # Preguntas que el grupo de autocompletado va a llenar. Cuando llegan, solo
+    # se cargan esas (más la pregunta llave) en vez de TODAS las del formato de
+    # origen: el trabajo baja en proporción directa.
+    necesarias: list | None = None,
+    # Armar el mapa `valor -> fila` en la BASE en vez de en Python. Lo usa el
+    # autocompletado por grupo, que de esta respuesta solo lee `correlations`.
+    solo_mapa: bool = False,
 ):
     """
     Versión optimizada que trae TODOS los datos incluyendo duplicados.
@@ -3400,6 +3407,102 @@ def get_related_or_filtered_answers_optimized(
         all_unique_answers = []  # ✅ Lista para mantener TODO incluyendo duplicados
         correlations_map = {}
         form_ids_to_search = [fq.form_id for fq in form_questions]
+
+        # ── Camino corto: el mapa lo arma la BASE ──────────────────────────
+        #
+        # Para el autocompletado por grupo, de toda esta respuesta solo se usa
+        # `correlations`: un diccionario valor -> {pregunta: respuesta}. Armarlo
+        # en Python obliga a traer TODAS las answers del formato de origen
+        # (medido: 1.971 ms y 21,5 MB para devolver 5 KB). La base lo resuelve
+        # con dos consultas y trae solo lo que se va a devolver.
+        #
+        # Se replica la misma semántica:
+        #   · de cada valor gana la PRIMERA fila donde aparece (el `DISTINCT ON`
+        #     ordenado por id, igual que el recorrido de Python);
+        #   · las respuestas se emparejan por FILA de repetidor
+        #     (`repeater_row_index`), que es lo que hace `_reconstruct_answer_rows`;
+        #     lo suelto (sin índice de fila) queda en la fila 0 y se comparte.
+        if solo_mapa:
+            # Sin `necesarias` se traen TODAS las preguntas de la fila (el mapa
+            # completo, como el camino de Python). Con ellas, solo la llave y
+            # las que el grupo va a llenar.
+            llave_id = int(relation.related_question_id)
+            preguntas = None
+            if necesarias:
+                preguntas = [llave_id] + [
+                    int(q) for q in necesarias if int(q) != llave_id
+                ]
+
+            sql_mapa = text("""
+                WITH pares AS (
+                    SELECT a.id,
+                           a.response_id,
+                           coalesce(a.repeater_row_index, 0) AS fila,
+                           a.question_id,
+                           a.answer_text
+                    FROM answers a
+                    JOIN responses r ON r.id = a.response_id
+                    WHERE r.form_id = ANY(:formatos)
+                      AND (:preguntas IS NULL OR a.question_id = ANY(:preguntas))
+                ),
+                llaves AS (
+                    SELECT DISTINCT ON (p.answer_text)
+                           p.answer_text AS valor,
+                           p.response_id,
+                           p.fila
+                    FROM pares p
+                    WHERE p.question_id = :llave
+                      AND coalesce(p.answer_text, '') <> ''
+                    ORDER BY p.answer_text, p.id
+                )
+                SELECT l.valor, l.response_id, p.question_id, p.answer_text
+                FROM llaves l
+                JOIN pares p
+                  ON p.response_id = l.response_id
+                 AND p.fila = l.fila
+                 AND p.question_id <> :llave
+                ORDER BY l.valor, p.id
+            """)
+
+            filas_mapa = db.execute(sql_mapa, {
+                "formatos": form_ids_to_search,
+                "preguntas": preguntas,
+                "llave": int(relation.related_question_id),
+            }).all()
+
+            for fila in filas_mapa:
+                entrada = correlations_map.setdefault(fila.valor, {})
+                if "__response_id__" not in entrada:
+                    entrada["__response_id__"] = fila.response_id
+                # La primera respuesta de esa pregunta en la fila es la que vale,
+                # igual que en el camino de Python.
+                entrada.setdefault(fila.question_id, fila.answer_text)
+
+            # Un valor que no comparte fila con ninguna otra pregunta igual tiene
+            # que estar en el mapa: el cliente lo consulta por llave.
+            for fila in db.execute(text("""
+                SELECT DISTINCT ON (a.answer_text) a.answer_text AS valor, a.response_id
+                FROM answers a
+                JOIN responses r ON r.id = a.response_id
+                WHERE r.form_id = ANY(:formatos)
+                  AND a.question_id = :llave
+                  AND coalesce(a.answer_text, '') <> ''
+                ORDER BY a.answer_text, a.id
+            """), {"formatos": form_ids_to_search, "llave": int(relation.related_question_id)}).all():
+                correlations_map.setdefault(fila.valor, {"__response_id__": fila.response_id})
+
+            return {
+                "source": "pregunta_relacionada",
+                "related_question": {
+                    "id": related_question.id,
+                    "text": related_question.question_text,
+                    "type": related_question.question_type.value,
+                },
+                # `data` no se arma: quien pide el mapa no lo usa, y es lo que
+                # costaba cientos de KB.
+                "data": [],
+                "correlations": correlations_map,
+            }
 
         # Antes esto hacía dos cosas caras:
         #   · traía los objetos ORM COMPLETOS de todas las answers del formato de

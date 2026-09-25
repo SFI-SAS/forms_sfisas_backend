@@ -952,6 +952,21 @@ def get_related_answers(
             "traer miles de items repetidos que el cliente descarta igual."
         ),
     ),
+    needed: Optional[str] = Query(
+        None,
+        description=(
+            "question_ids separados por coma: las preguntas que el grupo de "
+            "autocompletado va a llenar. Acota lo que hay que leer del formato "
+            "de origen."
+        ),
+    ),
+    only_map: bool = Query(
+        False,
+        description=(
+            "Armar el mapa de correlaciones en la BASE y no devolver `data`. "
+            "Lo usa el autocompletado por grupo, que solo lee `correlations`."
+        ),
+    ),
     db: Session = Depends(get_db), 
     current_user: User = Depends(get_current_user)
 ):
@@ -969,8 +984,20 @@ def get_related_answers(
         - `correlations`: mapeo de correlaciones entre respuestas
     """
     
+    ids_necesarios = None
+    if needed:
+        ids_necesarios = []
+        for trozo in needed.split(","):
+            trozo = trozo.strip()
+            if trozo.isdigit():
+                ids_necesarios.append(int(trozo))
+
     return get_related_or_filtered_answers_optimized(
-        db, question_id, only_latest=only_latest, unique_data=unique
+        db, question_id,
+        only_latest=only_latest,
+        unique_data=unique,
+        necesarias=ids_necesarios,
+        solo_mapa=only_map,
     )
 
 
