@@ -5433,6 +5433,27 @@ def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
     }
 
 
+def _etiquetas_y_titulos(db: Session, movimiento):
+    """Etiquetas de pregunta (las del DISEÑO) y títulos de formato.
+
+    Es lo único que el consolidado en SQL no puede sacar por su cuenta: la
+    etiqueta que se ve en la tabla no es `questions.question_text` sino la que el
+    diseñador le puso al campo, y esa vive dentro del JSON del diseño.
+
+    Son unas pocas filas (un formato por cada uno de la vista), así que no pesa.
+    """
+    etiquetas, titulos = {}, {}
+    formatos = db.query(Form).filter(Form.id.in_(movimiento.form_ids or [])).all()
+    for form in formatos:
+        titulos[form.id] = form.title
+        for qid, label in get_question_labels_from_form_design(form.form_design or []).items():
+            try:
+                etiquetas[int(qid)] = label
+            except (TypeError, ValueError):
+                continue
+    return etiquetas, titulos
+
+
 def _collect_movimiento_result(db: Session, movimiento):
     """Arma la estructura anidada forms->responses->answers de un movimiento.
 
@@ -5460,35 +5481,65 @@ def _collect_movimiento_result(db: Session, movimiento):
     for form in forms:
         question_labels = get_question_labels_from_form_design(form.form_design or [])
 
-        responses = db.query(Response).filter(
-            Response.form_id == form.id,
-            Response.status == ResponseStatus.submitted
-        ).all()
+        # UNA consulta por formato, no una por respuesta.
+        #
+        # Antes esto era un N+1 de libro: se traían todas las respuestas del
+        # formato y, dentro del bucle, una consulta por cada una para sus
+        # answers. Peor todavía, se pedían objetos ORM completos y luego se leía
+        # `a.question`, que disparaba OTRA consulta por cada answer. Con un
+        # formato de 10.000 envíos eran decenas de miles de consultas y todos
+        # esos objetos vivos a la vez: es la vía rápida a quedarse sin RAM.
+        #
+        # Aquí se piden de una sola vez las columnas que se usan, con la
+        # pregunta unida en la misma fila, y el agrupado se hace en Python.
+        # El orden es explícito —del envío más viejo al más nuevo— porque antes
+        # quedaba al criterio de la base.
+        filas = (
+            db.query(
+                Answer.response_id,
+                Answer.question_id,
+                Answer.answer_text,
+                Answer.file_path,
+                Question.question_text,
+                Question.question_type,
+                Response.submitted_at,
+            )
+            .join(Question, Question.id == Answer.question_id)
+            .join(Response, Response.id == Answer.response_id)
+            .filter(
+                Response.form_id == form.id,
+                Response.status == ResponseStatus.submitted,
+                Answer.question_id.in_(movimiento.question_ids),
+            )
+            .order_by(Response.submitted_at.asc(), Response.id.asc(), Answer.id.asc())
+            .all()
+        )
 
-        form_responses = []
-        for response in responses:
-            answers = db.query(Answer).join(Question).filter(
-                Answer.response_id == response.id,
-                Answer.question_id.in_(movimiento.question_ids)
-            ).all()
-            if not answers:
-                continue
-            form_responses.append({
-                "response_id": response.id,
-                "submitted_at": response.submitted_at,
-                "answers": [
-                    {
-                        "question_id": a.question.id,
-                        "question_text": question_labels.get(a.question.id, a.question.question_text),
-                        "question_label": question_labels.get(a.question.id, a.question.question_text),
-                        "question_type": getattr(a.question.question_type, "value", a.question.question_type),
-                        "alias": alias_by_question.get(a.question.id),
-                        "answer_text": a.answer_text,
-                        "file_path": a.file_path,
-                    }
-                    for a in answers
-                ],
+        # Una entrada por respuesta, en el orden en que llegaron las filas. Las
+        # respuestas sin ninguna answer de las preguntas del movimiento no
+        # aparecen, igual que antes (aquí simplemente no producen filas).
+        por_respuesta = {}
+        for fila in filas:
+            entrada = por_respuesta.get(fila.response_id)
+            if entrada is None:
+                entrada = {
+                    "response_id": fila.response_id,
+                    "submitted_at": fila.submitted_at,
+                    "answers": [],
+                }
+                por_respuesta[fila.response_id] = entrada
+            etiqueta = question_labels.get(fila.question_id, fila.question_text)
+            entrada["answers"].append({
+                "question_id": fila.question_id,
+                "question_text": etiqueta,
+                "question_label": etiqueta,
+                "question_type": getattr(fila.question_type, "value", fila.question_type),
+                "alias": alias_by_question.get(fila.question_id),
+                "answer_text": fila.answer_text,
+                "file_path": fila.file_path,
             })
+
+        form_responses = list(por_respuesta.values())
 
         if form_responses:
             result.append({
@@ -5562,6 +5613,39 @@ def get_answers_by_movement(
             })
         return empty
 
+    # ── Modo paginado: el consolidado lo calcula la BASE ───────────────────
+    #
+    # Va antes de `_collect_movimiento_result` a propósito: esa función trae a
+    # memoria todas las respuestas y answers de todos los formatos de la vista
+    # (medido: ~47 MB por petición con 60.000 answers), y era lo que dejaba sin
+    # RAM al servidor. El camino en SQL no la necesita.
+    #
+    # Si el consolidado en SQL falla por cualquier motivo, se cae al camino de
+    # siempre: es una vista que la gente usa todos los días y preferimos que
+    # vaya lenta antes que caída. El fallo queda en el log.
+    if paginated:
+        try:
+            from app.api.controllers.movimiento_sql import ConsolidadoSQL
+            etiquetas, titulos = _etiquetas_y_titulos(db, movimiento)
+            consolidado = ConsolidadoSQL(
+                db, movimiento, etiquetas, titulos,
+                page=page, page_size=page_size,
+                date_from=date_from, date_to=date_to, search=search,
+                alias=alias, last_only=last_only,
+                column_filters=_parse_column_filters(column_filters),
+            ).calcular()
+            return {
+                "movement_id": movimiento.id,
+                "title": movimiento.title,
+                "description": movimiento.description,
+                **consolidado,
+            }
+        except Exception:
+            logger.exception(
+                "El consolidado en SQL falló para el movimiento %s; se usa el camino en Python",
+                movimiento.id,
+            )
+
     result = _collect_movimiento_result(db, movimiento)
 
     # Modo legacy: estructura anidada (compatibilidad con MovementDetailView)
@@ -5619,20 +5703,42 @@ def export_movimiento_excel(
             detail="No tienes permiso para exportar este movimiento"
         )
 
-    if movimiento.form_ids and movimiento.question_ids:
-        result = _collect_movimiento_result(db, movimiento)
-    else:
-        result = []
+    # Todas las filas filtradas (sin paginar), calculadas en la BASE.
+    #
+    # Aquí las filas sí van todas a memoria —el Excel las necesita—, pero se
+    # evita el paso intermedio que las duplicaba: antes se armaba primero la
+    # estructura anidada con TODAS las answers de TODOS los formatos y después
+    # se aplanaba. Si el consolidado en SQL falla, se usa el camino de siempre.
+    consolidado = None
+    try:
+        from app.api.controllers.movimiento_sql import ConsolidadoSQL
+        etiquetas, titulos = _etiquetas_y_titulos(db, movimiento)
+        consolidado = ConsolidadoSQL(
+            db, movimiento, etiquetas, titulos,
+            page=1, page_size=10**9, cap=10**9,
+            date_from=date_from, date_to=date_to, search=search,
+            alias=alias, last_only=last_only,
+            column_filters=_parse_column_filters(column_filters),
+        ).calcular()
+    except Exception:
+        logger.exception(
+            "El consolidado en SQL falló al exportar el movimiento %s; se usa el camino en Python",
+            movimiento.id,
+        )
 
-    # Todas las filas filtradas (page_size enorme con cap elevado)
-    consolidado = _build_movimiento_consolidado(
-        result, page=1, page_size=10**9,
-        date_from=date_from, date_to=date_to, search=search,
-        alias=alias, last_only=last_only, cap=10**9,
-        column_filters=_parse_column_filters(column_filters),
-        # Las columnas salen en el orden en que se eligieron los campos.
-        orden_preguntas=movimiento.question_ids,
-    )
+    if consolidado is None:
+        if movimiento.form_ids and movimiento.question_ids:
+            result = _collect_movimiento_result(db, movimiento)
+        else:
+            result = []
+        consolidado = _build_movimiento_consolidado(
+            result, page=1, page_size=10**9,
+            date_from=date_from, date_to=date_to, search=search,
+            alias=alias, last_only=last_only, cap=10**9,
+            column_filters=_parse_column_filters(column_filters),
+            # Las columnas salen en el orden en que se eligieron los campos.
+            orden_preguntas=movimiento.question_ids,
+        )
     columns = consolidado["columns"]
     rows = consolidado["rows"]
     totals = consolidado["totals"]
@@ -6771,6 +6877,27 @@ def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
     }
 
 
+def _etiquetas_y_titulos(db: Session, movimiento):
+    """Etiquetas de pregunta (las del DISEÑO) y títulos de formato.
+
+    Es lo único que el consolidado en SQL no puede sacar por su cuenta: la
+    etiqueta que se ve en la tabla no es `questions.question_text` sino la que el
+    diseñador le puso al campo, y esa vive dentro del JSON del diseño.
+
+    Son unas pocas filas (un formato por cada uno de la vista), así que no pesa.
+    """
+    etiquetas, titulos = {}, {}
+    formatos = db.query(Form).filter(Form.id.in_(movimiento.form_ids or [])).all()
+    for form in formatos:
+        titulos[form.id] = form.title
+        for qid, label in get_question_labels_from_form_design(form.form_design or []).items():
+            try:
+                etiquetas[int(qid)] = label
+            except (TypeError, ValueError):
+                continue
+    return etiquetas, titulos
+
+
 def _collect_movimiento_result(db: Session, movimiento):
     """Arma la estructura anidada forms->responses->answers de un movimiento.
 
@@ -6798,35 +6925,65 @@ def _collect_movimiento_result(db: Session, movimiento):
     for form in forms:
         question_labels = get_question_labels_from_form_design(form.form_design or [])
 
-        responses = db.query(Response).filter(
-            Response.form_id == form.id,
-            Response.status == ResponseStatus.submitted
-        ).all()
+        # UNA consulta por formato, no una por respuesta.
+        #
+        # Antes esto era un N+1 de libro: se traían todas las respuestas del
+        # formato y, dentro del bucle, una consulta por cada una para sus
+        # answers. Peor todavía, se pedían objetos ORM completos y luego se leía
+        # `a.question`, que disparaba OTRA consulta por cada answer. Con un
+        # formato de 10.000 envíos eran decenas de miles de consultas y todos
+        # esos objetos vivos a la vez: es la vía rápida a quedarse sin RAM.
+        #
+        # Aquí se piden de una sola vez las columnas que se usan, con la
+        # pregunta unida en la misma fila, y el agrupado se hace en Python.
+        # El orden es explícito —del envío más viejo al más nuevo— porque antes
+        # quedaba al criterio de la base.
+        filas = (
+            db.query(
+                Answer.response_id,
+                Answer.question_id,
+                Answer.answer_text,
+                Answer.file_path,
+                Question.question_text,
+                Question.question_type,
+                Response.submitted_at,
+            )
+            .join(Question, Question.id == Answer.question_id)
+            .join(Response, Response.id == Answer.response_id)
+            .filter(
+                Response.form_id == form.id,
+                Response.status == ResponseStatus.submitted,
+                Answer.question_id.in_(movimiento.question_ids),
+            )
+            .order_by(Response.submitted_at.asc(), Response.id.asc(), Answer.id.asc())
+            .all()
+        )
 
-        form_responses = []
-        for response in responses:
-            answers = db.query(Answer).join(Question).filter(
-                Answer.response_id == response.id,
-                Answer.question_id.in_(movimiento.question_ids)
-            ).all()
-            if not answers:
-                continue
-            form_responses.append({
-                "response_id": response.id,
-                "submitted_at": response.submitted_at,
-                "answers": [
-                    {
-                        "question_id": a.question.id,
-                        "question_text": question_labels.get(a.question.id, a.question.question_text),
-                        "question_label": question_labels.get(a.question.id, a.question.question_text),
-                        "question_type": getattr(a.question.question_type, "value", a.question.question_type),
-                        "alias": alias_by_question.get(a.question.id),
-                        "answer_text": a.answer_text,
-                        "file_path": a.file_path,
-                    }
-                    for a in answers
-                ],
+        # Una entrada por respuesta, en el orden en que llegaron las filas. Las
+        # respuestas sin ninguna answer de las preguntas del movimiento no
+        # aparecen, igual que antes (aquí simplemente no producen filas).
+        por_respuesta = {}
+        for fila in filas:
+            entrada = por_respuesta.get(fila.response_id)
+            if entrada is None:
+                entrada = {
+                    "response_id": fila.response_id,
+                    "submitted_at": fila.submitted_at,
+                    "answers": [],
+                }
+                por_respuesta[fila.response_id] = entrada
+            etiqueta = question_labels.get(fila.question_id, fila.question_text)
+            entrada["answers"].append({
+                "question_id": fila.question_id,
+                "question_text": etiqueta,
+                "question_label": etiqueta,
+                "question_type": getattr(fila.question_type, "value", fila.question_type),
+                "alias": alias_by_question.get(fila.question_id),
+                "answer_text": fila.answer_text,
+                "file_path": fila.file_path,
             })
+
+        form_responses = list(por_respuesta.values())
 
         if form_responses:
             result.append({
