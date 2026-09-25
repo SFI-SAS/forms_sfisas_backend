@@ -1053,6 +1053,15 @@ def send_response_answers_email(
     form_title: str,
     response_id: int,
     answers: list[EmailAnswerItem],
+    # ── Asunto y mensaje del correo de cierre (opcionales) ─────────────────
+    # Los usa el campo "Correo destinatario" cuando en su propiedad se marcó
+    # "Usar el asunto y el mensaje del correo de cierre". Misma convención que
+    # `send_action_notification_email`: el asunto personalizado reemplaza al de
+    # siempre, el mensaje reemplaza el párrafo de entrada y el código SIEMPRE se
+    # antepone al asunto. Sin ellos, el correo sale exactamente como antes.
+    custom_subject: str = None,
+    custom_body: str = None,
+    subject_code: str = None,
 ):
     try:
         rows = ""
@@ -1068,7 +1077,7 @@ def send_response_answers_email(
 
         hdr_s = f'padding:10px 12px;text-align:left;font-size:11px;font-weight:600;color:{_C["text_muted"]};text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid {_C["border"]};'
 
-        body = _p(f'Se ha registrado una nueva respuesta para el formulario <strong>"{form_title}"</strong>.')
+        body = _p(custom_body or f'Se ha registrado una nueva respuesta para el formulario <strong>"{form_title}"</strong>.')
         body += _info_block("Información",
             _info_row("Formulario", form_title) +
             _info_row("ID Respuesta", f'<strong>#{response_id}</strong>') +
@@ -1083,10 +1092,15 @@ def send_response_answers_email(
             <tbody>{rows}</tbody></table>
         </div>"""
 
-        html = _base_email_html(f"Nueva respuesta — {form_title}", body)
+        titulo = custom_subject or f"Nueva respuesta — {form_title}"
+        html = _base_email_html(titulo, body)
+
+        asunto = custom_subject or f"Nueva respuesta: {form_title} (#{response_id})"
+        if subject_code:
+            asunto = f"{subject_code} {asunto}"
 
         for email in to_emails:
-            msg = _new_msg(f"Nueva respuesta: {form_title} (#{response_id})", email)
+            msg = _new_msg(asunto, email)
             msg.set_content(f"Nueva respuesta #{response_id} para {form_title}.")
             msg.add_alternative(html, subtype="html")
             _send_msg(msg)

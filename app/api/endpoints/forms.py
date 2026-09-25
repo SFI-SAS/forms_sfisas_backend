@@ -5202,7 +5202,8 @@ def _movimiento_to_number(value):
 
 
 def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
-                                   search, alias, last_only, cap=200):
+                                   search, alias, last_only, cap=200,
+                                   orden_preguntas=None):
     """Aplana, filtra, totaliza y pagina el consolidado de un movimiento.
 
     `result` es la estructura anidada forms->responses->answers ya construida.
@@ -5273,6 +5274,30 @@ def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
                     "question_ids": [a["question_id"]],
                 })
                 col_types[key] = {qtype}
+
+
+    # ── Orden de las columnas ──────────────────────────────────────────────
+    # El de la vista conjunta: el orden en que se eligieron los campos al
+    # crearla (`forms_movimientos.question_ids`). Antes las columnas salian en
+    # el orden en que la base devolvia las answers —que no es ninguno en
+    # particular—, asi que "nombre, apellido, celular" se veia revuelto.
+    #
+    # Una columna de alias fusiona varios campos: se ubica en la posicion del
+    # primero de ellos. Lo que no este en la lista queda al final, y el sort es
+    # estable, asi que entre iguales se conserva el orden de aparicion.
+    if orden_preguntas:
+        posiciones = {}
+        for i, qid in enumerate(orden_preguntas):
+            try:
+                posiciones[int(qid)] = i
+            except (TypeError, ValueError):
+                continue
+
+        def _posicion_de_columna(col):
+            idxs = [posiciones[q] for q in col["question_ids"] if q in posiciones]
+            return min(idxs) if idxs else len(posiciones)
+
+        columns.sort(key=_posicion_de_columna)
 
     for col in columns:
         types = col_types.get(col["key"], set())
@@ -5545,6 +5570,10 @@ def get_answers_by_movement(
             "movement_id": movimiento.id,
             "title": movimiento.title,
             "description": movimiento.description,
+            # Orden en que se eligieron los campos al crear la vista conjunta.
+            # Esta vista arma las columnas en el cliente y las sacaba en el orden
+            # en que llegaban las answers, o sea revueltas.
+            "question_ids": movimiento.question_ids or [],
             "forms": result
         }
 
@@ -5552,6 +5581,8 @@ def get_answers_by_movement(
     consolidado = _build_movimiento_consolidado(
         result, page, page_size, date_from, date_to, search, alias, last_only,
         column_filters=_parse_column_filters(column_filters),
+        # Las columnas salen en el orden en que se eligieron los campos.
+        orden_preguntas=movimiento.question_ids,
     )
     return {
         "movement_id": movimiento.id,
@@ -5599,6 +5630,8 @@ def export_movimiento_excel(
         date_from=date_from, date_to=date_to, search=search,
         alias=alias, last_only=last_only, cap=10**9,
         column_filters=_parse_column_filters(column_filters),
+        # Las columnas salen en el orden en que se eligieron los campos.
+        orden_preguntas=movimiento.question_ids,
     )
     columns = consolidado["columns"]
     rows = consolidado["rows"]
@@ -6102,11 +6135,33 @@ def send_answers_by_email(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    # ── Asunto y mensaje del correo de cierre ──────────────────────────────
+    # Solo si el campo lo pidió Y el formato tiene esa configuración. Se lee de
+    # la BD, no del cliente. Si no hay config, el correo sale como siempre.
+    asunto_cierre = None
+    mensaje_cierre = None
+    codigo_cierre = None
+    if payload.use_close_template:
+        respuesta = db.query(Response).filter(Response.id == payload.response_id).first()
+        if respuesta:
+            config = (
+                db.query(FormCloseConfig)
+                .filter(FormCloseConfig.form_id == respuesta.form_id)
+                .first()
+            )
+            if config:
+                asunto_cierre = config.custom_email_subject
+                mensaje_cierre = config.custom_email_body
+                codigo_cierre = config.email_subject_code
+
     ok = send_response_answers_email(
         to_emails=payload.email_to,
         form_title=payload.form_title,
         response_id=payload.response_id,
-        answers=payload.answers
+        answers=payload.answers,
+        custom_subject=asunto_cierre,
+        custom_body=mensaje_cierre,
+        subject_code=codigo_cierre,
     )
 
     if not ok:
@@ -6388,7 +6443,7 @@ def _parse_column_filters(raw):
 
 def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
                                    search, alias, last_only, cap=200,
-                                   column_filters=None):
+                                   column_filters=None, orden_preguntas=None):
     """Aplana, filtra, totaliza y pagina el consolidado de un movimiento.
 
     `result` es la estructura anidada forms->responses->answers ya construida.
@@ -6466,6 +6521,30 @@ def _build_movimiento_consolidado(result, page, page_size, date_from, date_to,
                     "question_ids": [a["question_id"]],
                 })
                 col_types[key] = {qtype}
+
+
+    # ── Orden de las columnas ──────────────────────────────────────────────
+    # El de la vista conjunta: el orden en que se eligieron los campos al
+    # crearla (`forms_movimientos.question_ids`). Antes las columnas salian en
+    # el orden en que la base devolvia las answers —que no es ninguno en
+    # particular—, asi que "nombre, apellido, celular" se veia revuelto.
+    #
+    # Una columna de alias fusiona varios campos: se ubica en la posicion del
+    # primero de ellos. Lo que no este en la lista queda al final, y el sort es
+    # estable, asi que entre iguales se conserva el orden de aparicion.
+    if orden_preguntas:
+        posiciones = {}
+        for i, qid in enumerate(orden_preguntas):
+            try:
+                posiciones[int(qid)] = i
+            except (TypeError, ValueError):
+                continue
+
+        def _posicion_de_columna(col):
+            idxs = [posiciones[q] for q in col["question_ids"] if q in posiciones]
+            return min(idxs) if idxs else len(posiciones)
+
+        columns.sort(key=_posicion_de_columna)
 
     for col in columns:
         types = col_types.get(col["key"], set())

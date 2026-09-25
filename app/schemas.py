@@ -1396,6 +1396,11 @@ class SendResponseEmailRequest(BaseModel):
     form_title: str
     response_id: int
     answers: List[EmailAnswerItem]
+    # Campo "Correo destinatario" con la sub-opción "Usar el asunto y el mensaje
+    # del correo de cierre". El cliente solo dice que SÍ; el asunto, el mensaje y
+    # el código los lee el servidor de `form_close_configs`, que es donde los
+    # configuró el admin (así no se pueden inventar desde el navegador).
+    use_close_template: Optional[bool] = False
 
 class RelationQuestionRuleCreate(BaseModel):
     id_form: int
