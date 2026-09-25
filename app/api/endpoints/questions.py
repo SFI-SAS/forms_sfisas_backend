@@ -944,6 +944,14 @@ def get_related_answers(
         False,
         description="Traer solo la respuesta más reciente en vez del listado completo",
     ),
+    unique: bool = Query(
+        False,
+        description=(
+            "Devolver `data` sin repetidos. Lo usa quien solo necesita las "
+            "correlaciones (autocompletado por grupo): el listado completo puede "
+            "traer miles de items repetidos que el cliente descarta igual."
+        ),
+    ),
     db: Session = Depends(get_db), 
     current_user: User = Depends(get_current_user)
 ):
@@ -961,7 +969,9 @@ def get_related_answers(
         - `correlations`: mapeo de correlaciones entre respuestas
     """
     
-    return get_related_or_filtered_answers_optimized(db, question_id, only_latest=only_latest)
+    return get_related_or_filtered_answers_optimized(
+        db, question_id, only_latest=only_latest, unique_data=unique
+    )
 
 
 

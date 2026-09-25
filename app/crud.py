@@ -3201,6 +3201,11 @@ def get_related_or_filtered_answers_optimized(
     # Es una decisión por campo, no por pregunta, así que viaja como parámetro y
     # no se guarda en question_table_relations.
     only_latest: bool = False,
+    # `data` sin repetidos. Quien solo necesita las CORRELACIONES (el
+    # autocompletado por grupo) no usa ese listado para nada, y quien lo usa para
+    # las opciones descarta los duplicados al recibirlo. Mandar 6.000 items para
+    # que el navegador se quede con 20 era gasto puro: medido, 457 KB por campo.
+    unique_data: bool = False,
 ):
     """
     Versión optimizada que trae TODOS los datos incluyendo duplicados.
@@ -3396,15 +3401,30 @@ def get_related_or_filtered_answers_optimized(
         correlations_map = {}
         form_ids_to_search = [fq.form_id for fq in form_questions]
 
-        all_responses_with_related_question = db.query(Response).filter(
+        # Antes esto hacía dos cosas caras:
+        #   · traía los objetos ORM COMPLETOS de todas las answers del formato de
+        #     origen —medido en local, 12.000 answers = 58,7 ms solo en construir
+        #     los objetos, contra 19,1 ms pidiendo las 6 columnas que se usan—;
+        #   · y traía primero todas las Response para pasar sus ids como un `IN`
+        #     gigante, cuando la base puede resolverlo con una subconsulta.
+        # `_reconstruct_answer_rows` lee estos campos por nombre, así que las
+        # filas de SQLAlchemy le sirven igual que los objetos.
+        ids_de_respuestas = select(Response.id).where(
             Response.form_id.in_(form_ids_to_search)
-        ).all()
+        )
 
-        response_map = {r.id: r for r in all_responses_with_related_question}
-
-        all_answers = db.query(Answer).filter(
-            Answer.response_id.in_(list(response_map.keys()))
-        ).all()
+        all_answers = (
+            db.query(
+                Answer.id,
+                Answer.response_id,
+                Answer.question_id,
+                Answer.answer_text,
+                Answer.file_path,
+                Answer.repeater_row_index,
+            )
+            .filter(Answer.response_id.in_(ids_de_respuestas))
+            .all()
+        )
 
         answers_by_response = {}
         for answer in all_answers:
@@ -3445,7 +3465,16 @@ def get_related_or_filtered_answers_optimized(
                 "type": related_question.question_type.value,
             },
             
-            "data": [{"name": answer} for answer in all_unique_answers if answer],
+            # Con `unique_data` se mandan una sola vez, conservando el orden de
+            # aparición (lo mismo que hacía el cliente al recibirlos).
+            "data": [
+                {"name": answer}
+                for answer in (
+                    list(dict.fromkeys(a for a in all_unique_answers if a))
+                    if unique_data
+                    else [a for a in all_unique_answers if a]
+                )
+            ],
             "correlations": correlations_map
         }
 
