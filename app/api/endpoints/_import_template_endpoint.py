@@ -70,10 +70,10 @@ class _Informe:
     def __init__(self):
         self.grupos: dict = {}
 
-    def add(self, nivel: str, tipo: str, campo, fila: int, valor=None):
+    def add(self, nivel: str, tipo: str, campo, fila: int, valor=None, mensaje=None):
         g = self.grupos.setdefault((nivel, tipo, campo.element_id), {
             "nivel": nivel, "tipo": tipo, "campo": campo.etiqueta,
-            "mensaje": MENSAJES.get(tipo, tipo), "cantidad": 0, "ejemplos": [], "valores": {},
+            "mensaje": mensaje or MENSAJES.get(tipo, tipo), "cantidad": 0, "ejemplos": [], "valores": {},
         })
         g["cantidad"] += 1
         if len(g["ejemplos"]) < 5:
@@ -154,8 +154,11 @@ def register_import_template_route(router):
 
         # Listas que salen de las respuestas de otro formato: una consulta por lista.
         listas: dict[int, dict] = {}
+        fuentes: dict[int, str] = {}   # qid -> formato de donde sale la lista (para el mensaje)
         for rel in db.query(QuestionTableRelation).filter(QuestionTableRelation.question_id.in_(qids)).all():
             if rel.related_question_id:
+                origen = db.query(Form.title).filter(Form.id == rel.related_form_id).scalar() if rel.related_form_id else None
+                fuentes[rel.question_id] = origen or rel.name_table
                 valores = db.query(Answer.answer_text).filter(
                     Answer.question_id == rel.related_question_id, Answer.answer_text.isnot(None)
                 ).distinct().all()
@@ -182,7 +185,9 @@ def register_import_template_route(router):
             if qid in listas:
                 canon = listas[qid].get(sin_tildes(texto))
                 if canon is None:
-                    informe.add("error", "fuera_de_lista", campo, fila, texto); malos.add(i); return
+                    informe.add("error", "fuera_de_lista", campo, fila, texto,
+                                mensaje=f"no existe en {fuentes[qid]}" if fuentes.get(qid) else None)
+                    malos.add(i); return
                 texto = canon
             elif campo.opciones:
                 canon = {sin_tildes(o): o for o in campo.opciones}.get(sin_tildes(texto))
