@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 from fastapi.params import Query
 from pydantic import BaseModel, Field
 from pymysql import IntegrityError
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from app.database import get_db
@@ -1142,6 +1143,47 @@ def delete_category(category_id: int, db: Session = Depends(get_db),current_user
     db.delete(category)
     db.commit()
     return
+
+
+@router.get("/categories/counts")
+def get_question_counts_by_category(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Cuántas preguntas hay en cada carpeta, sin traer ninguna pregunta.
+
+    La pantalla de Campos necesita los números de cada carpeta para pintar el
+    listado, pero NO las preguntas: esas se cargan cuando se entra a la carpeta.
+    Antes, para tener esos números, se traían TODAS las preguntas del sistema con
+    sus formatos (medido: ~40 MB y 1,3 MB de descarga con 5.000 preguntas).
+
+    Devuelve:
+        por_categoria: {"<id>": cuantas}   — la llave "null" son las sin carpeta
+        sin_categoria: cuantas no tienen carpeta
+        total:         cuántas hay en todo el sistema
+    """
+    filas = (
+        db.query(Question.id_category, func.count(Question.id))
+        .group_by(Question.id_category)
+        .all()
+    )
+
+    por_categoria = {}
+    sin_categoria = 0
+    total = 0
+    for id_categoria, cuantas in filas:
+        total += cuantas
+        if id_categoria is None:
+            sin_categoria = cuantas
+            por_categoria["null"] = cuantas
+        else:
+            por_categoria[str(id_categoria)] = cuantas
+
+    return {
+        "por_categoria": por_categoria,
+        "sin_categoria": sin_categoria,
+        "total": total,
+    }
 
 
 @router.get("/categories/all", response_model=List[QuestionCategoryOut])

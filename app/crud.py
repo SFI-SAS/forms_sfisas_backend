@@ -653,27 +653,72 @@ def get_question_by_id_with_category(db: Session, question_id: int):
     return db.query(Question).options(joinedload(Question.category)).filter(Question.id == question_id).first()
 
 def get_questions(db: Session):
+    """Todas las preguntas del sistema, con su categoría, sus formatos y —si la
+    tiene— la pregunta de la que traen datos.
+
+    Esto era un N+1 brutal: por CADA pregunta se hacía una consulta a
+    `question_table_relations` y, si tenía relación, OTRA a `questions` para leer
+    el texto de la pregunta relacionada. Con unas pocas miles de preguntas son
+    miles de viajes a la base en una sola petición, y es la pantalla de Campos
+    (la de las carpetas con todas las preguntas) la que lo dispara: fue lo que
+    tumbó el servidor.
+
+    Ahora son tres consultas en total, sin importar cuántas preguntas haya.
+    """
     questions = db.query(Question).options(
         joinedload(Question.category),
         joinedload(Question.forms)       # ← carga los formatos vinculados
     ).all()
 
+    return _con_pregunta_relacionada(db, questions)
+
+
+def _con_pregunta_relacionada(db: Session, questions):
+    """Le cuelga a cada pregunta de qué otra pregunta trae datos.
+
+    En DOS consultas para todo el lote, pase lo que pase. Antes esto se hacía
+    dentro de un bucle —una consulta por pregunta, y otra para leer el texto de
+    la relacionada—, lo que con miles de preguntas eran miles de viajes a la base
+    en una sola petición.
+    """
+    if not questions:
+        return questions
+
+    ids = [q.id for q in questions]
+
+    relaciones = dict(
+        db.query(
+            QuestionTableRelation.question_id,
+            QuestionTableRelation.related_question_id,
+        )
+        .filter(
+            QuestionTableRelation.question_id.in_(ids),
+            QuestionTableRelation.related_question_id.isnot(None),
+        )
+        .all()
+    )
+
+    ids_relacionadas = {qid for qid in relaciones.values() if qid}
+    textos = {}
+    if ids_relacionadas:
+        textos = dict(
+            db.query(Question.id, Question.question_text)
+            .filter(Question.id.in_(ids_relacionadas))
+            .all()
+        )
+
     for question in questions:
-        relation = db.query(QuestionTableRelation).filter(
-            QuestionTableRelation.question_id == question.id
-        ).first()
-
-        if relation and relation.related_question_id:
-            related_q = db.query(Question).filter(
-                Question.id == relation.related_question_id
-            ).first()
-
-            if related_q:
-                question.related_question_id = relation.related_question_id
-                question.related_question = {
-                    "id": related_q.id,
-                    "question_text": related_q.question_text
-                }
+        relacionada_id = relaciones.get(question.id)
+        if not relacionada_id:
+            continue
+        texto = textos.get(relacionada_id)
+        if texto is None:
+            continue
+        question.related_question_id = relacionada_id
+        question.related_question = {
+            "id": relacionada_id,
+            "question_text": texto,
+        }
 
     return questions
 
@@ -693,16 +738,22 @@ def get_questions_by_category_id(db: Session, category_id: Optional[int]):
     List[Question]:
         Lista de preguntas filtradas.
     """
-    query = db.query(Question).options(joinedload(Question.category))
-    
+    # Mismos datos que el listado completo (categoría, formatos vinculados y la
+    # pregunta de la que trae datos): así la pantalla de Campos puede cargar una
+    # carpeta a la vez sin perder nada de lo que muestra.
+    query = db.query(Question).options(
+        joinedload(Question.category),
+        joinedload(Question.forms),
+    )
+
     if category_id is None:
         # Traer preguntas sin categoría (id_category es null)
         questions = query.filter(Question.id_category == None).all()
     else:
         # Traer preguntas de la categoría específica
         questions = query.filter(Question.id_category == category_id).all()
-    
-    return questions
+
+    return _con_pregunta_relacionada(db, questions)
 
 def update_question(db: Session, question_id: int, question: QuestionUpdate) -> Question:
     """
