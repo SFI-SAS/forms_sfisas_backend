@@ -417,20 +417,26 @@ def get_form_id_users(db: Session, form_id: int):
     }
 
 def get_form(db: Session, form_id: int, user_id: int):
-    # Cargar el formulario con preguntas y respuestas
+    # Cargar el formulario con sus preguntas. Las respuestas NO van en el
+    # joinedload: traía las de TODOS los usuarios con todas sus answers para
+    # luego quedarse con las de uno en Python, y /forms/all lo repetía por cada
+    # formato (picos de RAM que tumbaron el Vultr el 2026-09-25).
     form = db.query(Form).options(
         joinedload(Form.questions).joinedload(Question.options),
-        joinedload(Form.responses).joinedload(Response.answers)
     ).filter(Form.id == form_id).first()
 
     if not form:
         return None
 
-    # Filtrar respuestas según el tipo de formato
+    # Solo las respuestas de este usuario, y solo en formatos abiertos. Van en
+    # una variable local: reasignar `form.responses` en un objeto de la sesión
+    # es arriesgado si algo hace commit después.
     if form.format_type.name in ['abierto', 'semi_abierto']:
-        form.responses = [resp for resp in form.responses if resp.user_id == user_id]
+        respuestas_usuario = db.query(Response).options(
+            joinedload(Response.answers)
+        ).filter(Response.form_id == form_id, Response.user_id == user_id).all()
     else:
-        form.responses = []
+        respuestas_usuario = []
 
     questions_data = []
 
@@ -555,7 +561,7 @@ def get_form(db: Session, form_id: int, user_id: int):
 
     # Respuestas del usuario (si corresponde)
     responses_data = []
-    for response in form.responses:
+    for response in respuestas_usuario:
         response_dict = {
             "id": response.id,
             "user_id": response.user_id,
