@@ -2463,11 +2463,14 @@ def get_filtered_questions(db: Session, id_user: int):
         .all()
     )
 
-    # Obtener formularios con is_root=False que están asignados al usuario
+    # Formularios asignados al usuario. `Form.is_root` existió solo entre el
+    # 2025-04-02 y el 04-06: se quitó del modelo (y no existe en la BD) pero el
+    # filtro quedó aquí, así que este endpoint daba 500 apenas había preguntas
+    # raíz. Sin esa columna, todos los formatos son "no raíz".
     non_root_forms = (
         db.query(Form)
         .join(FormModerators, Form.id == FormModerators.form_id)
-        .filter(Form.is_root == False, FormModerators.user_id == id_user)
+        .filter(FormModerators.user_id == id_user)
         .all()
     )
 
