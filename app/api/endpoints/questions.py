@@ -2320,20 +2320,52 @@ def delete_all_orphaned_questions(
     if not orphaned:
         return {"message": "No hay campos huérfanos para eliminar", "deleted_count": 0}
 
-    deleted_ids = []
-    errors = []
+    ids = [q["id"] for q in orphaned]
 
-    for q in orphaned:
-        try:
-            delete_question_from_db(db, q["id"])
-            deleted_ids.append(q["id"])
-        except Exception as e:
-            db.rollback()
-            errors.append({"id": q["id"], "error": str(e)})
+    # En bloque, no de uno en uno.
+    #
+    # Antes esto era, por CADA campo, siete consultas y un commit. Con la base en
+    # otra máquina son ocho viajes de ida y vuelta por campo: con doscientos
+    # campos, mil seiscientos viajes para un trabajo que en realidad es mínimo
+    # (un huérfano, por definición, no tiene respuestas ni está en ningún
+    # formato). Lo que costaba era el ir y venir, no el borrado.
+    #
+    # Ahora son siete sentencias en total, vaya uno o vayan mil, y UNA sola
+    # transacción: o se borran todos o no se borra ninguno.
+    #
+    # Estas son exactamente las tablas que apuntan a `questions` con ON DELETE
+    # NO ACTION, o sea las que hay que limpiar a mano. Las demás
+    # (`relation_question_rule`, `form_service_classification`) caen solas por
+    # CASCADE, y las que solo guardan una referencia suelta quedan en NULL.
+    borrados = [
+        "DELETE FROM answers                    WHERE question_id = ANY(:ids)",
+        "DELETE FROM form_answers               WHERE question_id = ANY(:ids)",
+        "DELETE FROM form_questions             WHERE question_id = ANY(:ids)",
+        "DELETE FROM options                    WHERE question_id = ANY(:ids)",
+        "DELETE FROM question_table_relations   WHERE question_id = ANY(:ids) OR related_question_id = ANY(:ids)",
+        """DELETE FROM question_filter_conditions
+              WHERE filtered_question_id  = ANY(:ids)
+                 OR source_question_id    = ANY(:ids)
+                 OR condition_question_id = ANY(:ids)""",
+        "DELETE FROM questions                  WHERE id = ANY(:ids)",
+    ]
+
+    try:
+        for sentencia in borrados:
+            db.execute(text(sentencia), {"ids": ids})
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"No se pudo eliminar los campos sin uso: {e}",
+        )
+
+    cache_listas.invalidar()
 
     return {
-        "message": f"Se eliminaron {len(deleted_ids)} campos huérfanos",
-        "deleted_count": len(deleted_ids),
-        "deleted_ids": deleted_ids,
-        "errors": errors,
+        "message": f"Se eliminaron {len(ids)} campos huérfanos",
+        "deleted_count": len(ids),
+        "deleted_ids": ids,
+        "errors": [],
     }
