@@ -300,6 +300,7 @@ def update_question_endpoint(
 def search_questions(
     q: str = Query("", description="Texto a buscar en el nombre o la descripción; si es un número, también busca por id"),
     limit: int = Query(100, ge=1, le=500, description="Cuántos resultados como máximo"),
+    question_type: Optional[str] = Query(None, description="Filtrar por tipo de pregunta"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -313,25 +314,29 @@ def search_questions(
     escrito es un número también trae la pregunta con ese id.
     """
     texto = (q or "").strip()
-    if not texto:
-        return []
 
-    patron = f"%{texto}%"
-    condiciones = [
-        Question.question_text.ilike(patron),
-        Question.description.ilike(patron),
-    ]
-    if texto.isdigit():
-        condiciones.append(Question.id == int(texto))
-
-    preguntas = (
-        db.query(Question)
-        .options(joinedload(Question.category), joinedload(Question.forms))
-        .filter(or_(*condiciones))
-        .order_by(Question.id)
-        .limit(limit)
-        .all()
+    consulta = db.query(Question).options(
+        joinedload(Question.category),
+        joinedload(Question.forms),
     )
+
+    if question_type:
+        consulta = consulta.filter(cast(Question.question_type, String) == question_type)
+
+    if texto:
+        patron = f"%{texto}%"
+        condiciones = [
+            Question.question_text.ilike(patron),
+            Question.description.ilike(patron),
+        ]
+        if texto.isdigit():
+            condiciones.append(Question.id == int(texto))
+        preguntas = consulta.filter(or_(*condiciones)).order_by(Question.id).limit(limit).all()
+    else:
+        # Sin texto: las últimas creadas. Es lo que se muestra en el selector de
+        # pregunta de origen mientras nadie ha escrito nada, para que la lista no
+        # aparezca vacía sin traerse el banco entero.
+        preguntas = consulta.order_by(Question.id.desc()).limit(limit).all()
 
     return _con_pregunta_relacionada(db, preguntas)
 
