@@ -44,6 +44,7 @@ from app.models import Answer, AnswerHistory, ApprovalStatus, CategoryApproval, 
 from app.crud import  _extract_style_config, _serialize_answers, add_category_approver, analyze_form_relations, apply_template_service, bulk_save_category_approvers, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, create_template_service, delete_form, delete_form_category, delete_template_service, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_categories_with_approvers, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_approvals, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_template_detail_service, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, list_templates_service, move_category, process_regisfacial_answer, remove_category_approver, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, sync_form_approvals_from_category, toggle_form_status, update_category_approver, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status, update_template_service, update_form_movimiento
 from app.schemas import AlertMessageRequest, AnswerEditorsConfigOut, AnswerEditorsConfigUpdate, AnswerEditorUserOut, CategoryApprovalBulkSave, CategoryApprovalCreate, CategoryApprovalResponse, CategoryApprovalUpdate, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormDraftUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, FormTemplateCreate, FormTemplateDetail, FormTemplateResponse, FormTemplateUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user, require_roles
+from app.core import cache_listas
 from app.core import field_access, response_scope
 from io import BytesIO
 import pandas as pd
@@ -190,7 +191,10 @@ def create_form_endpoint(
             detail="User does not have permission to create forms"
         )
 
-    return create_form(db=db, form=form, user_id=current_user.id)
+    creado = create_form(db=db, form=form, user_id=current_user.id)
+    # Los listados de formatos en caché cambiaron.
+    cache_listas.invalidar()
+    return creado
 
 
 
@@ -4355,6 +4359,7 @@ def update_form_basic_info(
 
     db.commit()
     db.refresh(form)
+    cache_listas.invalidar()
 
     return {
         "message": "Información del formulario actualizada correctamente",
@@ -4383,7 +4388,10 @@ def update_form_status(
             detail="Only administrators can enable or disable forms"
         )
     
-    return toggle_form_status(db, form_id, status_update.is_enabled)
+    resultado = toggle_form_status(db, form_id, status_update.is_enabled)
+    # "Formatos disponibles" solo lista los habilitados.
+    cache_listas.invalidar()
+    return resultado
 
 
 @router.get("/{form_id}/draft")

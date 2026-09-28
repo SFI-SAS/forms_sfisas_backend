@@ -14,14 +14,15 @@ logger = logging.getLogger(__name__)
 from fastapi.params import Query
 from pydantic import BaseModel, Field
 from pymysql import IntegrityError
-from sqlalchemy import func
+from sqlalchemy import String, cast, distinct, exists, func, or_, select, text
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from app.database import get_db
 from app.models import Answer, Response, Form, FormQuestion, Question, QuestionCategory, QuestionFilterCondition, QuestionLocationRelation, QuestionTableRelation, QuestionType, RelationQuestionRule, User, UserType
-from app.crud import  create_question_table_relation_logic, update_question_table_relation_logic, delete_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_answers_by_question_id, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers_optimized, get_related_or_filtered_answers_with_forms, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
+from app.crud import  _con_pregunta_relacionada, create_question_table_relation_logic, update_question_table_relation_logic, delete_question_table_relation_logic, delete_question_from_db, get_answers_by_question, get_answers_by_question_id, get_filtered_questions, get_question_by_id_with_category, get_questions_by_category_id, get_related_or_filtered_answers_optimized, get_related_or_filtered_answers_with_forms, get_unrelated_questions, update_question, get_questions, get_question_by_id, create_options, get_options_by_question_id
 from app.schemas import AnswerByQuestionResponse, AnswerSchema, DetectSelectRelationsRequest, QuestionCategoryCreate, QuestionCategoryOut, QuestionCreate, QuestionLocationRelationCreate, QuestionLocationRelationOut, QuestionTableRelationCreate, QuestionTableRelationUpdate, QuestionUpdate, QuestionResponse, OptionResponse, OptionCreate, QuestionUpdatePayload, QuestionWithCategory, RelationQuestionRuleCreate, RelationQuestionRuleResponse, UpdateQuestionCategory
 from app.core.security import get_current_user, require_roles
+from app.core import cache_listas
 
 router = APIRouter()
 
@@ -119,6 +120,10 @@ def get_available_forms(
     Usado en el modal de selección de formato al crear una pregunta.
     """
 
+    en_cache = cache_listas.obtener("formatos_disponibles")
+    if en_cache is not None:
+        return en_cache
+
     forms = (
         db.query(Form.id, Form.title, Form.description, Form.format_type)
         .filter(Form.is_enabled == True)
@@ -126,7 +131,7 @@ def get_available_forms(
         .all()
     )
 
-    return [
+    return cache_listas.guardar("formatos_disponibles", [
         {
             "id": f.id,
             "title": f.title,
@@ -134,7 +139,7 @@ def get_available_forms(
             "format_type": f.format_type.value if f.format_type else None,
         }
         for f in forms
-    ]
+    ])
 
 
 @router.get("/by-form/{form_id}")
@@ -208,6 +213,8 @@ def create_question_endpoint(
         db.add(db_question)
         db.commit()
         db.refresh(db_question)
+        # Los conteos y los listados en caché cambiaron.
+        cache_listas.invalidar()
         return db_question
     except IntegrityError:
         db.rollback()
@@ -285,7 +292,143 @@ def update_question_endpoint(
                 detail=f"Ya existe otra pregunta con ese texto (#{dup[0]}). No se permiten preguntas duplicadas."
             )
 
-    return update_question(db=db, question_id=question_id, question=question)
+    actualizada = update_question(db=db, question_id=question_id, question=question)
+    cache_listas.invalidar()
+    return actualizada
+
+@router.get("/search", response_model=List[QuestionWithCategory])
+def search_questions(
+    q: str = Query("", description="Texto a buscar en el nombre o la descripción; si es un número, también busca por id"),
+    limit: int = Query(100, ge=1, le=500, description="Cuántos resultados como máximo"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Busca preguntas en todo el sistema, EN LA BASE.
+
+    La pantalla de Campos hacía esta búsqueda en el navegador, y para eso tenía
+    que haberse traído antes las miles de preguntas del sistema (1,4 MB). Aquí
+    busca la base y devuelve un máximo acotado de resultados.
+
+    Busca en el nombre y en la descripción, sin distinguir mayúsculas, y si lo
+    escrito es un número también trae la pregunta con ese id.
+    """
+    texto = (q or "").strip()
+    if not texto:
+        return []
+
+    patron = f"%{texto}%"
+    condiciones = [
+        Question.question_text.ilike(patron),
+        Question.description.ilike(patron),
+    ]
+    if texto.isdigit():
+        condiciones.append(Question.id == int(texto))
+
+    preguntas = (
+        db.query(Question)
+        .options(joinedload(Question.category), joinedload(Question.forms))
+        .filter(or_(*condiciones))
+        .order_by(Question.id)
+        .limit(limit)
+        .all()
+    )
+
+    return _con_pregunta_relacionada(db, preguntas)
+
+
+@router.get("/picker/formats")
+def get_picker_formats(
+    question_type: Optional[str] = Query(
+        None,
+        description="Filtrar por tipo de pregunta (p. ej. `regisfacial` para los campos de firma)",
+    ),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Paso 1 del selector de pregunta de origen: en qué formato buscar.
+
+    Devuelve los formatos que TIENEN preguntas vinculadas, con cuántas tiene cada
+    uno, más los dos atajos del selector: cuántas preguntas hay en total y
+    cuántas no están en ningún formato.
+
+    Antes esto se calculaba en el navegador recorriendo TODAS las preguntas del
+    sistema (1.114 ms y 1,4 MB de descarga cada vez que se abría el selector).
+    Aquí son dos consultas con GROUP BY que no traen ninguna pregunta.
+    """
+    clave_cache = f"picker_formatos:{question_type or 'todos'}"
+    en_cache = cache_listas.obtener(clave_cache)
+    if en_cache is not None:
+        return en_cache
+
+    filtros = []
+    if question_type:
+        # `cast` y no comparación directa con el enum: así funciona igual con el
+        # enum nativo de Postgres sin depender del driver.
+        filtros.append(cast(Question.question_type, String) == question_type)
+
+    formatos = (
+        db.query(Form.id, Form.title, func.count(distinct(Question.id)).label("cuantas"))
+        .join(FormQuestion, FormQuestion.form_id == Form.id)
+        .join(Question, Question.id == FormQuestion.question_id)
+        .filter(*filtros)
+        .group_by(Form.id, Form.title)
+        .order_by(Form.title)
+        .all()
+    )
+
+    sin_formato = (
+        db.query(func.count(Question.id))
+        .filter(
+            ~exists().where(FormQuestion.question_id == Question.id),
+            *filtros,
+        )
+        .scalar()
+    ) or 0
+
+    total = (db.query(func.count(Question.id)).filter(*filtros).scalar()) or 0
+
+    return cache_listas.guardar(clave_cache, {
+        "formatos": [
+            {"id": f.id, "title": f.title, "count": int(f.cuantas)}
+            for f in formatos
+        ],
+        "sin_formato": int(sin_formato),
+        "total": int(total),
+    })
+
+
+@router.get("/picker/questions", response_model=List[QuestionWithCategory])
+def get_picker_questions(
+    form_id: Optional[int] = Query(None, description="Formato del que traer las preguntas"),
+    sin_formato: bool = Query(False, description="Traer las que no están en ningún formato"),
+    question_type: Optional[str] = Query(None, description="Filtrar por tipo de pregunta"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Paso 2 del selector: las preguntas del formato elegido.
+
+    Devuelve lo mismo que el listado completo (categoría, formatos vinculados y
+    la pregunta de la que trae datos), así que el cliente las puede usar igual.
+    """
+    query = db.query(Question).options(
+        joinedload(Question.category),
+        joinedload(Question.forms),
+    )
+
+    if sin_formato:
+        query = query.filter(~exists().where(FormQuestion.question_id == Question.id))
+    elif form_id is not None:
+        query = query.filter(
+            Question.id.in_(
+                select(FormQuestion.question_id).where(FormQuestion.form_id == form_id)
+            )
+        )
+
+    if question_type:
+        query = query.filter(cast(Question.question_type, String) == question_type)
+
+    return _con_pregunta_relacionada(db, query.order_by(Question.id).all())
+
 
 @router.get("/", response_model=List[QuestionWithCategory])
 def get_all_questions(
@@ -523,7 +666,9 @@ def delete_question(question_id: int, db: Session = Depends(get_db), current_use
     # lo aplica require_roles en la firma (admin/creator). Se elimina el check
     # muerto. Los consumidores (Welcome.tsx, CreateQuestion.tsx) son flujos de
     # gestión de preguntas usados por admin/creator.
-    return delete_question_from_db(db, question_id)
+    borrada = delete_question_from_db(db, question_id)
+    cache_listas.invalidar()
+    return borrada
 
 
 @router.get("/{question_id}/answers", response_model=List[AnswerSchema])
@@ -1162,6 +1307,12 @@ def get_question_counts_by_category(
         sin_categoria: cuantas no tienen carpeta
         total:         cuántas hay en todo el sistema
     """
+    # En caché: es el primer dato que pide la pantalla de Campos y cambia solo
+    # cuando alguien crea, mueve o borra una pregunta (ahí se invalida).
+    en_cache = cache_listas.obtener("conteos_preguntas")
+    if en_cache is not None:
+        return en_cache
+
     filas = (
         db.query(Question.id_category, func.count(Question.id))
         .group_by(Question.id_category)
@@ -1179,11 +1330,11 @@ def get_question_counts_by_category(
         else:
             por_categoria[str(id_categoria)] = cuantas
 
-    return {
+    return cache_listas.guardar("conteos_preguntas", {
         "por_categoria": por_categoria,
         "sin_categoria": sin_categoria,
         "total": total,
-    }
+    })
 
 
 @router.get("/categories/all", response_model=List[QuestionCategoryOut])
@@ -1214,6 +1365,7 @@ def update_question_category(
     question.id_category = category_data.id_category
     db.commit()
     db.refresh(question)
+    cache_listas.invalidar()
 
     return {
         "message": "Categoría actualizada correctamente",
@@ -2051,6 +2203,7 @@ def update_question_endpoint(
 
     db.commit()
     db.refresh(question)
+    cache_listas.invalidar()
 
     return {
         "message": "Pregunta actualizada correctamente",
@@ -2062,7 +2215,11 @@ def update_question_endpoint(
 # ── Campos huérfanos (sin uso) ───────────────────────────────────────────────
 
 def _extract_question_ids_from_design(items: list, result: set):
-    """Recorre recursivamente el form_design y extrae todos los id_question."""
+    """Recorre recursivamente el form_design y extrae todos los id_question.
+
+    Ya no lo usa `/orphaned/list` —eso ahora lo resuelve la base—, pero se deja
+    porque es la forma de hacerlo cuando ya se tiene un diseño en memoria.
+    """
     for item in items:
         if isinstance(item, dict):
             qid = item.get("id_question")
@@ -2086,49 +2243,60 @@ def list_orphaned_questions(
     ni referenciadas en ningún form_design, ni tienen respuestas,
     ni tienen reglas de notificación.
     """
-    from sqlalchemy import distinct
+    # Una sola consulta, y devuelve SOLO las huérfanas.
+    #
+    # Antes esto traía a memoria todas las preguntas, todos los vínculos con
+    # formatos, el JSON del diseño de TODOS los formatos (para recorrerlo en
+    # Python) y un DISTINCT sobre toda la tabla de answers. Con un sistema
+    # mediano eso son decenas de MB por petición.
+    #
+    # Los ids que aparecen en los diseños se sacan con una expresión regular y
+    # no casteando a jsonb: `form_design` es una columna de TEXTO, y si un solo
+    # formato tuviera el JSON mal formado el cast tumbaría la consulta entera.
+    # La regex acepta tanto `"id_question": 123` como `"id_question": "123"`.
+    # Si por casualidad un texto contuviera algo así, la pregunta se daría por
+    # usada: es el lado seguro del error (no se borra nada por equivocación).
+    filas = db.execute(text(r"""
+        WITH ids_en_disenos AS (
+            SELECT DISTINCT (coincidencia[1])::bigint AS qid
+            FROM forms f,
+                 LATERAL regexp_matches(
+                     f.form_design, '"id_question"\s*:\s*"?(\d+)"?', 'g'
+                 ) AS coincidencia
+            WHERE f.form_design IS NOT NULL
+        )
+        SELECT q.id,
+               q.question_text,
+               cast(q.question_type AS varchar) AS question_type,
+               q.description,
+               q.required,
+               q.id_form,
+               c.id   AS categoria_id,
+               c.name AS categoria_nombre
+        FROM questions q
+        LEFT JOIN question_categories c ON c.id = q.id_category
+        WHERE NOT EXISTS (SELECT 1 FROM form_questions fq WHERE fq.question_id = q.id)
+          AND NOT EXISTS (SELECT 1 FROM answers a WHERE a.question_id = q.id)
+          AND NOT EXISTS (SELECT 1 FROM relation_question_rule r WHERE r.id_question = q.id)
+          AND NOT EXISTS (SELECT 1 FROM ids_en_disenos d WHERE d.qid = q.id)
+        ORDER BY q.id
+    """)).all()
 
-    all_questions = db.query(Question).options(joinedload(Question.category)).all()
-
-    # 1. IDs en form_questions (vinculadas a un formato)
-    linked_ids = set(
-        r[0] for r in db.query(FormQuestion.question_id).all()
-    )
-
-    # 2. IDs referenciadas en form_design JSON de TODOS los formatos
-    design_ids: set = set()
-    forms_with_design = db.query(Form.form_design).filter(Form.form_design.isnot(None)).all()
-    for (design,) in forms_with_design:
-        if design and isinstance(design, list):
-            _extract_question_ids_from_design(design, design_ids)
-
-    # 3. IDs con respuestas (answers)
-    answered_ids = set(
-        r[0] for r in db.query(distinct(Answer.question_id)).all()
-    )
-
-    # 4. IDs en relation_question_rule (reglas de notificación)
-    rule_ids = set(
-        r[0] for r in db.query(RelationQuestionRule.id_question).all()
-    )
-
-    in_use = linked_ids | design_ids | answered_ids | rule_ids
-
-    orphaned = []
-    for q in all_questions:
-        if q.id not in in_use:
-            orphaned.append({
-                "id": q.id,
-                "question_text": q.question_text,
-                "question_type": q.question_type.value if q.question_type else None,
-                "description": q.description,
-                "required": q.required,
-                "id_form": q.id_form,
-                "category": {
-                    "id": q.category.id,
-                    "name": q.category.name,
-                } if q.category else None,
-            })
+    orphaned = [
+        {
+            "id": fila.id,
+            "question_text": fila.question_text,
+            "question_type": fila.question_type,
+            "description": fila.description,
+            "required": fila.required,
+            "id_form": fila.id_form,
+            "category": (
+                {"id": fila.categoria_id, "name": fila.categoria_nombre}
+                if fila.categoria_id is not None else None
+            ),
+        }
+        for fila in filas
+    ]
 
     return {"count": len(orphaned), "questions": orphaned}
 
