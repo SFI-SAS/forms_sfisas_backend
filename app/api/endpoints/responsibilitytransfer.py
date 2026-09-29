@@ -1,7 +1,12 @@
+import logging
 from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from requests import Session
+# `Session` de SQLAlchemy. Antes se importaba `from requests import Session`,
+# que es la sesión HTTP de la librería `requests`: no tiene nada que ver con
+# la base. Funcionaba de casualidad porque el parámetro lo resuelve
+# `Depends(get_db)`, pero la anotación mentía.
+from sqlalchemy.orm import Session
 
 from app.api.controllers.responsibility_service import ResponsibilityTransferService
 from app.core.security import get_current_user, require_roles
@@ -17,10 +22,17 @@ class SpecificTransferRequest(BaseModel):
     from_user_id: int
     to_user_id: int
     form_ids: List[int]
-    responsibility_types: List[str] = ['schedules', 'approvals', 'notifications', 'moderators']
+    # Por defecto, TODO lo transferible. Sin 'pending_approvals' aquí, quien
+    # llamara sin indicar tipos se dejaría atrás justo lo que tiene a alguien
+    # esperando.
+    responsibility_types: List[str] = [
+        'schedules', 'approvals', 'notifications', 'moderators', 'pending_approvals'
+    ]
 
 class BatchTransferRequest(BaseModel):
     transfers: List[Dict[str, Any]]
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -46,7 +58,17 @@ async def transfer_responsibilities(
             request.to_user_id
         )
         return result
-    except Exception as e:
+    except HTTPException:
+        # Los 403/404 que lanza el propio endpoint tienen que salir tal cual:
+        # antes se convertían todos en el mismo 400 sin motivo.
+        raise
+    except ValueError as e:
+        # Errores de validación del servicio ("no existe el usuario", "hay que
+        # indicar al menos un formato"): son para quien llama, y el mensaje es
+        # nuestro, no un detalle interno.
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Falló la transferencia de responsabilidades")
         raise HTTPException(status_code=400, detail="No se pudo procesar la solicitud")
 
 @router.post("/transfer-specific-responsibilities")
@@ -77,7 +99,17 @@ async def transfer_specific_responsibilities(
             request.responsibility_types
         )
         return result
-    except Exception as e:
+    except HTTPException:
+        # Los 403/404 que lanza el propio endpoint tienen que salir tal cual:
+        # antes se convertían todos en el mismo 400 sin motivo.
+        raise
+    except ValueError as e:
+        # Errores de validación del servicio ("no existe el usuario", "hay que
+        # indicar al menos un formato"): son para quien llama, y el mensaje es
+        # nuestro, no un detalle interno.
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Falló la transferencia de responsabilidades")
         raise HTTPException(status_code=400, detail="No se pudo procesar la solicitud")
 
 @router.get("/user-responsibilities/{user_id}")
@@ -99,6 +131,16 @@ async def get_user_responsibilities(
         service = ResponsibilityTransferService(db)
         result = service.get_user_responsibilities(user_id)
         return result
-    except Exception as e:
+    except HTTPException:
+        # Los 403/404 que lanza el propio endpoint tienen que salir tal cual:
+        # antes se convertían todos en el mismo 400 sin motivo.
+        raise
+    except ValueError as e:
+        # Errores de validación del servicio ("no existe el usuario", "hay que
+        # indicar al menos un formato"): son para quien llama, y el mensaje es
+        # nuestro, no un detalle interno.
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("Falló la transferencia de responsabilidades")
         raise HTTPException(status_code=400, detail="No se pudo procesar la solicitud")
 

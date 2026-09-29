@@ -17,7 +17,7 @@ import json
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
@@ -32,7 +32,10 @@ from app.models import (
     ConsultantAssignment,
     ConsultantScope,
     Form,
+    FormQuestion,
     FormCategory,
+    Question,
+    QuestionType,
     Response,
     ResponseApproval,
     User,
@@ -43,6 +46,7 @@ from app.schemas import (
     ConsultantAssignmentCreate,
     ConsultantAssignmentOut,
     ConsultantAssignmentUpdate,
+    ConsultantFilterQuestionOut,
     ConsultantResponseRow,
     ConsultantResponsesPage,
     ConsultantScopeStr,
@@ -75,6 +79,156 @@ def _validate_scope_payload(
     elif scope == ConsultantScopeStr.category:
         if not category_id or form_id or target_user_id:
             raise HTTPException(400, "scope=category requiere solo category_id")
+    elif scope == ConsultantScopeStr.answer:
+        # Este no cuelga de nada del sistema: cuelga del valor, que viaja en
+        # `filter_value` y lo valida `_validar_filtro`.
+        if form_id or target_user_id or category_id:
+            raise HTTPException(
+                400,
+                "scope=answer no lleva formato, usuario ni categoría: solo el valor",
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Acotar por la respuesta de una pregunta tipo lista
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Un consultor con alcance "formato" ve TODAS las respuestas del formato. Esto
+# permite dejarle solo un trozo: "las respuestas donde el proyecto sea ALFA".
+
+# Tipos de pregunta que por sí solos ya son una lista cerrada.
+_TIPOS_LISTA = (QuestionType.one_choice, QuestionType.multiple_choice)
+
+# Elementos del diseño que se pintan como una lista desplegable.
+_ELEMENTOS_LISTA = ("select",)
+
+
+def _ids_de_preguntas_lista_del_diseno(form_design) -> dict:
+    """Las preguntas que en el DISEÑO son un campo de lista: {id: etiqueta}.
+
+    Hay que mirar el diseño y no solo `questions.question_type`: en Safemetrics
+    un campo "lista" se guarda con tipos muy distintos según de dónde saque sus
+    opciones. Contado sobre los 178 formatos de producción, los campos `select`
+    del diseño apuntan a preguntas de tipo `table` (992), `one_choice` (627),
+    `text` (472) y hasta `number` (20). Filtrar por `question_type` dejaría
+    fuera a la mayoría de las listas reales.
+    """
+    encontrados: dict = {}
+
+    def recorrer(items):
+        if not isinstance(items, list):
+            return
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            if it.get("type") in _ELEMENTOS_LISTA:
+                qid = it.get("id_question") or it.get("linkExternalId")
+                etiqueta = ((it.get("props") or {}).get("label") or "").strip()
+                try:
+                    if qid is not None:
+                        encontrados[int(qid)] = etiqueta or None
+                except (TypeError, ValueError):
+                    pass
+            hijos = it.get("children")
+            if isinstance(hijos, list):
+                recorrer(hijos)
+
+    diseno = form_design
+    if isinstance(diseno, str):
+        try:
+            diseno = json.loads(diseno)
+        except Exception:
+            return encontrados
+    recorrer(diseno)
+    return encontrados
+
+
+def _preguntas_lista_del_formato(db: Session, form_id: int):
+    """Las preguntas del formato que sirven para acotar, con su etiqueta.
+
+    Devuelve [(Question, etiqueta_del_diseño)]. La etiqueta es lo que se enseña:
+    el `question_text` suele ser un código interno.
+    """
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(404, "Formato no encontrado")
+
+    etiquetas = _ids_de_preguntas_lista_del_diseno(form.form_design)
+
+    condiciones = [Question.question_type.in_(_TIPOS_LISTA)]
+    if etiquetas:
+        condiciones.append(Question.id.in_(list(etiquetas)))
+
+    preguntas = (
+        db.query(Question)
+        .join(FormQuestion, FormQuestion.question_id == Question.id)
+        .filter(FormQuestion.form_id == form_id)
+        .filter(or_(*condiciones))
+        .all()
+    )
+
+    # Ordenadas por lo que se VE, no por el código con el que están guardadas.
+    conetiqueta = [(q, etiquetas.get(q.id)) for q in preguntas]
+    conetiqueta.sort(key=lambda par: (par[1] or par[0].question_text or "").lower())
+    return conetiqueta
+
+
+def _validar_filtro(
+    db: Session,
+    scope: ConsultantScopeStr,
+    form_id: Optional[int],
+    filter_question_id: Optional[int],
+    filter_value: Optional[str],
+) -> Optional[str]:
+    """Valida el valor del filtro y lo devuelve limpio (o None si no hay).
+
+    Sirve a dos cosas distintas:
+
+    · con alcance formato / formato+usuario, ACOTA lo que ya se ve: hacen falta
+      la pregunta y el valor, las dos o ninguna (una pregunta sin valor no
+      acota nada, y un valor sin pregunta no se sabe contra qué comparar);
+
+    · con alcance `answer`, ES la regla entera: basta el valor, y la pregunta
+      sobra porque se mira en cualquier campo de cualquier formato.
+    """
+    valor = (filter_value or "").strip()
+
+    if scope == ConsultantScopeStr.answer:
+        if not valor:
+            raise HTTPException(400, "scope=answer necesita la respuesta a buscar")
+        if filter_question_id:
+            raise HTTPException(
+                400,
+                "scope=answer mira en cualquier campo: no lleva pregunta",
+            )
+        return valor
+
+    if filter_question_id is None and not valor:
+        return None
+
+    if scope not in (ConsultantScopeStr.form, ConsultantScopeStr.form_user):
+        raise HTTPException(
+            400,
+            "Acotar por respuesta solo se puede con alcance formato o formato + usuario",
+        )
+    if not (filter_question_id and valor):
+        raise HTTPException(
+            400,
+            "Para acotar hacen falta la pregunta y la respuesta (o ninguna de las dos)",
+        )
+
+    pertenece = (
+        db.query(FormQuestion.id)
+        .filter(
+            FormQuestion.form_id == form_id,
+            FormQuestion.question_id == filter_question_id,
+        )
+        .first()
+    )
+    if not pertenece:
+        raise HTTPException(404, "La pregunta no pertenece al formato indicado")
+
+    return valor
 
 
 def _serialize_assignment(a: ConsultantAssignment) -> ConsultantAssignmentOut:
@@ -90,6 +244,9 @@ def _serialize_assignment(a: ConsultantAssignment) -> ConsultantAssignmentOut:
         target_user_name=a.target_user.name if a.target_user else None,
         category_id=a.category_id,
         category_name=a.category.name if a.category else None,
+        filter_question_id=a.filter_question_id,
+        filter_question_text=a.filter_question.question_text if a.filter_question else None,
+        filter_value=a.filter_value,
         is_active=a.is_active,
         created_at=a.created_at,
     )
@@ -107,6 +264,10 @@ def create_assignment(
 ):
     _validate_scope_payload(
         payload.scope, payload.form_id, payload.target_user_id, payload.category_id
+    )
+    valor_filtro = _validar_filtro(
+        db, payload.scope, payload.form_id,
+        payload.filter_question_id, payload.filter_value,
     )
 
     if not db.query(User.id).filter(User.id == payload.consultant_id).first():
@@ -138,6 +299,19 @@ def create_assignment(
         if payload.category_id is not None
         else ConsultantAssignment.category_id.is_(None)
     )
+    # Dos asignaciones al mismo formato con DISTINTO filtro no son duplicadas:
+    # son dos trozos distintos del formato, y es justo lo que se quiere poder
+    # hacer (un consultor que ve el proyecto ALFA y el BETA, pero no el resto).
+    dup_q = dup_q.filter(
+        ConsultantAssignment.filter_question_id == payload.filter_question_id
+        if payload.filter_question_id is not None
+        else ConsultantAssignment.filter_question_id.is_(None)
+    )
+    dup_q = dup_q.filter(
+        ConsultantAssignment.filter_value == valor_filtro
+        if valor_filtro is not None
+        else ConsultantAssignment.filter_value.is_(None)
+    )
     if dup_q.first():
         raise HTTPException(400, "Ya existe una asignación equivalente activa")
 
@@ -147,6 +321,8 @@ def create_assignment(
         form_id=payload.form_id,
         target_user_id=payload.target_user_id,
         category_id=payload.category_id,
+        filter_question_id=payload.filter_question_id if valor_filtro else None,
+        filter_value=valor_filtro,
         created_by=current_user.id,
         is_active=True,
     )
@@ -162,6 +338,7 @@ def create_assignment(
             joinedload(ConsultantAssignment.target_user),
             joinedload(ConsultantAssignment.form),
             joinedload(ConsultantAssignment.category),
+            joinedload(ConsultantAssignment.filter_question),
         )
         .filter(ConsultantAssignment.id == new_a.id)
         .first()
@@ -187,11 +364,21 @@ def bulk_create_assignments(
     if not db.query(User.id).filter(User.id == payload.consultant_id).first():
         raise HTTPException(404, "Consultor no encontrado")
 
+    # El valor del filtro ya limpio, por regla (lo devuelve `_validar_filtro`).
+    valores_filtro: dict = {}
+
     # ── Validación previa de TODAS las reglas (fail-fast antes de tocar DB) ──
     for idx, rule in enumerate(payload.rules, start=1):
         try:
             _validate_scope_payload(
                 rule.scope, rule.form_id, rule.target_user_id, rule.category_id
+            )
+        except HTTPException as e:
+            raise HTTPException(400, f"Regla #{idx}: {e.detail}")
+
+        try:
+            valores_filtro[idx] = _validar_filtro(
+                db, rule.scope, rule.form_id, rule.filter_question_id, rule.filter_value
             )
         except HTTPException as e:
             raise HTTPException(400, f"Regla #{idx}: {e.detail}")
@@ -224,6 +411,18 @@ def bulk_create_assignments(
             if rule.category_id is not None
             else ConsultantAssignment.category_id.is_(None)
         )
+        # Dos reglas al mismo formato con DISTINTO filtro no son duplicadas: son
+        # dos trozos distintos, y es justo lo que se quiere poder hacer.
+        dup_q = dup_q.filter(
+            ConsultantAssignment.filter_question_id == rule.filter_question_id
+            if rule.filter_question_id is not None
+            else ConsultantAssignment.filter_question_id.is_(None)
+        )
+        dup_q = dup_q.filter(
+            ConsultantAssignment.filter_value == valores_filtro.get(idx)
+            if valores_filtro.get(idx) is not None
+            else ConsultantAssignment.filter_value.is_(None)
+        )
         if dup_q.first():
             raise HTTPException(
                 400, f"Regla #{idx}: ya existe una asignación equivalente activa"
@@ -232,7 +431,8 @@ def bulk_create_assignments(
     # Duplicados ENTRE las reglas del propio payload
     seen_keys = set()
     for idx, rule in enumerate(payload.rules, start=1):
-        key = (rule.scope.value, rule.form_id, rule.target_user_id, rule.category_id)
+        key = (rule.scope.value, rule.form_id, rule.target_user_id, rule.category_id,
+               rule.filter_question_id, valores_filtro.get(idx))
         if key in seen_keys:
             raise HTTPException(
                 400, f"Regla #{idx}: duplicada dentro del envío"
@@ -242,13 +442,16 @@ def bulk_create_assignments(
     # ── Inserción atómica ──
     new_records: List[ConsultantAssignment] = []
     try:
-        for rule in payload.rules:
+        for idx, rule in enumerate(payload.rules, start=1):
+            valor_filtro = valores_filtro.get(idx)
             obj = ConsultantAssignment(
                 consultant_id=payload.consultant_id,
                 scope=ConsultantScope(rule.scope.value),
                 form_id=rule.form_id,
                 target_user_id=rule.target_user_id,
                 category_id=rule.category_id,
+                filter_question_id=rule.filter_question_id if valor_filtro else None,
+                filter_value=valor_filtro,
                 created_by=current_user.id,
                 is_active=True,
             )
@@ -268,11 +471,113 @@ def bulk_create_assignments(
             joinedload(ConsultantAssignment.target_user),
             joinedload(ConsultantAssignment.form),
             joinedload(ConsultantAssignment.category),
+            joinedload(ConsultantAssignment.filter_question),
         )
         .filter(ConsultantAssignment.id.in_(ids))
         .all()
     )
     return [_serialize_assignment(a) for a in rows]
+
+
+@router.get(
+    "/forms/{form_id}/filter-questions",
+    response_model=List[ConsultantFilterQuestionOut],
+)
+def list_filter_questions(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """Preguntas tipo lista del formato, para acotar lo que ve el consultor."""
+    return [
+        ConsultantFilterQuestionOut(
+            question_id=q.id,
+            question_text=q.question_text,
+            label=etiqueta,
+            question_type=q.question_type.value if hasattr(q.question_type, "value") else str(q.question_type),
+        )
+        for q, etiqueta in _preguntas_lista_del_formato(db, form_id)
+    ]
+
+
+@router.get("/forms/{form_id}/filter-values")
+def list_filter_values(
+    form_id: int,
+    question_id: int = Query(..., description="Pregunta tipo lista del formato"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """Las respuestas que YA se han dado a esa pregunta en ese formato.
+
+    Se listan las respuestas reales y no las opciones configuradas de la
+    pregunta: lo que acota es lo que está guardado en `answers`, y una opción
+    que nadie ha usado solo serviría para crear un consultor que no ve nada.
+    """
+    filas = (
+        db.query(Answer.answer_text)
+        .join(Response, Answer.response_id == Response.id)
+        .filter(
+            Response.form_id == form_id,
+            Answer.question_id == question_id,
+            Answer.answer_text.isnot(None),
+            Answer.answer_text != "",
+        )
+        .distinct()
+        .order_by(Answer.answer_text.asc())
+        .all()
+    )
+    return {"values": [f[0] for f in filas]}
+
+
+@router.get("/answer-values")
+def search_answer_values(
+    q: str = Query("", description="Texto a buscar dentro de las respuestas"),
+    limit: int = Query(30, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """Valores ya respondidos en CUALQUIER formato, para el alcance `answer`.
+
+    Existe para que nadie tenga que escribir el valor a ciegas. Medido en prod:
+    buscar "PORCE" no devuelve nada si se compara exacto —lo que hay es
+    "PORCE III"—, así que enseñar los valores REALES es la diferencia entre una
+    regla que funciona y un consultor que no ve nada.
+
+    Cada valor viene con en cuántos envíos y en cuántos formatos aparece: eso es
+    lo que deja elegir bien entre "PORCE III" (32 envíos, 17 formatos) y
+    "PORCE 3" (1 envío).
+
+    Se busca por coincidencia parcial (para encontrar), pero lo que se devuelve
+    —y lo que acota— es el valor EXACTO.
+    """
+    texto = (q or "").strip()
+    if len(texto) < 2:
+        return {"values": []}
+
+    filas = (
+        db.query(
+            func.trim(Answer.answer_text).label("valor"),
+            func.count(func.distinct(Answer.response_id)).label("envios"),
+            func.count(func.distinct(Response.form_id)).label("formatos"),
+        )
+        .join(Response, Response.id == Answer.response_id)
+        .filter(
+            Answer.answer_text.isnot(None),
+            Answer.answer_text != "",
+            Answer.answer_text.ilike("%" + texto + "%"),
+        )
+        .group_by(func.trim(Answer.answer_text))
+        .order_by(func.count(func.distinct(Answer.response_id)).desc())
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "values": [
+            {"value": f.valor, "responses": f.envios, "forms": f.formatos}
+            for f in filas
+        ]
+    }
 
 
 @router.get("/assignments", response_model=List[ConsultantAssignmentOut])
@@ -287,6 +592,7 @@ def list_all_assignments(
         joinedload(ConsultantAssignment.target_user),
         joinedload(ConsultantAssignment.form),
         joinedload(ConsultantAssignment.category),
+        joinedload(ConsultantAssignment.filter_question),
     )
     if consultant_id:
         q = q.filter(ConsultantAssignment.consultant_id == consultant_id)
@@ -309,6 +615,7 @@ def list_consultant_users(
             joinedload(ConsultantAssignment.target_user),
             joinedload(ConsultantAssignment.form),
             joinedload(ConsultantAssignment.category),
+            joinedload(ConsultantAssignment.filter_question),
         )
         .filter(ConsultantAssignment.is_active.is_(True))
         .all()
@@ -351,6 +658,14 @@ def update_assignment(
         a.category_id = payload.category_id or None
     if payload.is_active is not None:
         a.is_active = payload.is_active
+    # Ojo: aquí "no lo mandaron" y "lo mandaron en nulo" NO son lo mismo.
+    # Mandar nulo es como se QUITA un filtro que ya estaba puesto; si se
+    # tratara igual que no mandarlo, no habría forma de quitarlo.
+    enviados = payload.model_fields_set
+    if "filter_question_id" in enviados:
+        a.filter_question_id = payload.filter_question_id or None
+    if "filter_value" in enviados:
+        a.filter_value = (payload.filter_value or "").strip() or None
 
     # Si cambia el scope, resetear campos que no aplican a la nueva combinación
     # para evitar dejar FKs huérfanas que no deberían existir según el scope.
@@ -366,9 +681,22 @@ def update_assignment(
         a.form_id = None
         a.target_user_id = None
 
+    # Acotar por respuesta solo tiene sentido con un formato de por medio: si el
+    # alcance cambió a usuario o categoría, el filtro se cae con él. Dejarlo
+    # puesto sería peor que quitarlo: acotaría por una pregunta de un formato
+    # que ya no está en la regla.
+    if a.scope not in (ConsultantScope.form, ConsultantScope.form_user):
+        a.filter_question_id = None
+        a.filter_value = None
+
     # validar la combinación final
     final_scope = ConsultantScopeStr(a.scope.value)
     _validate_scope_payload(final_scope, a.form_id, a.target_user_id, a.category_id)
+    a.filter_value = _validar_filtro(
+        db, final_scope, a.form_id, a.filter_question_id, a.filter_value
+    )
+    if not a.filter_value:
+        a.filter_question_id = None
 
     # Bloquear duplicados activos contra otras asignaciones del mismo consultor
     dup_q = db.query(ConsultantAssignment).filter(
@@ -392,6 +720,16 @@ def update_assignment(
         if a.category_id is not None
         else ConsultantAssignment.category_id.is_(None)
     )
+    dup_q = dup_q.filter(
+        ConsultantAssignment.filter_question_id == a.filter_question_id
+        if a.filter_question_id is not None
+        else ConsultantAssignment.filter_question_id.is_(None)
+    )
+    dup_q = dup_q.filter(
+        ConsultantAssignment.filter_value == a.filter_value
+        if a.filter_value is not None
+        else ConsultantAssignment.filter_value.is_(None)
+    )
     if dup_q.first():
         db.rollback()
         raise HTTPException(400, "Ya existe otra asignación equivalente activa")
@@ -404,6 +742,7 @@ def update_assignment(
             joinedload(ConsultantAssignment.target_user),
             joinedload(ConsultantAssignment.form),
             joinedload(ConsultantAssignment.category),
+            joinedload(ConsultantAssignment.filter_question),
         )
         .filter(ConsultantAssignment.id == assignment_id)
         .first()

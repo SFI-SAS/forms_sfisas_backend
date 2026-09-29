@@ -1578,6 +1578,7 @@ class ConsultantScopeStr(str, Enum):
     user = "user"
     form_user = "form_user"
     category = "category"
+    answer = "answer"
 
 
 class ConsultantAssignmentCreate(BaseModel):
@@ -1586,6 +1587,10 @@ class ConsultantAssignmentCreate(BaseModel):
     form_id: Optional[int] = None
     target_user_id: Optional[int] = None
     category_id: Optional[int] = None
+    # Acotar por la respuesta de una pregunta tipo lista. Las dos juntas o
+    # ninguna, y solo con scope form / form_user.
+    filter_question_id: Optional[int] = None
+    filter_value: Optional[str] = None
 
 
 class ConsultantAssignmentUpdate(BaseModel):
@@ -1594,6 +1599,8 @@ class ConsultantAssignmentUpdate(BaseModel):
     target_user_id: Optional[int] = None
     category_id: Optional[int] = None
     is_active: Optional[bool] = None
+    filter_question_id: Optional[int] = None
+    filter_value: Optional[str] = None
 
 
 class ConsultantAssignmentOut(BaseModel):
@@ -1608,6 +1615,9 @@ class ConsultantAssignmentOut(BaseModel):
     target_user_name: Optional[str] = None
     category_id: Optional[int] = None
     category_name: Optional[str] = None
+    filter_question_id: Optional[int] = None
+    filter_question_text: Optional[str] = None
+    filter_value: Optional[str] = None
     is_active: bool
     created_at: datetime
 
@@ -1647,6 +1657,22 @@ class ConsultantAssignmentBulkRule(BaseModel):
     form_id: Optional[int] = None
     target_user_id: Optional[int] = None
     category_id: Optional[int] = None
+    filter_question_id: Optional[int] = None
+    filter_value: Optional[str] = None
+
+
+class ConsultantFilterQuestionOut(BaseModel):
+    """Pregunta tipo lista de un formato, candidata a acotar lo que ve el
+    consultor."""
+    question_id: int
+    # El nombre con el que la pregunta está guardada. Suele ser un código
+    # interno ("167_PROYECTO VERIFICACION_APROBA"), así que no es lo que se
+    # enseña: se manda para poder distinguir dos campos con la misma etiqueta.
+    question_text: str
+    # Lo que se le puso al campo AL DISEÑAR el formato ("PROYECTO"): es lo que
+    # ve quien diligencia y lo que hay que enseñar aquí.
+    label: Optional[str] = None
+    question_type: Optional[str] = None
 
 
 class ConsultantAssignmentBulkCreate(BaseModel):

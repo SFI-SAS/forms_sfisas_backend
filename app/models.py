@@ -1054,6 +1054,11 @@ class ConsultantScope(str, enum.Enum):
     user = "user"
     form_user = "form_user"
     category = "category"
+    # Cuelga del VALOR, no de un formato ni de un usuario: "todo lo que tenga
+    # respondido PORCE III", venga del formato que venga. El valor va en
+    # `filter_value`; varios valores = varias asignaciones (el consultor ve la
+    # unión de sus reglas).
+    answer = "answer"
 
 
 class ConsultantAssignment(Base):
@@ -1067,6 +1072,23 @@ class ConsultantAssignment(Base):
     category_id = Column(BigInteger, ForeignKey('form_categories.id', ondelete='CASCADE'), nullable=True)
     created_by = Column(BigInteger, ForeignKey('users.id'), nullable=False)
     is_active = Column(Boolean, nullable=False, default=True)
+
+    # Acotar por la respuesta de una pregunta tipo lista.
+    #
+    # Sin esto, un consultor con alcance "formato" ve TODAS las respuestas del
+    # formato. Con esto se le puede dejar solo un trozo: "las respuestas donde
+    # el proyecto sea ALFA". Las dos columnas van juntas o van las dos en nulo
+    # (nulo = sin acotar, que es como se comportaba antes).
+    #
+    # ON DELETE SET NULL: si borran la pregunta, la asignacion deja de acotar
+    # en vez de desaparecer o de quedar apuntando a una pregunta que no esta.
+    # Ojo: eso ENSANCHA lo que ve el consultor, asi que la pantalla avisa
+    # cuando una asignacion tenia filtro y se quedo sin pregunta.
+    filter_question_id = Column(
+        BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True
+    )
+    filter_value = Column(Text, nullable=True)
+
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -1075,6 +1097,7 @@ class ConsultantAssignment(Base):
     creator = relationship('User', foreign_keys=[created_by])
     form = relationship('Form', foreign_keys=[form_id])
     category = relationship('FormCategory', foreign_keys=[category_id])
+    filter_question = relationship('Question', foreign_keys=[filter_question_id])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -13,10 +13,11 @@ Reglas para `can_user_view_response`:
 
 from typing import List
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, exists, func, or_, true
 from sqlalchemy.orm import Session
 
 from app.models import (
+    Answer,
     ConsultantAssignment,
     ConsultantScope,
     Form,
@@ -81,19 +82,53 @@ def _consultant_visibility_conditions(consultant_id: int, db: Session) -> List:
     )
     conditions = []
     for a in assignments:
+        cond = None
         if a.scope == ConsultantScope.form and a.form_id:
-            conditions.append(Response.form_id == a.form_id)
+            cond = Response.form_id == a.form_id
         elif a.scope == ConsultantScope.user and a.target_user_id:
-            conditions.append(Response.user_id == a.target_user_id)
+            cond = Response.user_id == a.target_user_id
         elif a.scope == ConsultantScope.form_user and a.form_id and a.target_user_id:
-            conditions.append(
-                and_(Response.form_id == a.form_id, Response.user_id == a.target_user_id)
-            )
+            cond = and_(Response.form_id == a.form_id, Response.user_id == a.target_user_id)
         elif a.scope == ConsultantScope.category and a.category_id:
             form_ids_subq = (
                 db.query(Form.id).filter(Form.id_category == a.category_id).subquery()
             )
-            conditions.append(Response.form_id.in_(form_ids_subq))
+            cond = Response.form_id.in_(form_ids_subq)
+        elif a.scope == ConsultantScope.answer and a.filter_value:
+            # Por VALOR, venga del formato que venga: "todo lo que tenga
+            # respondido PORCE III". No lleva pregunta: se mira en cualquier
+            # campo. La condición la pone el bloque de abajo, que es el mismo
+            # que usa el acotado por formato.
+            cond = true()
+
+        if cond is None:
+            continue
+
+        # Acotado por la respuesta de una pregunta tipo lista.
+        #
+        # Es un EXISTS y no un JOIN a propósito: un JOIN duplicaría la respuesta
+        # cuando la pregunta está dentro de un repetidor y aparece en varias
+        # filas. Con EXISTS basta con que UNA de sus respuestas valga.
+        #
+        # Se compara sin distinguir mayúsculas ni espacios de los bordes, que es
+        # como se comparan las respuestas en el resto del sistema: el valor se
+        # guardó al diligenciar y el que se escogió al configurar salió de esa
+        # misma tabla, pero pueden diferir en un espacio.
+        if a.filter_value:
+            partes = [
+                Answer.response_id == Response.id,
+                # La MISMA expresión que indexa `ix_answers_valor_normalizado`.
+                # Si se cambia aquí, hay que cambiar el índice o se vuelve a
+                # recorrer la tabla entera.
+                func.lower(func.trim(Answer.answer_text))
+                == a.filter_value.strip().lower(),
+            ]
+            # Con alcance `answer` no hay pregunta: vale cualquier campo.
+            if a.filter_question_id:
+                partes.append(Answer.question_id == a.filter_question_id)
+            cond = and_(cond, exists().where(and_(*partes)))
+
+        conditions.append(cond)
     return conditions
 
 
