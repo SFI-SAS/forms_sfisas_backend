@@ -160,8 +160,17 @@ _API_URL = "https://api-forms-sfi.service.saferut.com"
 # ── SMTP ──
 
 def _send_msg(msg: EmailMessage) -> bool:
+    # Hetzner bloquea la salida por 25/465: allá va 587 con STARTTLS (2026-09-29).
+    # El timeout evita que un SMTP caído cuelgue la petición (create_user tardaba >30 s).
+    port = int(MAIL_PORT_ALT)
     try:
-        with smtplib.SMTP_SSL(MAIL_HOST_ALT, int(MAIL_PORT_ALT)) as smtp:
+        if port == 465:
+            smtp_cm = smtplib.SMTP_SSL(MAIL_HOST_ALT, port, timeout=20)
+        else:
+            smtp_cm = smtplib.SMTP(MAIL_HOST_ALT, port, timeout=20)
+        with smtp_cm as smtp:
+            if port != 465:
+                smtp.starttls()
             smtp.login(MAIL_USERNAME_ALT, MAIL_PASSWORD_ALT)
             smtp.send_message(msg)
         return True
