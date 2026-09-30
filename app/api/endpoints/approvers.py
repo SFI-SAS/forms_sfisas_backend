@@ -1350,7 +1350,14 @@ def get_approver_required_forms_responses(response_id: int, approver_user_id: in
     main_response = db.query(Response).filter(Response.id == response_id).first()
     if not main_response:
         return []
-    
+
+    # Las filas por respuesta solo se creaban cuando el aprobador abría la aprobación
+    # (get_approval_requirements_by_response) o llenaba el formato: antes de eso este
+    # endpoint decía "0 formatos requeridos" aunque el requisito existiera (guion AGO,
+    # ETAPA 27: Rosa debía llenar VERIFICACION DE EXISTENCIAS y salía que no).
+    get_approval_requirements_by_response(db, response_id)
+    db.commit()
+
     # CAMBIO PRINCIPAL: Obtener SOLO los requisitos que están en ResponseApprovalRequirement
     # para esta respuesta específica y que corresponden al aprobador
     response_requirements_status = (
