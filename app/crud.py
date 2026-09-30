@@ -3405,8 +3405,9 @@ def get_related_or_filtered_answers_optimized(
     # quién la envió ni en qué formato esté la pregunta. Con empate de fecha
     # gana el id de answer más alto.
     if relation.related_question_id and only_latest:
+        # Cuál es el ÚLTIMO envío que contestó esa pregunta.
         ultima = (
-            db.query(Answer.answer_text, Answer.response_id)
+            db.query(Answer.response_id)
             .join(Response, Response.id == Answer.response_id)
             .filter(
                 Answer.question_id == relation.related_question_id,
@@ -3416,11 +3417,44 @@ def get_related_or_filtered_answers_optimized(
             .order_by(Response.submitted_at.desc(), Answer.id.desc())
             .first()
         )
-        valor = ultima[0] if ultima else None
-        response_id_origen = ultima[1] if ultima else None
+        response_id_origen = ultima[0] if ultima else None
+
+        # TODAS las respuestas de esa pregunta en ese envío.
+        #
+        # La pregunta de origen pudo estar dentro de un REPETIDOR: si se
+        # registraron 5 filas, el último envío tiene 5 respuestas para ella y
+        # las cinco valen. Antes se tomaba una sola (`.first()` sobre las
+        # answers) y llegaba únicamente la última fila digitada. Medido en prod:
+        # 109 campos con relación tienen su origen dentro de un repetidor, y
+        # alguno llega a 24 filas en un mismo envío.
+        #
+        # El orden es el de la fila del repetidor; lo suelto (sin índice) va
+        # primero, y el id desempata.
+        valores = []
+        if response_id_origen:
+            filas_origen = (
+                db.query(Answer.answer_text)
+                .filter(
+                    Answer.response_id == response_id_origen,
+                    Answer.question_id == relation.related_question_id,
+                    Answer.answer_text.isnot(None),
+                    Answer.answer_text != '',
+                )
+                .order_by(
+                    func.coalesce(Answer.repeater_row_index, 0).asc(),
+                    Answer.id.asc(),
+                )
+                .all()
+            )
+            vistos = set()
+            for (texto,) in filas_origen:
+                if texto in vistos:
+                    continue
+                vistos.add(texto)
+                valores.append(texto)
 
         correlaciones_ultima = {}
-        if valor and response_id_origen:
+        if valores and response_id_origen:
             answers_origen = (
                 db.query(Answer)
                 .filter(Answer.response_id == response_id_origen)
@@ -3428,22 +3462,30 @@ def get_related_or_filtered_answers_optimized(
             )
             # Por fila, igual que el camino largo: dentro de un repetidor cada
             # fila es un juego de respuestas distinto y hay que emparejar las de
-            # la MISMA fila, no las del último renglón.
+            # la MISMA fila, no las del último renglón. Se arma la correlación
+            # de CADA valor, para que el grupo de autocompletado funcione con el
+            # que se escoja.
             for fila in _reconstruct_answer_rows(answers_origen):
-                if fila.get(relation.related_question_id) != valor:
+                valor_fila = fila.get(relation.related_question_id)
+                if valor_fila not in valores or valor_fila in correlaciones_ultima:
                     continue
                 correlacion = {"__response_id__": response_id_origen}
                 for q_id, texto in fila.items():
                     if q_id != relation.related_question_id:
                         correlacion.setdefault(q_id, texto)
-                correlaciones_ultima[valor] = correlacion
-                break
+                correlaciones_ultima[valor_fila] = correlacion
 
         return {
             "source": "ultima_respuesta",
             "only_latest_answer": True,
-            "latest_answer": valor,
-            "data": [{"name": valor}] if valor else [],
+            # Se conserva tal cual para quien ya lo leía (pantallas de consulta
+            # y aprobación): el ÚLTIMO valor, como antes.
+            "latest_answer": valores[-1] if valores else None,
+            # Lo nuevo: todas las filas de ese envío. Con una sola, el campo se
+            # sigue comportando como un valor fijo; con varias, el formato las
+            # ofrece para elegir.
+            "latest_answers": valores,
+            "data": [{"name": v} for v in valores],
             "forms": [],
             "correlations": correlaciones_ultima,
         }
