@@ -351,6 +351,7 @@ def register_import_template_route(router):
             "errores": informe.lista("error"),
             "advertencias": informe.lista("advertencia"),
             "columnas_sin_campo": plantilla.ids_sin_campo,
+            "encabezados_cambiados": plantilla.encabezados_cambiados,
             "filas_con_etiqueta_desconocida": plantilla.etiquetas_raras,
             "campos_calculados": [d.etiqueta for d, _, _ in formulas],
         }

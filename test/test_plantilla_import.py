@@ -97,3 +97,19 @@ if __name__ == "__main__":
         if n.startswith("test_"):
             f()
     print("OK")
+
+
+def test_avisa_encabezado_cambiado():
+    # Guion AGO, ETAPA 10 paso 14: "UNIDAD DE MEDIDA" renombrada a "UNIDAD". Se carga por el ID,
+    # pero se avisa (antes pasaba en silencio).
+    from io import BytesIO
+    from openpyxl import Workbook
+    from app.core.plantilla_import import Campo, leer_plantilla
+    wb = Workbook(); ws = wb.active; ws.title = "Plantilla"
+    for fila in (["ID Pregunta", "", 7], ["Tipo", "", "select"], ["Nivel", "", ""],
+                 ["Pregunta", "", "UNIDAD"], ["Envío 1", "", "Metro"]):
+        ws.append(fila)
+    buf = BytesIO(); wb.save(buf)
+    p = leer_plantilla(buf.getvalue(), [Campo("e7", 7, "select", "256_UNIDAD DE MEDIDA", {})])
+    assert p.encabezados_cambiados == [{"columna": "UNIDAD", "campo": "256_UNIDAD DE MEDIDA"}]
+    assert p.registros[0].normal == {"e7": "Metro"}

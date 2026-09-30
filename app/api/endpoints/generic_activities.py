@@ -418,10 +418,14 @@ def classification_values(
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Tipos de pregunta que pueden clasificar servicios: texto y selección.
+# table = lista (de opciones, de respuestas de otro formato o de usuarios): guarda texto, así que
+# se compara igual. Decidido el 2026-09-30: clasificar un reporte por el PROYECTO (una lista que
+# sale del maestro) es el caso más natural y antes se rechazaba (guion AGO, ETAPA 23).
 _CLASSIFIABLE_TYPES = {
     QuestionType.text,
     QuestionType.multiple_choice,
     QuestionType.one_choice,
+    QuestionType.table,
 }
 
 
@@ -911,6 +915,37 @@ def add_service_form_links(
             db.add(GenericActivityFormLink(activity_id=activity_id, form_id=fid))
         db.commit()
 
+    return _serialize_activity(_load_full(db, activity_id))
+
+
+@router.delete("/{activity_id}/form-links/{form_id}", response_model=GenericActivityOut)
+def remove_service_form_link(
+    activity_id: int,
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """Quita un formato del servicio: su vínculo y las asignaciones de ese formato en el servicio.
+    Solo existía agregar (form-links); un formato puesto por error no tenía cómo salir
+    (guion AGO, ETAPA 23 en dairo)."""
+    activity = db.query(GenericActivity).filter(GenericActivity.id == activity_id).first()
+    if not activity:
+        raise HTTPException(404, "Actividad no encontrada")
+    borrados = (
+        db.query(GenericActivityFormLink)
+        .filter(GenericActivityFormLink.activity_id == activity_id,
+                GenericActivityFormLink.form_id == form_id)
+        .delete(synchronize_session=False)
+    )
+    borrados += (
+        db.query(GenericActivityForm)
+        .filter(GenericActivityForm.activity_id == activity_id,
+                GenericActivityForm.form_id == form_id)
+        .delete(synchronize_session=False)
+    )
+    if not borrados:
+        raise HTTPException(404, f"El formato {form_id} no está en este servicio")
+    db.commit()
     return _serialize_activity(_load_full(db, activity_id))
 
 

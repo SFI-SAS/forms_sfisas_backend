@@ -877,7 +877,9 @@ def _query_responses_for_consultant(
     if date_from:
         q = q.filter(Response.submitted_at >= date_from)
     if date_to:
-        q = q.filter(Response.submitted_at <= date_to)
+        # fecha sin hora = hasta el final de ese día (antes excluía el día entero)
+        _hasta = date_to + "T23:59:59.999999" if len(str(date_to).strip()) == 10 else date_to
+        q = q.filter(Response.submitted_at <= _hasta)
 
     return q
 

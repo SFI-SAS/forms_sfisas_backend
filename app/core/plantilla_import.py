@@ -248,6 +248,9 @@ class Plantilla:
     registros: list[Registro]
     ids_sin_campo: list[str]       # IDs de pregunta de la plantilla que el formato ya no tiene
     etiquetas_raras: int           # filas con etiqueta que no es Envío/Fila/Sub
+    # Columnas cuyo encabezado ("Pregunta") no es el nombre del campo: se cargan por su ID,
+    # pero quien renombró la columna quizá quiso otra cosa → se avisa, no se calla.
+    encabezados_cambiados: list[dict] = field(default_factory=list)
 
 
 class PlantillaInvalida(ValueError):
@@ -349,7 +352,18 @@ def leer_plantilla(contenido: bytes, campos: list[Campo]) -> Plantilla:
         else:
             raras += 1
 
-    return Plantilla(columnas, registros, sin_campo, raras)
+    cambiados = []
+    nombres = filas[3] if len(filas) > 3 else ()
+    for col in columnas:
+        puesto = nombres[col.indice] if col.indice < len(nombres) else None
+        if not _vacio(puesto) and _norm_encabezado(puesto) != _norm_encabezado(col.campo.etiqueta):
+            cambiados.append({"columna": str(puesto).strip(), "campo": col.campo.etiqueta})
+    return Plantilla(columnas, registros, sin_campo, raras, cambiados)
+
+
+def _norm_encabezado(s: Any) -> str:
+    s = unicodedata.normalize("NFD", str(s or "").strip().lower())
+    return " ".join("".join(c for c in s if unicodedata.category(c) != "Mn").split())
 
 
 # ── Fórmulas ─────────────────────────────────────────────────────────────────

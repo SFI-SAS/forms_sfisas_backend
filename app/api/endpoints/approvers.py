@@ -466,6 +466,15 @@ def bulk_update_form_approvals(
         if not existing:
             raise HTTPException(status_code=404, detail=f"FormApproval with id {update.id} not found")
 
+        # Lo que no viene se conserva. Sin esto, un update sin user_id "cambiaba" el aprobador a
+        # None y la nueva fila reventaba con NotNullViolation → 500 (guion AGO, ETAPA 15 en dairo).
+        if getattr(update, "user_id", None) is None:
+            update.user_id = existing.user_id
+        if getattr(update, "sequence_number", None) is None:
+            update.sequence_number = existing.sequence_number
+        if getattr(update, "is_mandatory", None) is None:
+            update.is_mandatory = existing.is_mandatory
+
         user_changed = existing.user_id != update.user_id
         seq_changed = existing.sequence_number != update.sequence_number
         mandatory_changed = existing.is_mandatory != update.is_mandatory
@@ -1341,7 +1350,14 @@ def get_approver_required_forms_responses(response_id: int, approver_user_id: in
     main_response = db.query(Response).filter(Response.id == response_id).first()
     if not main_response:
         return []
-    
+
+    # Las filas por respuesta solo se creaban cuando el aprobador abría la aprobación
+    # (get_approval_requirements_by_response) o llenaba el formato: antes de eso este
+    # endpoint decía "0 formatos requeridos" aunque el requisito existiera (guion AGO,
+    # ETAPA 27: Rosa debía llenar VERIFICACION DE EXISTENCIAS y salía que no).
+    get_approval_requirements_by_response(db, response_id)
+    db.commit()
+
     # CAMBIO PRINCIPAL: Obtener SOLO los requisitos que están en ResponseApprovalRequirement
     # para esta respuesta específica y que corresponden al aprobador
     response_requirements_status = (
