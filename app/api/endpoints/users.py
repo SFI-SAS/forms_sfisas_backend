@@ -18,7 +18,7 @@ from app.models import (Answer, EmailConfig, Form, FormApproval, FormModerators,
                         Profile, ProfileCategory, ProfileForm, ProfileUser,
                         Response, ResponseApproval, User, UserCategory, UserType)
 from app.crud import _extract_style_config, _serialize_answers, create_email_config, create_user, create_user_category, create_user_with_random_password, delete_user_category_by_id, fetch_all_users, fetch_users_selectable, generate_random_password, get_all_email_configs, get_all_user_categories, get_user, get_user_by_document, prepare_and_send_file_to_emails, update_user, get_user_by_email, get_users, update_user_info_in_db
-from app.schemas import EmailConfigCreate, EmailConfigResponse, EmailConfigUpdate, EmailStatusUpdate, UpdateRecognitionId, UpdateUserCategory, UserAdminUpdate, UserBaseCreate, UserCategoryCreate, UserCategoryResponse, UserCreate, UserResponse, UserSelfUpdate, UserUpdate, UserUpdateInfo
+from app.schemas import EmailConfigCreate, EmailConfigResponse, EmailConfigUpdate, EmailStatusUpdate, UpdateRecognitionId, UpdateUserCategory, UserAdminUpdate, UserBaseCreate, UserCategoryCreate, UserCategoryResponse, UserCreate, UserDetailResponse, UserResponse, UserSelfUpdate, UserUpdate, UserUpdateInfo
 from app.core.security import get_current_user, hash_password, require_roles
 from app.api.controllers.password_reset_mail import send_password_reset_email
 
