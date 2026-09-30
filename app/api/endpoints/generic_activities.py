@@ -418,10 +418,14 @@ def classification_values(
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Tipos de pregunta que pueden clasificar servicios: texto y selección.
+# table = lista (de opciones, de respuestas de otro formato o de usuarios): guarda texto, así que
+# se compara igual. Decidido el 2026-09-30: clasificar un reporte por el PROYECTO (una lista que
+# sale del maestro) es el caso más natural y antes se rechazaba (guion AGO, ETAPA 23).
 _CLASSIFIABLE_TYPES = {
     QuestionType.text,
     QuestionType.multiple_choice,
     QuestionType.one_choice,
+    QuestionType.table,
 }
 
 
