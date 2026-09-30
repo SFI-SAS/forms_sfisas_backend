@@ -914,6 +914,37 @@ def add_service_form_links(
     return _serialize_activity(_load_full(db, activity_id))
 
 
+@router.delete("/{activity_id}/form-links/{form_id}", response_model=GenericActivityOut)
+def remove_service_form_link(
+    activity_id: int,
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """Quita un formato del servicio: su vínculo y las asignaciones de ese formato en el servicio.
+    Solo existía agregar (form-links); un formato puesto por error no tenía cómo salir
+    (guion AGO, ETAPA 23 en dairo)."""
+    activity = db.query(GenericActivity).filter(GenericActivity.id == activity_id).first()
+    if not activity:
+        raise HTTPException(404, "Actividad no encontrada")
+    borrados = (
+        db.query(GenericActivityFormLink)
+        .filter(GenericActivityFormLink.activity_id == activity_id,
+                GenericActivityFormLink.form_id == form_id)
+        .delete(synchronize_session=False)
+    )
+    borrados += (
+        db.query(GenericActivityForm)
+        .filter(GenericActivityForm.activity_id == activity_id,
+                GenericActivityForm.form_id == form_id)
+        .delete(synchronize_session=False)
+    )
+    if not borrados:
+        raise HTTPException(404, f"El formato {form_id} no está en este servicio")
+    db.commit()
+    return _serialize_activity(_load_full(db, activity_id))
+
+
 @router.post("/{activity_id}/assignments", response_model=GenericActivityOut)
 def add_service_assignments(
     activity_id: int,
