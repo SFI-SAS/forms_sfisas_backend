@@ -968,6 +968,13 @@ class DateFilter(BaseModel):
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
 
+    @validator("end_date", pre=True)
+    def _end_date_fin_de_dia(cls, v):
+        # Fecha sin hora = hasta el FINAL de ese día (antes excluía el día entero).
+        if isinstance(v, str) and len(v.strip()) == 10:
+            return v.strip() + "T23:59:59.999999"
+        return v
+
 class DownloadRequest(BaseModel):
     form_ids: List[int]
     selected_fields: List[int]  # IDs de las preguntas que quiere incluir

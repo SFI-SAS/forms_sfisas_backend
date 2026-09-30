@@ -131,7 +131,10 @@ class ConsolidadoSQL:
         self.page = max(1, page or 1)
         self.page_size = min(cap, max(1, page_size or 50))
         self.date_from = date_from
-        self.date_to = date_to
+        # Fecha sin hora = hasta el FINAL de ese día: con "2026-09-30" a secas, submitted_at <=
+        # medianoche dejaba fuera el día entero (guion AGO, ETAPA 31). Mismo criterio que _parse_day.
+        self.date_to = (date_to.strip() + "T23:59:59.999999"
+                        if date_to and len(date_to.strip()) == 10 else date_to)
         self.search = (search or "").strip()
         self.alias = alias
         self.last_only = bool(last_only)

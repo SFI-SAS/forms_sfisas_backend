@@ -2151,6 +2151,8 @@ def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page
     if date_to:
         try:
             dt_to = datetime.fromisoformat(date_to)
+            if len(str(date_to).strip()) == 10:  # fecha sola = hasta el final de ese día
+                dt_to = dt_to.replace(hour=23, minute=59, second=59, microsecond=999999)
             base_query = base_query.filter(Response.submitted_at <= dt_to)
         except ValueError:
             pass
