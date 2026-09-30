@@ -6842,6 +6842,10 @@ def get_form_with_full_responses(form_id: int, db: Session):
         "form_id": form.id,
         "title": form.title,
         "description": form.description,
+        # Sin esto no había forma de confirmar por API que un formato quedó apagado.
+        "is_enabled": getattr(form, "is_enabled", None),
+        "format_type": getattr(form, "format_type", None),
+        "id_category": getattr(form, "id_category", None),
         "form_design": form.form_design,
         "questions": questions_list,  # ← Ahora tiene TODAS las preguntas reales
         "responses": [],
