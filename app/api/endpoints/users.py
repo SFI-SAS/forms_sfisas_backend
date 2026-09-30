@@ -61,7 +61,7 @@ def create_user_endpoint(
 
     return create_user(db=db, user=user_data)
 
-@router.get("/{user_id}", response_model=UserResponse)
+@router.get("/{user_id}", response_model=UserDetailResponse)
 def get_user_endpoint(
     user_id: int,
     db: Session = Depends(get_db),

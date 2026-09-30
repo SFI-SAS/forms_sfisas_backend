@@ -51,6 +51,14 @@ class UserResponse(UserBase):
         from_attributes = True
 
 
+class UserDetailResponse(UserResponse):
+    """GET /users/{id}: sin la categoría ni el permiso de bitácora no había cómo confirmar por
+    API que un cambio quedó (guion AGO, ETAPA 26: un usuario quedó sin categoría y nadie lo vio)."""
+    id_category: Optional[int] = None
+    asign_bitacora: Optional[bool] = None
+    is_active: Optional[bool] = None
+
+
 class UserTokenOut(BaseModel):
     """H-BW-004: Schema restringido para /validate-token — sin password hash ni recognition_id.
     Incluye num_document y telephone porque el endpoint es llamado por el perfil del
