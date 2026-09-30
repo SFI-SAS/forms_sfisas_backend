@@ -893,6 +893,14 @@ def update_answer_text(payload: UpdateAnswerText, db: Session = Depends(get_db),
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="No tienes permiso para modificar esta respuesta",
             )
+        # Mismas reglas que el resto de la edición (aprobada = inmutable; formato cerrado =
+        # según answer_editors_mode). Sin esto este endpoint editaba en silencio respuestas
+        # enviadas de formatos CERRADOS aunque can-edit-answers dijera que no (guion AGO,
+        # ETAPA 11). Borradores y rechazadas se siguen pudiendo corregir.
+        if response is not None:
+            form = db.query(Form).filter(Form.id == response.form_id).first()
+            if form is not None:
+                _enforce_edit_permission(response, form, current_user, db)
 
         answer.answer_text = payload.answer_text
         db.commit()
