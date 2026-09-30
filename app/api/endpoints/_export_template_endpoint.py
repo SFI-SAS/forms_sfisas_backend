@@ -144,7 +144,11 @@ def register_export_template_route(router):
                 raise HTTPException(status_code=400, detail=f"date_from invalido: {date_from}")
         if date_to:
             try:
-                rq = rq.filter(Response.submitted_at <= _dt.fromisoformat(date_to))
+                # fecha sin hora = hasta el final de ese día (antes excluía el día entero)
+                _hasta = _dt.fromisoformat(date_to)
+                if len(date_to.strip()) == 10:
+                    _hasta = _hasta.replace(hour=23, minute=59, second=59, microsecond=999999)
+                rq = rq.filter(Response.submitted_at <= _hasta)
             except ValueError:
                 raise HTTPException(status_code=400, detail=f"date_to invalido: {date_to}")
 

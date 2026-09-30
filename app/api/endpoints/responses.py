@@ -3236,6 +3236,18 @@ def editar_operacion_matematica(
 
 from sqlalchemy import and_, or_, func as sa_func
 
+def _hasta_fin_de_dia(v):
+    """date_to SIN hora = hasta el FINAL de ese día. Pydantic convertía "2026-09-30" en la
+    medianoche del 30 y `submitted_at <= date_to` dejaba fuera el día entero: "respuestas de
+    hoy" daba 0 (guion AGO, ETAPA 28). Mismo criterio que _parse_day de forms.py."""
+    if isinstance(v, str) and len(v.strip()) == 10:
+        return v.strip() + "T23:59:59.999999"
+    return v
+
+
+_validador_hasta = __import__("pydantic").field_validator("date_to", mode="before")(_hasta_fin_de_dia)
+
+
 class ResponseSearchRequest(__import__("pydantic").BaseModel):
     form_id: Optional[int] = None
     user_id: Optional[int] = None
@@ -3245,6 +3257,7 @@ class ResponseSearchRequest(__import__("pydantic").BaseModel):
     text_match: Optional[str] = None  # buscar texto en answer_text
     limit: int = 50
     offset: int = 0
+    _fin_de_dia = _validador_hasta
 
 
 def _user_visible_form_ids(db: Session, user: User) -> List[int]:
@@ -3349,6 +3362,7 @@ class ResponseAggregateRequest(__import__("pydantic").BaseModel):
     metric: str = "count"  # "count" | "avg_approval_hours"
     date_from: Optional[datetime] = None
     date_to: Optional[datetime] = None
+    _fin_de_dia = _validador_hasta
 
 
 @router.post("/aggregate")
