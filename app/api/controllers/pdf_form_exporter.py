@@ -15,9 +15,219 @@ import struct
 import base64
 import html as _html
 import logging
-from urllib.parse import quote as _url_quote
+from urllib.parse import quote as _url_quote, unquote as _url_unquote
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
+
+# ── QR de las firmas ─────────────────────────────────────────────────────────
+# Se dibujan aqui. Antes cada QR era una peticion a api.qrserver.com: ~750 ms
+# por firma, con el render parado esperando. Un formato con cinco firmas se iba
+# en cuatro segundos de red, y si el servidor no tiene salida a internet (o el
+# servicio tarda) se esperaba hasta el timeout para acabar pintando un hueco.
+#
+# La libreria `qrcode` ya era dependencia: es la que dibuja el QR de
+# verificacion del pie. Si faltara, se vuelve al servicio externo y todo sigue
+# funcionando como antes.
+
+
+@lru_cache(maxsize=32)
+def _qr_local(texto: str) -> Optional[str]:
+    """El QR como data URI, o None si no se pudo dibujar."""
+    if not texto:
+        return None
+    try:
+        import qrcode
+
+        qr = qrcode.QRCode(version=None, box_size=6, border=2,
+                           error_correction=qrcode.constants.ERROR_CORRECT_M)
+        qr.add_data(texto)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        # No se reescala a `lado_px`: el tamano lo pone el CSS del `<img>`.
+        # Forzar un tamano arbitrario deja los cuadritos desiguales y el QR se
+        # puede volver ilegible. El PNG pesa ~1 KB: no cuesta nada.
+        buf = BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception as exc:
+        logger.warning("PDF: no se pudo dibujar el QR (%s)", exc)
+        return None
+
+
+def _src_qr(texto: str, lado_px: int) -> str:
+    """El `src` del QR: dibujado aqui, y si no se puede, el servicio de siempre."""
+    local = _qr_local(texto)
+    if local:
+        return local
+    return ("https://api.qrserver.com/v1/create-qr-code/?size="
+            + str(lado_px) + "x" + str(lado_px) + "&data=" + _url_quote(texto))
+
+
+# ── adjuntos que son imagenes ────────────────────────────────────────────────
+# Al ver una respuesta en pantalla, si el adjunto es una imagen se ve la imagen
+# (ArchivoAdjunto.tsx). En el PDF salia solo la etiqueta "Archivo adjunto", asi
+# que quien recibia el PDF no veia la foto. Aqui se incrusta.
+#
+# Incrustada y no por URL a proposito: el archivo vive en el disco del backend y
+# servirlo por `/responses/download-file` exige un token que WeasyPrint no tiene.
+_EXT_IMAGEN = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+
+# La misma carpeta que sirve `/responses/download-file` (responses.py: UPLOAD_FOLDER).
+_CARPETA_ADJUNTOS = os.path.realpath(os.getenv("UPLOAD_FOLDER", "./documents"))
+
+# Una foto de celular pesa varios MB y en el PDF no se ve mejor por eso: se
+# reescala. Sin esto, un formato con diez fotos deja un PDF de cien MB y un pico
+# de memoria que se lleva el proceso por delante.
+_IMAGEN_ANCHO_MAX = 1400
+# Dentro de un repetidor la foto se pinta a 26 mm de alto: mandarla a 1400 px es
+# cargarle peso al PDF para nada.
+_IMAGEN_ANCHO_CELDA = 600
+_IMAGEN_CALIDAD = 82
+# Por debajo de esto, y si ya viene angosta, se incrusta el archivo tal cual.
+_IMAGEN_PESO_DIRECTO = 400 * 1024
+
+
+def _tiene_transparencia_real(img) -> bool:
+    """Si hay pixeles de verdad translucidos, no solo un canal alfa opaco.
+
+    Importa porque decide PNG o JPEG, y un PNG de una foto pesa el doble.
+    """
+    try:
+        if img.mode == "P":
+            if "transparency" not in img.info:
+                return False
+            img = img.convert("RGBA")
+        if img.mode not in ("RGBA", "LA"):
+            return False
+        return img.getchannel("A").getextrema()[0] < 255
+    except Exception:
+        return False
+
+
+def _ruta_de_adjunto(nombre: str) -> Optional[str]:
+    """La ruta en disco de un adjunto, o None si no es utilizable.
+
+    `answers.file_path` guarda a veces el nombre suelto y a veces una ruta
+    entera, asi que se toma solo el nombre del archivo. Y se comprueba que lo
+    que queda siga dentro de la carpeta de adjuntos: el nombre viene de la base,
+    pero no por eso se construye una ruta a ciegas.
+    """
+    if not nombre:
+        return None
+    base_nombre = os.path.basename(nombre.replace("\\", "/").rstrip("/"))
+    if not base_nombre or base_nombre in (".", ".."):
+        return None
+    if os.path.splitext(base_nombre)[1].lower() not in _EXT_IMAGEN:
+        return None
+    try:
+        carpeta = os.path.realpath(_CARPETA_ADJUNTOS)
+        candidata = os.path.realpath(os.path.join(carpeta, base_nombre))
+        if os.path.commonpath([carpeta, candidata]) != carpeta:
+            return None
+        if not os.path.isfile(candidata):
+            return None
+        return candidata
+    except Exception:
+        return None
+
+
+# Esquema propio para que el `<img>` no lleve la imagen dentro.
+#
+# Incrustar el base64 en cada `<img>` funciona, pero una foto que sale en 60
+# filas de un repetidor se repite 60 veces: el HTML intermedio pasaba de 15 KB a
+# 4,7 MB. Con esto el `src` es una etiqueta corta y los bytes los entrega el
+# `url_fetcher` una sola vez (WeasyPrint reusa lo que ya trajo para esa URL).
+_ESQUEMA_ADJUNTO = "adjunto:"
+
+
+@lru_cache(maxsize=8)
+def _imagen_adjunta_bytes(nombre: str, ancho_max: int = _IMAGEN_ANCHO_MAX):
+    """Los bytes de la imagen y su tipo, o None si no se pudo.
+
+    Nunca revienta: si el archivo no esta, no se puede leer o no es una imagen
+    de verdad, se devuelve None y el PDF sigue mostrando solo la etiqueta del
+    adjunto, que es lo que hacia antes.
+
+    Va con cache (chico y acotado) porque la misma imagen puede aparecer en
+    varias filas de un repetidor y no tiene sentido leerla y reescalarla una vez
+    por fila.
+    """
+    ruta = _ruta_de_adjunto(nombre)
+    if ruta is None:
+        return None
+    try:
+        from PIL import Image
+
+        with Image.open(ruta) as img:
+            img.load()
+            formato = (img.format or "").upper()
+            # Si ya viene chica y en un formato que el PDF entiende, se pasa tal
+            # cual: recodificarla solo la empeoraria (una imagen de 6 KB salia de
+            # 8 KB por volver a comprimirla).
+            if (img.width <= ancho_max
+                    and formato in ("JPEG", "PNG", "GIF")
+                    and os.path.getsize(ruta) <= _IMAGEN_PESO_DIRECTO):
+                with open(ruta, "rb") as fh:
+                    crudo = fh.read()
+                return (crudo, {"JPEG": "image/jpeg", "PNG": "image/png", "GIF": "image/gif"}[formato])
+
+            # Las fotos traen la orientacion en los metadatos EXIF; sin esto
+            # salen acostadas.
+            try:
+                from PIL import ImageOps
+                img = ImageOps.exif_transpose(img)
+            except Exception:
+                pass
+
+            if img.width > ancho_max:
+                alto = max(1, round(img.height * ancho_max / img.width))
+                img = img.resize((ancho_max, alto), Image.LANCZOS)
+
+            buf = BytesIO()
+            if _tiene_transparencia_real(img):
+                # Solo cuando hay pixeles de verdad translucidos. Guardarlo como
+                # PNG "por si acaso" era peor: una captura de pantalla con canal
+                # alfa todo opaco pasaba de 311 KB a 720 KB.
+                img.convert("RGBA").save(buf, format="PNG", optimize=True)
+                mime = "image/png"
+            else:
+                if img.mode in ("RGBA", "LA", "P"):
+                    # El canal alfa esta ahi pero no pinta nada: se aplana sobre
+                    # blanco, que es el color de la hoja.
+                    fondo = Image.new("RGB", img.size, (255, 255, 255))
+                    convertida = img.convert("RGBA")
+                    fondo.paste(convertida, mask=convertida.getchannel("A"))
+                    img = fondo
+                img.convert("RGB").save(buf, format="JPEG", quality=_IMAGEN_CALIDAD, optimize=True)
+                mime = "image/jpeg"
+
+        return (buf.getvalue(), mime)
+    except Exception as exc:
+        logger.warning("PDF: no se pudo incrustar el adjunto %s (%s)", nombre[:120], exc)
+        return None
+
+
+def _html_imagen_adjunta(
+    nombre: str,
+    alto_max: str = "110mm",
+    ancho_max: int = _IMAGEN_ANCHO_MAX,
+) -> Optional[str]:
+    """El `<img>` de un adjunto, o None si no hay imagen que mostrar.
+
+    Se resuelve aqui (y queda en cache) para decidir: si la imagen no se puede
+    leer, se devuelve None y el PDF muestra solo la etiqueta del adjunto, que es
+    lo que hacia antes. Nunca un hueco.
+    """
+    if _imagen_adjunta_bytes(nombre, ancho_max) is None:
+        return None
+    src = _ESQUEMA_ADJUNTO + str(ancho_max) + "/" + _url_quote(nombre, safe="")
+    return (
+        '<img src="' + _e(src) + '" alt="Imagen adjunta" '
+        'style="max-width:100%;max-height:' + alto_max + ';height:auto;'
+        'display:block;border:1px solid #E5E7EB;border-radius:4px;"/>'
+    )
+
 
 # ── utilidades HTML ───────────────────────────────────────────────────────────
 
@@ -29,10 +239,10 @@ def _req_star(required: bool) -> str:
 
 
 # ── imagenes externas ────────────────────────────────────────────────────────
-# El PDF referencia imagenes por URL (logo del formato y los QR de firma en
-# api.qrserver.com). Si el servidor no tiene salida a internet, o el host tarda,
-# el render se cuelga o revienta y el endpoint responde 500. Con este fetcher
-# una imagen que no llega solo deja un hueco: el PDF sale igual.
+# El PDF referencia imagenes por URL: el logo del formato, y los QR de firma si
+# `qrcode` no estuviera disponible. Si el servidor no tiene salida a internet, o
+# el host tarda, el render se cuelga o revienta y el endpoint responde 500. Con
+# este fetcher una imagen que no llega solo deja un hueco: el PDF sale igual.
 _BLANK_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
     "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
@@ -42,6 +252,20 @@ _URL_TIMEOUT = int(os.getenv("PDF_IMAGE_TIMEOUT", "8"))
 
 def _safe_url_fetcher(url: str, timeout: int = _URL_TIMEOUT, ssl_context=None):
     from weasyprint import default_url_fetcher
+
+    # Los adjuntos no salen a la red: estan en el disco del backend.
+    if url.startswith(_ESQUEMA_ADJUNTO):
+        resto = url[len(_ESQUEMA_ADJUNTO):]
+        ancho, _, nombre = resto.partition("/")
+        try:
+            ancho_max = int(ancho)
+        except ValueError:
+            ancho_max = _IMAGEN_ANCHO_MAX
+        datos = _imagen_adjunta_bytes(_url_unquote(nombre), ancho_max)
+        if datos is None:
+            return {"string": _BLANK_PNG, "mime_type": "image/png"}
+        return {"string": datos[0], "mime_type": datos[1]}
+
     try:
         return default_url_fetcher(url, timeout=timeout, ssl_context=ssl_context)
     except Exception as exc:
@@ -171,7 +395,7 @@ def _fmt_firm(answer_text: str) -> str:
             )
 
         if qr_url:
-            qr_img = "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=" + _url_quote(qr_url)
+            qr_img = _src_qr(qr_url, 150)
             name_html = ('<span style="font-size:11px;color:#374151;">por ' + _e(person_name) + '</span>') if person_name else ""
             id_html   = ('<span style="font-size:10px;color:#6B7280;">(ID: ' + _e(person_id) + ')</span>') if person_id else ""
             return (
@@ -239,7 +463,7 @@ def _fmt_firm_cell(answer_text: str) -> str:
         if not qr_url:
             return '<span style="font-size:9px;color:#DC2626;background:#FEF2F2;padding:1px 5px;border-radius:4px;">Firma sin QR</span>'
 
-        qr_img   = "https://api.qrserver.com/v1/create-qr-code/?size=90x90&data=" + _url_quote(qr_url)
+        qr_img   = _src_qr(qr_url, 90)
         id_part  = ('<span style="font-size:9px;color:#9CA3AF;">ID: ' + _e(person_id) + '</span>') if person_id else ""
         name_part = ('<span style="font-size:9px;color:#374151;font-weight:500;">' + _e(person_name) + '</span>') if person_name else ""
         # OJO: nada de display:flex aqui dentro. Esta celda vive DENTRO de la
@@ -554,6 +778,12 @@ def _render_cell_value(cell_data: Any, tipo_columna: str = "", props_columna: di
             # subió, así que va junto al adjunto y no como dato suelto.
             serial = str(cell_data.get("file_serial") or "")
             etiqueta = ("&#128206; Archivo adjunto &middot; Serial " + _e(serial)) if serial else "&#128206; Archivo adjunto"
+            # Dentro de una tabla la imagen va chica: la fila tiene que seguir
+            # cabiendo en la hoja. Al verla en pantalla también es una miniatura.
+            img_html = _html_imagen_adjunta(fpath, alto_max="26mm",
+                                            ancho_max=_IMAGEN_ANCHO_CELDA)
+            if img_html:
+                parts.append(img_html)
             parts.append('<span style="font-size:9px;color:#2563EB;background:#EFF6FF;'
                          'padding:1px 6px;border-radius:3px;border:1px solid #BFDBFE;">' + etiqueta + '</span>')
         return "\n".join(parts) if parts else '<span style="color:#9CA3AF;font-style:italic;">-</span>'
@@ -900,11 +1130,22 @@ class FormPdfExporter:
 
             serial = str(answer.get("file_serial") or "")
             if fpath:
+                # Si el adjunto es una imagen, se muestra la imagen —igual que al
+                # ver la respuesta en pantalla—. Antes solo salia la etiqueta, asi
+                # que quien recibia el PDF no veia la foto. La etiqueta se queda
+                # abajo porque el serial es lo que permite cotejar el PDF con el
+                # archivo que se subio.
+                img_html = _html_imagen_adjunta(fpath)
                 etiqueta_archivo = (
                     "&#128206; Archivo adjunto &middot; Serial " + _e(serial)
                     if serial else "&#128206; Archivo adjunto"
                 )
-                file_html = ' <span class="file-badge">' + etiqueta_archivo + '</span>'
+                badge = ' <span class="file-badge">' + etiqueta_archivo + '</span>'
+                if img_html:
+                    file_html = ('<div style="margin-top:4px;">' + img_html
+                                 + '<div style="margin-top:3px;">' + badge + '</div></div>')
+                else:
+                    file_html = badge
             else:
                 file_html = ""
             value_html = content_html + file_html

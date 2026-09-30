@@ -6198,36 +6198,33 @@ def get_related_last_answers(
         salida.reverse()
         return salida
 
-    # 3️⃣ Obtener TODAS las últimas respuestas en UNA SOLA QUERY (optimizado)
-    # Subquery para obtener el máximo ID de Answer por cada response_id
-    max_answer_subquery = (
-        db.query(
-            Answer.response_id,
-            func.max(Answer.id).label('max_id')
-        )
-        .filter(
-            Answer.response_id.in_(response_ids),
-            Answer.question_id == related_question_id
-        )
-        .group_by(Answer.response_id)
-        .subquery()
-    )
-
-    # Query principal que obtiene las respuestas usando la subquery.
+    # 3️⃣ TODAS las respuestas de esa pregunta en los envíos que coinciden.
     #
-    # El orden importa: el front toma el ULTIMO elemento del arreglo como "la
-    # ultima respuesta". Sin ORDER BY, Postgres devuelve las filas en el orden
-    # que le convenga y el campo se llenaba con un envio cualquiera del mismo
-    # empleado, no con el mas reciente. Se ordena de mas viejo a mas nuevo por
-    # fecha de envio (y por id como desempate).
+    # Antes esto se quedaba con `max(Answer.id)` por envío, o sea UNA respuesta
+    # por envío. Eso está mal cuando la pregunta de origen vive dentro de un
+    # REPETIDOR: si se registraron 5 filas, ese envío tiene 5 respuestas para
+    # ella y las cinco valen; solo llegaba la última digitada. Medido en prod:
+    # 109 campos con relación tienen el origen dentro de un repetidor, alguno
+    # con 24 filas en el mismo envío.
+    #
+    # El orden importa y ahora tiene tres niveles: por fecha de envío (de más
+    # viejo a más nuevo, que es como lo lee el cliente), y dentro de cada envío
+    # por fila del repetidor y por id. Así las filas de un mismo envío llegan
+    # juntas y en su orden.
     last_answers = (
         db.query(Answer)
-        .join(
-            max_answer_subquery,
-            Answer.id == max_answer_subquery.c.max_id
-        )
         .join(Response, Response.id == Answer.response_id)
-        .order_by(Response.submitted_at.asc(), Answer.id.asc())
+        .filter(
+            Answer.response_id.in_(response_ids),
+            Answer.question_id == related_question_id,
+            Answer.answer_text.isnot(None),
+            Answer.answer_text != '',
+        )
+        .order_by(
+            Response.submitted_at.asc(),
+            func.coalesce(Answer.repeater_row_index, 0).asc(),
+            Answer.id.asc(),
+        )
         .all()
     )
 
