@@ -1624,8 +1624,8 @@ def get_all_forms_paginated(db: Session, page: int = 1, page_size: int = 30):
     # Calcular offset
     offset = (page - 1) * page_size
     
-    # Query base
-    base_query = db.query(Form).options(joinedload(Form.category))
+    # Query base. ORDENADA: sin orden, offset/limit entre páginas puede repetir o saltarse formatos.
+    base_query = db.query(Form).options(joinedload(Form.category)).order_by(Form.id)
     
     # Contar total de registros
     total_count = base_query.count()
