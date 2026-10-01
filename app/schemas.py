@@ -447,6 +447,9 @@ class ApproverSchema(BaseModel):
 
     @model_validator(mode="after")
     def _validate_firm_source(self) -> "ApproverSchema":
+        # 0 o negativo no es una pregunta: tratarlo como ausente (daba 500 por la FK).
+        if self.firm_source_question_id is not None and self.firm_source_question_id <= 0:
+            self.firm_source_question_id = None
         if self.firm_mode != "button" and self.firm_source_question_id is None:
             raise ValueError(
                 "firm_source_question_id es obligatorio cuando firm_mode != 'button'"
@@ -1501,6 +1504,9 @@ class CategoryApprovalCreate(BaseModel):
 
     @model_validator(mode="after")
     def _validate_firm_source(self) -> "CategoryApprovalCreate":
+        # 0 o negativo no es una pregunta: tratarlo como ausente (daba 500 por la FK).
+        if self.firm_source_question_id is not None and self.firm_source_question_id <= 0:
+            self.firm_source_question_id = None
         if self.firm_mode != "button" and self.firm_source_question_id is None:
             raise ValueError(
                 "firm_source_question_id es obligatorio cuando firm_mode != 'button'"
