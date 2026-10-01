@@ -301,7 +301,7 @@ def leer_plantilla(contenido: bytes, campos: list[Campo]) -> Plantilla:
             cands = por_nombre.get(_sin_prefijo(nom)) if not _vacio(nom) else None
             campo = cands[0] if cands and len(cands) == 1 else None
         if not campo:
-            sin_campo.append(str(raw)); continue
+            sin_campo.append(str(nom).strip() if not _vacio(nom) else str(raw)); continue  # el NOMBRE, no el id
         # El repetidor de cada columna se toma del DISEÑO, no de la fila "Nivel":
         # si el formato cambió desde que se bajó la plantilla, manda el formato.
         columnas.append(Columna(i, campo))
