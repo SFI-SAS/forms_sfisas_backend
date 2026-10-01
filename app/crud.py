@@ -8379,7 +8379,18 @@ def delete_form_category(db: Session, category_id: int, force: bool = False):
     forms = db.query(Form).filter(Form.id_category == category_id).all()
     for form in forms:
         form.id_category = category.parent_id
-    
+
+    # Plantillas de diseño de la carpeta (y de sus subcarpetas si es force): borrar una plantilla
+    # solo la DESACTIVA y conserva id_category, así que la carpeta quedaba imposible de borrar
+    # (ForeignKeyViolation form_templates_id_category_fkey → 500). Van al padre o sin carpeta.
+    _rama, _pend = [], [category]
+    while _pend:
+        _c = _pend.pop()
+        _rama.append(_c.id)
+        _pend.extend((_c.children or []) if force else [])
+    for _t in db.query(FormTemplate).filter(FormTemplate.id_category.in_(_rama)).all():
+        _t.id_category = category.parent_id
+
     try:
         # Si force=True, las subcategorías se eliminan en cascada
         db.delete(category)
