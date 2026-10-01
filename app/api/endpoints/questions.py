@@ -199,6 +199,14 @@ def create_question_endpoint(
             detail=f"Ya existe una pregunta con ese texto (#{dup[0]}). No se permiten preguntas duplicadas."
         )
 
+    # Categoría inexistente: antes reventaba la llave foránea y salía un 500 "Error interno" sin
+    # pista; quien llamaba (ArIA) no podía corregirse (guion AGO, corrida 4: id_category=44).
+    if question.id_category is not None and not db.query(QuestionCategory.id).filter(
+            QuestionCategory.id == question.id_category).first():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"La categoría de campos {question.id_category} no existe.")
+
     try:
         db_question = Question(
             question_text=question.question_text.upper().strip() if question.question_text else question.question_text,
