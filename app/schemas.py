@@ -447,6 +447,9 @@ class ApproverSchema(BaseModel):
 
     @model_validator(mode="after")
     def _validate_firm_source(self) -> "ApproverSchema":
+        # 0 o negativo no es una pregunta: tratarlo como ausente (daba 500 por la FK).
+        if self.firm_source_question_id is not None and self.firm_source_question_id <= 0:
+            self.firm_source_question_id = None
         if self.firm_mode != "button" and self.firm_source_question_id is None:
             raise ValueError(
                 "firm_source_question_id es obligatorio cuando firm_mode != 'button'"
@@ -967,6 +970,13 @@ class FilterCondition(BaseModel):
 class DateFilter(BaseModel):
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
+
+    @validator("end_date", pre=True)
+    def _end_date_fin_de_dia(cls, v):
+        # Fecha sin hora = hasta el FINAL de ese día (antes excluía el día entero).
+        if isinstance(v, str) and len(v.strip()) == 10:
+            return v.strip() + "T23:59:59.999999"
+        return v
 
 class DownloadRequest(BaseModel):
     form_ids: List[int]
@@ -1494,6 +1504,9 @@ class CategoryApprovalCreate(BaseModel):
 
     @model_validator(mode="after")
     def _validate_firm_source(self) -> "CategoryApprovalCreate":
+        # 0 o negativo no es una pregunta: tratarlo como ausente (daba 500 por la FK).
+        if self.firm_source_question_id is not None and self.firm_source_question_id <= 0:
+            self.firm_source_question_id = None
         if self.firm_mode != "button" and self.firm_source_question_id is None:
             raise ValueError(
                 "firm_source_question_id es obligatorio cuando firm_mode != 'button'"

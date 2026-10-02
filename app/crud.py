@@ -1624,8 +1624,8 @@ def get_all_forms_paginated(db: Session, page: int = 1, page_size: int = 30):
     # Calcular offset
     offset = (page - 1) * page_size
     
-    # Query base
-    base_query = db.query(Form).options(joinedload(Form.category))
+    # Query base. ORDENADA: sin orden, offset/limit entre páginas puede repetir o saltarse formatos.
+    base_query = db.query(Form).options(joinedload(Form.category)).order_by(Form.id)
     
     # Contar total de registros
     total_count = base_query.count()
@@ -2151,6 +2151,8 @@ def fetch_completed_forms_by_user(db: Session, user_id: int, page: int = 1, page
     if date_to:
         try:
             dt_to = datetime.fromisoformat(date_to)
+            if len(str(date_to).strip()) == 10:  # fecha sola = hasta el final de ese día
+                dt_to = dt_to.replace(hour=23, minute=59, second=59, microsecond=999999)
             base_query = base_query.filter(Response.submitted_at <= dt_to)
         except ValueError:
             pass
@@ -8377,7 +8379,18 @@ def delete_form_category(db: Session, category_id: int, force: bool = False):
     forms = db.query(Form).filter(Form.id_category == category_id).all()
     for form in forms:
         form.id_category = category.parent_id
-    
+
+    # Plantillas de diseño de la carpeta (y de sus subcarpetas si es force): borrar una plantilla
+    # solo la DESACTIVA y conserva id_category, así que la carpeta quedaba imposible de borrar
+    # (ForeignKeyViolation form_templates_id_category_fkey → 500). Van al padre o sin carpeta.
+    _rama, _pend = [], [category]
+    while _pend:
+        _c = _pend.pop()
+        _rama.append(_c.id)
+        _pend.extend((_c.children or []) if force else [])
+    for _t in db.query(FormTemplate).filter(FormTemplate.id_category.in_(_rama)).all():
+        _t.id_category = category.parent_id
+
     try:
         # Si force=True, las subcategorías se eliminan en cascada
         db.delete(category)

@@ -823,7 +823,10 @@ def _generate_visual_export(db, the_form, form_design, style_config, fmt, date_f
     query = db.query(ResponseModel).filter(ResponseModel.form_id == the_form.id)
     if date_filter:
         from_dt = _parse_naive_dt(getattr(date_filter, "from_date", None))
-        to_dt   = _parse_naive_dt(getattr(date_filter, "to_date", None))
+        _to_raw = getattr(date_filter, "to_date", None)
+        to_dt   = _parse_naive_dt(_to_raw)
+        if to_dt and isinstance(_to_raw, str) and len(_to_raw.strip()) == 10:
+            to_dt = to_dt.replace(hour=23, minute=59, second=59, microsecond=999999)  # fecha sola = día entero
         if from_dt:
             query = query.filter(ResponseModel.submitted_at >= from_dt)
         if to_dt:

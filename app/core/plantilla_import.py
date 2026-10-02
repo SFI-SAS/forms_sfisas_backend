@@ -279,6 +279,13 @@ def leer_plantilla(contenido: bytes, campos: list[Campo]) -> Plantilla:
 
     ids = filas[0]
     por_qid = {c.question_id: c for c in campos if c.question_id is not None}
+    # Respaldo por NOMBRE (sin tildes, mayúsculas ni el prefijo "NNN_" del formato): una plantilla
+    # bajada de otra copia del formato (otra instancia, o el formato rehecho) trae otros ids y no
+    # cargaba nada aunque las columnas fueran las mismas (guion AGO, corrida 5).
+    por_nombre: dict = {}
+    for c in campos:
+        por_nombre.setdefault(_sin_prefijo(c.etiqueta), []).append(c)
+    nombres_fila = filas[3] if len(filas) > 3 else ()
     columnas: list[Columna] = []
     sin_campo: list[str] = []
     for i, raw in enumerate(ids):
@@ -287,10 +294,14 @@ def leer_plantilla(contenido: bytes, campos: list[Campo]) -> Plantilla:
         try:
             qid = int(float(raw))
         except (TypeError, ValueError):
-            sin_campo.append(str(raw)); continue
-        campo = por_qid.get(qid)
+            qid = None
+        campo = por_qid.get(qid) if qid is not None else None
         if not campo:
-            sin_campo.append(str(qid)); continue
+            nom = nombres_fila[i] if i < len(nombres_fila) else None
+            cands = por_nombre.get(_sin_prefijo(nom)) if not _vacio(nom) else None
+            campo = cands[0] if cands and len(cands) == 1 else None
+        if not campo:
+            sin_campo.append(str(nom).strip() if not _vacio(nom) else str(raw)); continue  # el NOMBRE, no el id
         # El repetidor de cada columna se toma del DISEÑO, no de la fila "Nivel":
         # si el formato cambió desde que se bajó la plantilla, manda el formato.
         columnas.append(Columna(i, campo))
@@ -356,9 +367,14 @@ def leer_plantilla(contenido: bytes, campos: list[Campo]) -> Plantilla:
     nombres = filas[3] if len(filas) > 3 else ()
     for col in columnas:
         puesto = nombres[col.indice] if col.indice < len(nombres) else None
-        if not _vacio(puesto) and _norm_encabezado(puesto) != _norm_encabezado(col.campo.etiqueta):
+        if not _vacio(puesto) and _sin_prefijo(puesto) != _sin_prefijo(col.campo.etiqueta):
             cambiados.append({"columna": str(puesto).strip(), "campo": col.campo.etiqueta})
     return Plantilla(columnas, registros, sin_campo, raras, cambiados)
+
+
+def _sin_prefijo(s: Any) -> str:
+    """Encabezado normalizado y sin el prefijo numérico del formato ("307_CODIGO" → "codigo")."""
+    return re.sub(r"^\d+_", "", _norm_encabezado(s))
 
 
 def _norm_encabezado(s: Any) -> str:
