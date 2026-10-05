@@ -167,6 +167,17 @@ def get_questions_by_form(
     return questions
 
 
+def _validar_tipo(tipo: str):
+    """Un tipo que no existe reventaba al guardar (500 "error interno", sin pista): ArIA pidió
+    'datetime', que es un COMPONENTE de pantalla sobre una pregunta de tipo date."""
+    from app.models import QuestionType
+    validos = [t.value for t in QuestionType]
+    if tipo not in validos:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"El tipo de pregunta '{tipo}' no existe. Tipos válidos: {', '.join(validos)}.")
+
+
 @router.post("/", response_model=QuestionResponse, status_code=status.HTTP_201_CREATED)
 def create_question_endpoint(
     question: QuestionCreate,
@@ -182,6 +193,8 @@ def create_question_endpoint(
             detail="User does not have permission to create questions"
         )
     
+    _validar_tipo(question.question_type)
+
     # Validar que el formato exista si se especifica
     if question.id_form:
         form_exists = db.query(Form).filter(Form.id == question.id_form).first()
@@ -285,6 +298,8 @@ def update_question_endpoint(
     db_question = get_question_by_id(db, question_id)
     if not db_question:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question not found")
+    if question.question_type is not None:
+        _validar_tipo(question.question_type)
 
     # No permitir texto duplicado SOLO si el texto realmente cambia. Si se deja
     # igual (incluido un duplicado histórico), se permite guardar sin tocarlo.
