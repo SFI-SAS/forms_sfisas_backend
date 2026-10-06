@@ -176,10 +176,11 @@ def create_question_endpoint(
     """
     Crea una nueva pregunta.
     """
-    if current_user.user_type.name != "admin":
+    # Guía v3 §5.1: admin y creator pueden crear campos directamente.
+    if current_user.user_type.name not in ("admin", "creator"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User does not have permission to create questions"
+            detail="Se requiere ser admin o creator para crear campos"
         )
     
     # Validar que el formato exista si se especifica
@@ -679,6 +680,12 @@ def delete_question(question_id: int, db: Session = Depends(get_db), current_use
     # lo aplica require_roles en la firma (admin/creator). Se elimina el check
     # muerto. Los consumidores (Welcome.tsx, CreateQuestion.tsx) son flujos de
     # gestión de preguntas usados por admin/creator.
+    # Guía v3 §6.2: campo consumido no se borra
+    from app.services.integrity import check_can_delete_question
+    check = check_can_delete_question(db, question_id)
+    if not check["allowed"]:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"message": check["message"], "consumers": check["consumers"]})
+
     borrada = delete_question_from_db(db, question_id)
     cache_listas.invalidar()
     return borrada

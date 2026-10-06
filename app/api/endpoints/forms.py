@@ -583,169 +583,101 @@ def get_dependency_map(
     current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     """
-    Construye el grafo de dependencias entre formatos leyendo:
-      - question_table_relations  (datos que vienen de otro formato)
-      - question_filter_conditions (filtros condicionales entre formatos)
-      - approval_requirements     (formato requerido para aprobar)
-    Devuelve nodos (formatos) y aristas (dependencias), con nivel calculado.
+    Grafo de dependencias entre formatos.
+
+    Usa el extractor completo (guía v3 §11) y traduce al formato que
+    FormatMap.tsx espera (nodes con deps[], edges con from/to/type).
     """
-    from app.models import (
-        Form, FormCategory, FormQuestion,
-        QuestionTableRelation, QuestionFilterCondition, ApprovalRequirement,
-    )
-    from collections import defaultdict, deque
+    from app.services.relation_extractor import extract_relations
 
-    # 1. Todos los formatos activos
-    forms = (
-        db.query(Form)
-        .filter(Form.is_enabled == True)
-        .all()
-    )
-    form_ids = {f.id for f in forms}
-    if not form_ids:
-        return {"nodes": [], "edges": [], "categories": {}}
+    result = extract_relations(db)
 
-    # Categorias (carpetas)
-    cat_ids = {f.id_category for f in forms if f.id_category}
-    categories_map = {}
-    if cat_ids:
-        cats = db.query(FormCategory).filter(FormCategory.id.in_(cat_ids)).all()
-        for c in cats:
-            categories_map[c.id] = {
-                "name": c.name,
-                "color": c.color or "#6b7f8c",
-            }
+    # Traducir edges al formato legacy del frontend
+    type_map = {"dato": "data", "aprob": "approval"}
+    legacy_edges = []
+    seen = set()
+    for e in result["edges"]:
+        etype = type_map.get(e["clase"], "data")
+        if e["fuente"] == "filter_condition":
+            etype = "filter"
+        key = (e["de"], e["a"], etype)
+        if key not in seen:
+            seen.add(key)
+            legacy_edges.append({"from": e["de"], "to": e["a"], "type": etype})
 
-    # 2. Mapa question_id -> form_id(s)
-    fq_rows = (
-        db.query(FormQuestion.question_id, FormQuestion.form_id)
-        .filter(FormQuestion.form_id.in_(form_ids))
-        .all()
-    )
-    q_to_forms = defaultdict(set)
-    for qid, fid in fq_rows:
-        q_to_forms[qid].add(fid)
-
-    # 3. Aristas por question_table_relations
-    edges = []
-    deps = defaultdict(set)
-
-    qtr_rows = (
-        db.query(QuestionTableRelation)
-        .filter(QuestionTableRelation.question_id.in_(q_to_forms.keys()))
-        .all()
-    )
-    for qtr in qtr_rows:
-        dest_forms = q_to_forms.get(qtr.question_id, set())
-        src_forms = set()
-        if qtr.related_question_id:
-            src_forms = q_to_forms.get(qtr.related_question_id, set())
-        if qtr.related_form_id and qtr.related_form_id in form_ids:
-            src_forms.add(qtr.related_form_id)
-        if not src_forms and qtr.name_table and qtr.name_table not in ('users', 'projects'):
-            continue
-        for sf in src_forms:
-            for df in dest_forms:
-                if sf != df and sf in form_ids and df in form_ids:
-                    deps[df].add(sf)
-                    edges.append({
-                        "from": sf, "to": df, "type": "data",
-                        "question_id": qtr.question_id,
-                    })
-
-    # 4. Aristas por question_filter_conditions
-    qfc_rows = (
-        db.query(QuestionFilterCondition)
-        .filter(QuestionFilterCondition.form_id.in_(form_ids))
-        .all()
-    )
-    for qfc in qfc_rows:
-        src_forms = q_to_forms.get(qfc.source_question_id, set())
-        cond_forms = q_to_forms.get(qfc.condition_question_id, set())
-        all_src = src_forms | cond_forms
-        for sf in all_src:
-            if sf != qfc.form_id and sf in form_ids:
-                deps[qfc.form_id].add(sf)
-                edges.append({
-                    "from": sf, "to": qfc.form_id, "type": "filter",
-                    "question_id": qfc.filtered_question_id,
-                })
-
-    # 5. Aristas por approval_requirements
-    ar_rows = (
-        db.query(ApprovalRequirement)
-        .filter(ApprovalRequirement.form_id.in_(form_ids))
-        .all()
-    )
-    for ar in ar_rows:
-        if ar.required_form_id in form_ids and ar.required_form_id != ar.form_id:
-            deps[ar.form_id].add(ar.required_form_id)
-            edges.append({
-                "from": ar.required_form_id, "to": ar.form_id,
-                "type": "approval",
-            })
-
-    # 6. Calcular niveles con BFS topologico
-    levels = {}
-    in_degree = defaultdict(int)
-    for fid in form_ids:
-        in_degree[fid]
-    for fid, src_set in deps.items():
-        for s in src_set:
-            in_degree[fid] += 1
-
-    queue = deque()
-    for fid in form_ids:
-        if in_degree[fid] == 0:
-            levels[fid] = 0
-            queue.append(fid)
-
-    adj = defaultdict(set)
-    for fid, src_set in deps.items():
-        for s in src_set:
-            adj[s].add(fid)
-
-    while queue:
-        node = queue.popleft()
-        for child in adj[node]:
-            levels[child] = max(levels.get(child, 0), levels[node] + 1)
-            in_degree[child] -= 1
-            if in_degree[child] == 0:
-                queue.append(child)
-
-    for fid in form_ids:
-        if fid not in levels:
-            levels[fid] = 0
-
-    # 7. Construir nodos
-    nodes = []
-    for f in forms:
-        cat_info = categories_map.get(f.id_category, {})
-        nodes.append({
-            "id": f.id,
-            "title": f.title,
-            "format_type": f.format_type.value if f.format_type else "abierto",
-            "category_id": f.id_category,
-            "category_name": cat_info.get("name", ""),
-            "category_color": cat_info.get("color", "#6b7f8c"),
-            "level": levels.get(f.id, 0),
-            "deps": list(deps.get(f.id, set())),
-            "is_enabled": f.is_enabled,
-        })
-
-    # Deduplicar aristas
-    seen_edges = set()
-    unique_edges = []
-    for e in edges:
-        key = (e["from"], e["to"], e["type"])
-        if key not in seen_edges:
-            seen_edges.add(key)
-            unique_edges.append(e)
+    categories = {
+        k: {"name": v["name"], "color": v["color"]}
+        for k, v in result["categories"].items()
+    }
 
     return {
-        "nodes": nodes,
-        "edges": unique_edges,
-        "categories": categories_map,
+        "nodes": result["nodes"],
+        "edges": legacy_edges,
+        "categories": categories,
+    }
+
+
+@router.get("/dependency-map/full")
+def get_dependency_map_full(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """
+    Extractor completo — guía v3.
+
+    Devuelve la estructura enriquecida con campos por formato, fuente de
+    cada arista, y estadísticas. Para el mapa v2 y la mesa de creación.
+    """
+    from app.services.relation_extractor import extract_relations
+    return extract_relations(db)
+
+
+@router.get("/dependency-map/form/{form_id}")
+def get_single_form_map(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Mini-mapa de un solo formato: de quién depende y a quién alimenta.
+    Con los campos que viajan en cada relación.
+    """
+    from app.services.relation_extractor import extract_relations
+
+    result = extract_relations(db)
+    form_map = {n["id"]: n for n in result["nodes"]}
+    target = form_map.get(form_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    edges_in = [e for e in result["edges"] if e["a"] == form_id]
+    edges_out = [e for e in result["edges"] if e["de"] == form_id]
+
+    depends_on = []
+    for did in sorted(set(e["de"] for e in edges_in)):
+        node = form_map.get(did)
+        if not node:
+            continue
+        campos = list(set(c for e in edges_in if e["de"] == did for c in e["campos"]))
+        depends_on.append({**node, "campos": campos, "relation_class": next((e["clase"] for e in edges_in if e["de"] == did), "dato")})
+
+    feeds = []
+    for fid in sorted(set(e["a"] for e in edges_out)):
+        node = form_map.get(fid)
+        if not node:
+            continue
+        campos = list(set(c for e in edges_out if e["a"] == fid for c in e["campos"]))
+        feeds.append({**node, "campos": campos, "relation_class": next((e["clase"] for e in edges_out if e["a"] == fid), "dato")})
+
+    return {
+        "form": target,
+        "depends_on": depends_on,
+        "feeds": feeds,
+        "fields": result["fields"].get(form_id, []),
+        "alerts": [
+            {"type": "dead", "message": f"Lee de #{d['id']} «{d['title']}» que está desactivado.", "form_id": d["id"]}
+            for d in depends_on if not d.get("is_enabled", True)
+        ],
     }
 
 
@@ -3554,6 +3486,11 @@ def delete_form_endpoint(form_id: int, db: Session = Depends(get_db), current_us
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create forms"
         )
+    # Guía v3 §6.4: formato consumido no se borra
+    from app.services.integrity import check_can_delete_form
+    check = check_can_delete_form(db, form_id)
+    if not check["allowed"]:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"message": check["message"], "consumers": check["consumers"]})
     return delete_form(db, form_id)
 
 @router.get("/forms/{form_id}/relations")
@@ -4568,8 +4505,14 @@ def update_form_status(
             detail="Only administrators can enable or disable forms"
         )
     
+    # Guía v3 §6.4: desactivar formato consumido no se puede
+    if not status_update.is_enabled:
+        from app.services.integrity import check_can_delete_form
+        check = check_can_delete_form(db, form_id)
+        if not check["allowed"]:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"message": check["message"], "consumers": check["consumers"]})
+
     resultado = toggle_form_status(db, form_id, status_update.is_enabled)
-    # "Formatos disponibles" solo lista los habilitados.
     cache_listas.invalidar()
     return resultado
 

@@ -7508,6 +7508,13 @@ def delete_form(db: Session, form_id: int):
             RelationQuestionRule.id_form == form_id
         ).delete(synchronize_session=False)
 
+        # ✅ form_alerts y sus confirmaciones (FK NOT NULL a forms.id).
+        from app.models import FormAlert, FormAlertConfirmation
+        alert_ids = [a.id for a in db.query(FormAlert.id).filter(FormAlert.form_id == form_id).all()]
+        if alert_ids:
+            db.query(FormAlertConfirmation).filter(FormAlertConfirmation.alert_id.in_(alert_ids)).delete(synchronize_session=False)
+            db.query(FormAlert).filter(FormAlert.form_id == form_id).delete(synchronize_session=False)
+
         # ✅ Tablas con form_id pero SIN FK (huérfanos lógicos). No bloquean
         # el delete pero dejan basura referenciando a un form inexistente.
         db.query(PalabrasClave).filter(PalabrasClave.form_id == form_id).delete(synchronize_session=False)
