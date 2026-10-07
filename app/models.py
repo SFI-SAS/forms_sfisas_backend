@@ -100,6 +100,16 @@ class FormatType(enum.Enum):
     cerrado = "cerrado"
     semi_abierto = "semi_abierto"
 
+class FormStatus(enum.Enum):
+    publicado = "publicado"
+    borrador = "borrador"
+    obsoleto = "obsoleto"
+    desactivado = "desactivado"
+
+class DraftClass(enum.Enum):
+    nuevo = "nuevo"
+    version = "version"
+
 class ResponseStatus(enum.Enum):
     draft = "draft"
     submitted = "submitted"
@@ -132,7 +142,7 @@ class User(Base):
 
     category = relationship("UserCategory", back_populates="users")
     form_moderators = relationship('FormModerators', back_populates='user')
-    forms = relationship('Form', back_populates='user')
+    forms = relationship('Form', back_populates='user', foreign_keys='Form.user_id')
     responses = relationship('Response', back_populates='user')
     forms_movimientos = relationship(
         'FormMovimientos',
@@ -205,11 +215,29 @@ class Form(Base):
         Boolean, nullable=False, default=False, server_default='false'
     )
 
-    user = relationship('User', back_populates='forms')
+    # Guía v3 §4: versionamiento
+    form_status = Column(Enum(FormStatus), nullable=False, default=FormStatus.publicado, server_default='publicado')
+    draft_class = Column(Enum(DraftClass), nullable=True)
+    version = Column(Integer, nullable=False, default=1, server_default='1')
+    lineage_id = Column(BigInteger, ForeignKey('forms.id'), nullable=True)
+    responsible_id = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    published_by = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    published_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    valid_from = Column(TIMESTAMP(timezone=True), nullable=True)
+    valid_until = Column(TIMESTAMP(timezone=True), nullable=True)
+    change_note = Column(String(500), nullable=True)
+    replaced_by_id = Column(BigInteger, ForeignKey('forms.id'), nullable=True)
+    transferred_from_id = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+
+    user = relationship('User', back_populates='forms', foreign_keys=[user_id])
+    responsible = relationship('User', foreign_keys=[responsible_id])
+    published_by_user = relationship('User', foreign_keys=[published_by])
+    lineage = relationship('Form', foreign_keys=[lineage_id], remote_side='Form.id')
+    replaced_by = relationship('Form', foreign_keys=[replaced_by_id], remote_side='Form.id')
     form_moderators = relationship("FormModerators", back_populates="form", cascade="all, delete-orphan")
     answer_editors = relationship("FormAnswerEditor", back_populates="form", cascade="all, delete-orphan")
     questions = relationship("Question", secondary="form_questions", back_populates="forms")
-    responses = relationship('Response', back_populates='form')
+    responses = relationship('Response', back_populates='form', foreign_keys='Response.form_id')
     form_answers = relationship('FormAnswer', back_populates='form')
     category = relationship("FormCategory", back_populates="forms")
 
@@ -260,10 +288,18 @@ class Question(Base):
     id_alias = Column(Integer, ForeignKey("alias.id", ondelete="SET NULL"), nullable=True, index=True)
     id_form = Column(BigInteger, ForeignKey('forms.id', ondelete='SET NULL'), nullable=True, index=True)
 
+    # Guía v3 §5.2: estado del campo
+    field_status = Column(String(25), nullable=False, default='vigente', server_default='vigente')
+    provisional_since = Column(TIMESTAMP(timezone=True), nullable=True)
+    curated_by = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    curated_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    # Guía v3 §7: restricción
+    field_restriction = Column(String(20), nullable=False, default='ninguna', server_default='ninguna')
+
     category = relationship('QuestionCategory', back_populates='questions')
     forms = relationship('Form', secondary='form_questions', back_populates='questions')
     options = relationship('Option', back_populates='question')
-    answers = relationship('Answer', back_populates='question')
+    answers = relationship('Answer', back_populates='question', foreign_keys='Answer.question_id')
     form_answers = relationship('FormAnswer', back_populates='question')
     alias = relationship('Alias', backref='questions')
     default_form = relationship('Form', foreign_keys=[id_form])
@@ -311,12 +347,15 @@ class Response(Base):
     parent_response_id = Column(
         BigInteger, ForeignKey('responses.id', ondelete='CASCADE'), nullable=True
     )
+    # Guía v3 §9: foto que gobierna esta respuesta
+    snapshot_id = Column(BigInteger, ForeignKey('form_snapshots.id', ondelete='SET NULL', use_alter=True), nullable=True)
+
     parent_response = relationship(
         'Response', remote_side=[id], backref='approver_responses'
     )
-    form = relationship('Form', back_populates='responses')
+    form = relationship('Form', back_populates='responses', foreign_keys=[form_id])
     user = relationship('User', back_populates='responses')
-    answers = relationship('Answer', back_populates='response')
+    answers = relationship('Answer', back_populates='response', foreign_keys='Answer.response_id')
     approvals = relationship("ResponseApproval", back_populates="response")
     question_rules = relationship(
         "RelationQuestionRule",
@@ -351,9 +390,15 @@ class Answer(Base):
     # diligenciador se fechan por Response.submitted_at, como siempre.
     answered_at = Column(TIMESTAMP(timezone=True), nullable=True)
 
-    response = relationship('Response', back_populates='answers')
+    # Guía v3 §9: procedencia del valor autocompletado
+    source_form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='SET NULL'), nullable=True)
+    source_response_id = Column(BigInteger, ForeignKey('responses.id', ondelete='SET NULL'), nullable=True)
+    source_question_id = Column(BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True)
+    resolved_at = Column(TIMESTAMP(timezone=True), nullable=True)
+
+    response = relationship('Response', back_populates='answers', foreign_keys=[response_id])
     answered_by = relationship('User', foreign_keys=[answered_by_user_id])
-    question = relationship('Question', back_populates='answers')
+    question = relationship('Question', back_populates='answers', foreign_keys=[question_id])
     file_serial = relationship('AnswerFileSerial', back_populates='answer', uselist=False, cascade='all, delete-orphan')
 
 class Project(Base):
@@ -1047,6 +1092,19 @@ class CategoryApproval(Base):
     category = relationship('FormCategory', back_populates='approvals')
     user = relationship('User')
     firm_source_question = relationship('Question', foreign_keys=[firm_source_question_id])
+
+
+class FormApprovalNote(Base):
+    """Observaciones sobre un borrador — Guía v3 §5.5. Solo-adición."""
+    __tablename__ = 'form_approval_notes'
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
+    note_text = Column(Text, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    form = relationship('Form')
+    user = relationship('User')
 
 
 class ConsultantScope(str, enum.Enum):

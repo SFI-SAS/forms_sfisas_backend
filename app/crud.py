@@ -21,7 +21,7 @@ from app.schemas import BitacoraLogsSimpleCreate, EmailConfigCreate, FormApprova
 from fastapi import HTTPException, UploadFile, status
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
-from app.models import ApprovalStatus  # Asegúrate de importar esto
+from app.models import ApprovalStatus, FormStatus, DraftClass
 from cryptography.fernet import Fernet, InvalidToken
 from app.redis_client import redis_client
 import os
@@ -341,7 +341,13 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             format_type=form.format_type,
             id_category=form.id_category,
             project_id=form.project_id,
-            created_at=datetime.utcnow()
+            created_at=datetime.utcnow(),
+            # Guía v3: formato nace como borrador
+            form_status=FormStatus.borrador,
+            draft_class=DraftClass.nuevo,
+            version=1,
+            responsible_id=user_id,
+            is_enabled=False,  # No se puede diligenciar hasta publicar
         )
 
         for assigned_user_id in form.assign_user:
@@ -350,6 +356,10 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
         db.add(db_form)
         db.commit()
         db.refresh(db_form)
+
+        # Guía v3: lineage = su propio id
+        db_form.lineage_id = db_form.id
+        db.commit()
 
         # ✅ SOLO sincronizar si el usuario lo aceptó
         if db_form.id_category and getattr(form, 'sync_approvers', True):
@@ -368,6 +378,7 @@ def create_form(db: Session, form: FormBaseUser, user_id: int):
             "format_type": db_form.format_type.value,
             "created_at": db_form.created_at,
             "id_category": db_form.id_category,
+            "form_status": db_form.form_status.value,
             "assign_user": [moderator.user_id for moderator in db_form.form_moderators]
         }
         return response
@@ -1642,6 +1653,8 @@ def get_all_forms_paginated(db: Session, page: int = 1, page_size: int = 30):
             "description": form.description,
             "format_type": form.format_type.value,
             "is_enabled": form.is_enabled,
+            "form_status": form.form_status.value if form.form_status else "publicado",
+            "version": form.version or 1,
             "created_at": form.created_at.isoformat() if form.created_at else None,
             "category": {
                 "id": form.category.id,
@@ -7519,7 +7532,36 @@ def delete_form(db: Session, form_id: int):
         # el delete pero dejan basura referenciando a un form inexistente.
         db.query(PalabrasClave).filter(PalabrasClave.form_id == form_id).delete(synchronize_session=False)
 
-        # 4. Finalmente: el formulario
+        # 4. Limpiar FKs auto-referenciales para evitar CircularDependencyError
+        #    lineage_id y replaced_by_id apuntan a forms.id → SQLAlchemy no puede
+        #    resolver el orden de eliminación si están puestas.
+        if form.lineage_id == form.id:
+            form.lineage_id = None
+        if form.replaced_by_id is not None:
+            form.replaced_by_id = None
+        # Otros formatos que apunten a este vía replaced_by_id o lineage_id
+        db.query(Form).filter(Form.replaced_by_id == form_id).update(
+            {Form.replaced_by_id: None}, synchronize_session=False
+        )
+        db.query(Form).filter(Form.lineage_id == form_id, Form.id != form_id).update(
+            {Form.lineage_id: None}, synchronize_session=False
+        )
+
+        # Limpiar form_approval_notes (FK a forms.id)
+        from app.models import FormApprovalNote
+        db.query(FormApprovalNote).filter(FormApprovalNote.form_id == form_id).delete(synchronize_session=False)
+
+        # FormAnswerEditor (FK a forms.id)
+        from app.models import FormAnswerEditor
+        db.query(FormAnswerEditor).filter(FormAnswerEditor.form_id == form_id).delete(synchronize_session=False)
+
+        # FormApprovalFieldAccess (FK a forms.id)
+        from app.models import FormApprovalFieldAccess
+        db.query(FormApprovalFieldAccess).filter(FormApprovalFieldAccess.form_id == form_id).delete(synchronize_session=False)
+
+        db.flush()
+
+        # 5. Finalmente: el formulario
         db.delete(form)
         db.commit()
 
