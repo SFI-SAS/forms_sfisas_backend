@@ -1636,7 +1636,14 @@ def get_all_forms_paginated(db: Session, page: int = 1, page_size: int = 30):
     offset = (page - 1) * page_size
     
     # Query base. ORDENADA: sin orden, offset/limit entre páginas puede repetir o saltarse formatos.
-    base_query = db.query(Form).options(joinedload(Form.category)).order_by(Form.id)
+    # Guía v3: ocultar borradores (se ven en "Mis borradores") y enviados (se ven en "Pendientes").
+    from app.models import FormStatus
+    base_query = (
+        db.query(Form)
+        .options(joinedload(Form.category))
+        .filter(Form.form_status.notin_([FormStatus.borrador, FormStatus.enviado]))
+        .order_by(Form.id)
+    )
     
     # Contar total de registros
     total_count = base_query.count()
@@ -10481,9 +10488,12 @@ def search_forms_by_user(
         .outerjoin(FormCategory, Form.id_category == FormCategory.id)
         .options(joinedload(Form.category))
     )
+    from app.models import FormStatus
     if not include_drafts:
         query = query.filter(Form.is_enabled == True)
-    
+    # Ocultar enviados de la lista principal (van en "Pendientes de aprobación")
+    query = query.filter(Form.form_status != FormStatus.enviado)
+
     # ── 2. Filtro por tipo de asignación ──
     # Admin ve TODOS los formatos habilitados
     current_user = db.get(User, user_id)

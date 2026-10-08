@@ -742,11 +742,18 @@ def publish_form(
     if form.form_status not in (FormStatus.borrador, FormStatus.enviado):
         raise HTTPException(status_code=400, detail=f"El formato está en estado '{form.form_status.value}', no se puede publicar")
 
-    # ── Si es versión nueva: marcar el viejo como obsoleto y repuntar consumidores ──
+    # Nota de cambio obligatoria para versiones nuevas — Guía v3 §6.5
     from app.models import DraftClass
-    old_version = None
+    if form.draft_class == DraftClass.version and not form.change_note:
+        raise HTTPException(
+            status_code=400,
+            detail="La nota de cambio es obligatoria al publicar una versión nueva. Agréguela al crear la versión.",
+        )
+
+    # ── Si es versión nueva: aplicar cambios al original y borrar el borrador ──
+    original = None
     if form.draft_class == DraftClass.version and form.lineage_id:
-        old_version = (
+        original = (
             db.query(Form)
             .filter(
                 Form.lineage_id == form.lineage_id,
@@ -755,51 +762,98 @@ def publish_form(
             )
             .first()
         )
-        if old_version:
-            old_version.form_status = FormStatus.obsoleto
-            old_version.replaced_by_id = form_id
-            old_version.valid_until = func.now()
 
-            # Repuntar consumidores: QuestionTableRelation que apuntan al formato viejo
-            from app.models import QuestionTableRelation as QTR
-            db.query(QTR).filter(QTR.related_form_id == old_version.id).update(
-                {QTR.related_form_id: form_id}, synchronize_session='fetch'
-            )
+    if original:
+        # ── MERGE: aplicar los cambios del borrador al formato original ──
+        # El form_id original NO cambia. Nada se rompe.
+        draft = form  # renombrar para claridad
 
-    form.form_status = FormStatus.publicado
-    form.is_enabled = True
-    form.published_by = current_user.id
-    form.published_at = func.now()
-    form.valid_from = func.now()
-    form.draft_class = None
-    db.commit()
+        # 1. Actualizar diseño y metadata del original
+        original.form_design = draft.form_design
+        original.description = draft.description
+        original.title = draft.title
+        original.format_type = draft.format_type
+        original.version = draft.version
+        original.change_note = draft.change_note
+        original.published_by = current_user.id
+        original.published_at = func.now()
+        original.valid_from = func.now()
+
+        # 2. Agregar campos nuevos que estén en el borrador pero no en el original
+        original_qids = {
+            fq.question_id
+            for fq in db.query(FormQuestion).filter(FormQuestion.form_id == original.id).all()
+        }
+        draft_questions = db.query(FormQuestion).filter(FormQuestion.form_id == draft.id).all()
+        for dq in draft_questions:
+            if dq.question_id not in original_qids:
+                db.add(FormQuestion(form_id=original.id, question_id=dq.question_id))
+
+        # 3. Actualizar QuestionFilterCondition: agregar las nuevas del borrador
+        from app.models import QuestionFilterCondition
+        original_conds = {
+            (c.filtered_question_id, c.source_question_id, c.condition_question_id)
+            for c in db.query(QuestionFilterCondition).filter(QuestionFilterCondition.form_id == original.id).all()
+        }
+        for c in db.query(QuestionFilterCondition).filter(QuestionFilterCondition.form_id == draft.id).all():
+            key = (c.filtered_question_id, c.source_question_id, c.condition_question_id)
+            if key not in original_conds:
+                db.add(QuestionFilterCondition(
+                    form_id=original.id,
+                    filtered_question_id=c.filtered_question_id,
+                    source_question_id=c.source_question_id,
+                    condition_question_id=c.condition_question_id,
+                    expected_value=c.expected_value,
+                    operator=c.operator,
+                    use_latest_only=c.use_latest_only,
+                ))
+
+        db.flush()
+
+        # 4. Borrar el borrador temporal (CASCADE limpia sus copias)
+        #    Limpiar auto-referencias primero
+        draft.lineage_id = None
+        draft.replaced_by_id = None
+        db.flush()
+        from app.crud import delete_form
+        delete_form(db, draft.id)
+
+        return_form_id = original.id
+        msg = f"Versión {original.version} aplicada al formato #{original.id}"
+    else:
+        # Formato nuevo (sin original): publicar normalmente
+        form.form_status = FormStatus.publicado
+        form.is_enabled = True
+        form.published_by = current_user.id
+        form.published_at = func.now()
+        form.valid_from = func.now()
+        form.draft_class = None
+        db.commit()
+        return_form_id = form_id
+        msg = f"Formato #{form_id} publicado correctamente"
 
     # Avisar al creador por correo (en segundo plano, nunca bloquea)
     try:
         from app.core.aviso_formato import avisar_formato_aprobado
-        creator = db.query(User).filter(User.id == form.user_id).first()
+        published_form = db.query(Form).filter(Form.id == return_form_id).first()
+        creator = db.query(User).filter(User.id == (published_form.user_id if published_form else form.user_id)).first()
         if creator and creator.email:
             background_tasks.add_task(
                 avisar_formato_aprobado,
                 nombre_creador=creator.name or "",
                 correo_creador=creator.email,
-                titulo_formato=form.title,
-                form_id=form_id,
+                titulo_formato=published_form.title if published_form else form.title,
+                form_id=return_form_id,
                 aprobado_por=current_user.name or "Admin",
-                categoria=form.category.name if form.category else None,
+                categoria=published_form.category.name if published_form and published_form.category else None,
             )
     except Exception:
         pass  # Avisar nunca impide publicar
 
-    msg = f"Formato #{form_id} publicado correctamente"
-    if old_version:
-        msg += f". La versión anterior (#{old_version.id}) quedó obsoleta."
-
     return {
         "message": msg,
-        "form_id": form_id,
+        "form_id": return_form_id,
         "form_status": "publicado",
-        "obsoleted_id": old_version.id if old_version else None,
     }
 
 
@@ -1227,6 +1281,7 @@ def submit_for_approval(
 @router.post("/create-version/{form_id}")
 def create_version(
     form_id: int,
+    change_note: str = FastAPIForm(default=""),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
@@ -1276,6 +1331,7 @@ def create_version(
         approval_mode=source.approval_mode,
         answer_editors_mode=source.answer_editors_mode,
         show_approver_answers_to_filler=source.show_approver_answers_to_filler,
+        change_note=change_note.strip() or None,
         instructivo_url=source.instructivo_url,
         alert_message=source.alert_message,
         project_id=source.project_id,
