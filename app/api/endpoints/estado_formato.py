@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import require_roles
 from app.database import get_db
-from app.models import (Form, FormCategory, FormQuestion, Option, Question, QuestionCategory,
+from app.models import (Form, FormCategory, FormModerators, FormQuestion, Option, Question, QuestionCategory,
                         QuestionFilterCondition, QuestionTableRelation, User, UserType)
 
 router = APIRouter()
@@ -75,7 +75,11 @@ def estado_formato(form_id: int, db: Session = Depends(get_db),
                     "tipo": form.format_type.value if hasattr(form.format_type, "value") else form.format_type,
                     "publicado": bool(form.is_enabled),
                     "carpeta": {"id": carpeta.id, "nombre": carpeta.name} if carpeta else None,
-                    "modo_aprobacion": form.approval_mode, "creador": form.user_id},
+                    "modo_aprobacion": form.approval_mode, "creador": form.user_id,
+                    # quién puede diligenciarlo: los asignados del formato son sus moderadores
+                    "asignados": [{"id": u.id, "nombre": u.name, "email": u.email, "documento": u.num_document}
+                                  for u in db.query(User).join(FormModerators, FormModerators.user_id == User.id)
+                                  .filter(FormModerators.form_id == form.id).order_by(User.name)]},
         "campos": campos,
         "diseno": diseno or [],
     }
