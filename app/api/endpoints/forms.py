@@ -681,6 +681,45 @@ def get_single_form_map(
     }
 
 
+@router.post("/submit-for-approval/{form_id}")
+def submit_for_approval(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """
+    Envía un borrador a aprobación del admin — Guía v3 §5.5.
+
+    El creador lo edita las veces que quiera mientras está en 'borrador'.
+    Cuando está listo, lo envía. El admin lo ve en la cola de pendientes.
+    Si el admin lo rechaza, vuelve a 'borrador' y el creador lo reenvía
+    cuando lo corrija.
+    """
+    from app.models import FormStatus
+
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+    if form.form_status != FormStatus.borrador:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Solo se pueden enviar borradores. Este formato está en estado '{form.form_status.value}'.",
+        )
+
+    es_admin = current_user.user_type.name == UserType.admin.name
+    if form.user_id != current_user.id and not es_admin:
+        raise HTTPException(status_code=403, detail="Solo el autor o el admin pueden enviar este formato a aprobación")
+
+    form.form_status = FormStatus.enviado
+    db.commit()
+
+    return {
+        "message": f"Formato #{form_id} enviado a aprobación",
+        "form_id": form_id,
+        "form_status": "enviado",
+    }
+
+
 @router.post("/publish/{form_id}")
 def publish_form(
     form_id: int,
@@ -700,7 +739,7 @@ def publish_form(
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Formato no encontrado")
-    if form.form_status != FormStatus.borrador:
+    if form.form_status not in (FormStatus.borrador, FormStatus.enviado):
         raise HTTPException(status_code=400, detail=f"El formato está en estado '{form.form_status.value}', no se puede publicar")
 
     # ── Si es versión nueva: marcar el viejo como obsoleto y repuntar consumidores ──
@@ -783,8 +822,8 @@ def reject_form(
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Formato no encontrado")
-    if form.form_status != FormStatus.borrador:
-        raise HTTPException(status_code=400, detail="Solo se pueden rechazar borradores")
+    if form.form_status not in (FormStatus.borrador, FormStatus.enviado):
+        raise HTTPException(status_code=400, detail="Solo se pueden rechazar borradores o formatos enviados a aprobación")
 
     # Registrar observación de rechazo
     motivo = reason.strip() or "Sin motivo especificado"
@@ -794,6 +833,9 @@ def reject_form(
         note_text=f"[RECHAZADO] {motivo}",
     )
     db.add(note)
+
+    # Devolver a borrador para que el creador lo corrija
+    form.form_status = FormStatus.borrador
     db.commit()
 
     # Avisar al creador por correo
@@ -826,15 +868,16 @@ def get_pending_approval(
     current_user: User = Depends(require_roles([UserType.admin])),
 ):
     """
-    Lista formatos pendientes de aprobación (borradores) — Guía v3 §5.5.
-    Incluye información detallada: clase, edad, versión, campos.
+    Lista formatos enviados a aprobación — Guía v3 §5.5.
+    Solo muestra los que el creador envió (estado 'enviado'), no los que
+    todavía están en construcción ('borrador').
     """
     from app.models import FormStatus
     from datetime import datetime, timezone
 
     drafts = (
         db.query(Form)
-        .filter(Form.form_status == FormStatus.borrador)
+        .filter(Form.form_status == FormStatus.enviado)
         .order_by(Form.created_at.desc())
         .all()
     )

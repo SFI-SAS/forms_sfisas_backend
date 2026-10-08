@@ -103,6 +103,7 @@ class FormatType(enum.Enum):
 class FormStatus(enum.Enum):
     publicado = "publicado"
     borrador = "borrador"
+    enviado = "enviado"
     obsoleto = "obsoleto"
     desactivado = "desactivado"
 

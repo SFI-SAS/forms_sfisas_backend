@@ -428,6 +428,111 @@ def notification_rules_task():
         db.close()
 
 
+def pending_approval_reminder_task():
+    """
+    Resumen diario de formatos pendientes de aprobación — Guía v3 §5.6.
+
+    Corre una vez al día. Busca formatos en estado 'enviado' con más de 48h.
+    - >48h → correo al aprobador de la carpeta (o admin)
+    - >5 días → escalamiento: correo también al admin
+    """
+    from app.models import Form, FormStatus, User, UserType, CategoryApproval
+    from datetime import datetime, timezone, timedelta
+
+    logger.info("[v3] Ejecutando tarea de recordatorio de pendientes...")
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        threshold_48h = now - timedelta(hours=48)
+        threshold_5d = now - timedelta(days=5)
+
+        # Formatos enviados hace más de 48h
+        overdue = (
+            db.query(Form)
+            .filter(Form.form_status == FormStatus.enviado)
+            .filter(Form.created_at < threshold_48h)
+            .all()
+        )
+
+        if not overdue:
+            logger.info("[v3] Sin pendientes vencidos.")
+            return
+
+        logger.info(f"[v3] {len(overdue)} formato(s) pendiente(s) vencido(s).")
+
+        # Agrupar por aprobador (responsable de carpeta o admin)
+        from collections import defaultdict
+        by_approver: dict[int, list[dict]] = defaultdict(list)
+        escalamiento: list[dict] = []
+
+        # Encontrar admins
+        admins = db.query(User).filter(User.user_type == UserType.admin, User.is_active == True).all()
+        admin_ids = {a.id for a in admins}
+
+        for f in overdue:
+            age_days = (now - f.created_at).days if f.created_at else 0
+            item = {
+                "id": f.id,
+                "title": f.title,
+                "age_days": age_days,
+                "user_name": f.user.name if f.user else f"#{f.user_id}",
+            }
+
+            # Determinar aprobador
+            approver_id = None
+            if f.id_category:
+                cat_approver = (
+                    db.query(CategoryApproval)
+                    .filter(CategoryApproval.category_id == f.id_category, CategoryApproval.is_active == True)
+                    .order_by(CategoryApproval.sequence_number)
+                    .first()
+                )
+                if cat_approver:
+                    approver_id = cat_approver.user_id
+
+            if not approver_id:
+                # Sin aprobador de carpeta → va al admin
+                for admin in admins:
+                    by_approver[admin.id].append(item)
+            else:
+                by_approver[approver_id].append(item)
+
+            # Escalamiento: >5 días → también al admin (si no es el aprobador)
+            if age_days >= 5 and approver_id and approver_id not in admin_ids:
+                escalamiento.append(item)
+
+        # Enviar correos
+        from app.core.aviso_formato import avisar_pendientes_vencidos
+
+        for user_id, items in by_approver.items():
+            user = db.query(User).filter(User.id == user_id).first()
+            if user and user.email:
+                avisar_pendientes_vencidos(
+                    nombre_aprobador=user.name or "",
+                    correo_aprobador=user.email,
+                    pendientes=items,
+                    es_escalamiento=False,
+                )
+                logger.info(f"[v3] Resumen enviado a {user.email}: {len(items)} pendiente(s)")
+
+        # Escalamiento al admin
+        if escalamiento:
+            for admin in admins:
+                if admin.email:
+                    avisar_pendientes_vencidos(
+                        nombre_aprobador=admin.name or "",
+                        correo_aprobador=admin.email,
+                        pendientes=escalamiento,
+                        es_escalamiento=True,
+                    )
+                    logger.info(f"[v3] Escalamiento enviado a {admin.email}: {len(escalamiento)} formato(s)")
+
+    except Exception as e:
+        logger.error(f"[v3] Error en tarea de pendientes: {e}", exc_info=True)
+    finally:
+        db.close()
+
+
 # Configurar el scheduler
 scheduler = BackgroundScheduler()
 
@@ -465,6 +570,16 @@ if _LEGACY_REMINDERS_ON:
     logger.info("[M10] Recordatorios heredados ACTIVOS (daily_forms_task + notification_rules_task).")
 else:
     logger.info("[M10] Recordatorios heredados APAGADOS — cutover al Acompañante de ArIA.")
+
+# Resumen diario de formatos pendientes de aprobación — Guía v3 §5.6
+scheduler.add_job(
+    pending_approval_reminder_task,
+    "cron",
+    hour=8,
+    minute=0,
+    id="pending_approval_reminder"
+)
+logger.info("[v3] Recordatorio de pendientes de aprobación: Diario a las 8:00 AM")
 
 # Iniciar el scheduler
 scheduler.start()
