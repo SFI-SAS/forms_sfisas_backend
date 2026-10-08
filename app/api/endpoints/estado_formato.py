@@ -74,6 +74,8 @@ def estado_formato(form_id: int, db: Session = Depends(get_db),
         "formato": {"id": form.id, "titulo": form.title, "descripcion": form.description,
                     "tipo": form.format_type.value if hasattr(form.format_type, "value") else form.format_type,
                     "publicado": bool(form.is_enabled),
+                    # Guía v3: borrador → publicar es POST /forms/publish/{id}; el toggle viejo solo toca is_enabled
+                    "estado": getattr(getattr(form, "form_status", None), "value", None),
                     "carpeta": {"id": carpeta.id, "nombre": carpeta.name} if carpeta else None,
                     "modo_aprobacion": form.approval_mode, "creador": form.user_id,
                     # quién puede diligenciarlo: los asignados del formato son sus moderadores
