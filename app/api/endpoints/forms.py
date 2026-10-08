@@ -583,170 +583,728 @@ def get_dependency_map(
     current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
     """
-    Construye el grafo de dependencias entre formatos leyendo:
-      - question_table_relations  (datos que vienen de otro formato)
-      - question_filter_conditions (filtros condicionales entre formatos)
-      - approval_requirements     (formato requerido para aprobar)
-    Devuelve nodos (formatos) y aristas (dependencias), con nivel calculado.
+    Grafo de dependencias entre formatos.
+
+    Usa el extractor completo (guía v3 §11) y traduce al formato que
+    FormatMap.tsx espera (nodes con deps[], edges con from/to/type).
     """
-    from app.models import (
-        Form, FormCategory, FormQuestion,
-        QuestionTableRelation, QuestionFilterCondition, ApprovalRequirement,
-    )
-    from collections import defaultdict, deque
+    from app.services.relation_extractor import extract_relations
 
-    # 1. Todos los formatos activos
-    forms = (
-        db.query(Form)
-        .filter(Form.is_enabled == True)
-        .all()
-    )
-    form_ids = {f.id for f in forms}
-    if not form_ids:
-        return {"nodes": [], "edges": [], "categories": {}}
+    result = extract_relations(db)
 
-    # Categorias (carpetas)
-    cat_ids = {f.id_category for f in forms if f.id_category}
-    categories_map = {}
-    if cat_ids:
-        cats = db.query(FormCategory).filter(FormCategory.id.in_(cat_ids)).all()
-        for c in cats:
-            categories_map[c.id] = {
-                "name": c.name,
-                "color": c.color or "#6b7f8c",
-            }
+    # Traducir edges al formato legacy del frontend
+    type_map = {"dato": "data", "aprob": "approval"}
+    legacy_edges = []
+    seen = set()
+    for e in result["edges"]:
+        etype = type_map.get(e["clase"], "data")
+        if e["fuente"] == "filter_condition":
+            etype = "filter"
+        key = (e["de"], e["a"], etype)
+        if key not in seen:
+            seen.add(key)
+            legacy_edges.append({"from": e["de"], "to": e["a"], "type": etype})
 
-    # 2. Mapa question_id -> form_id(s)
-    fq_rows = (
-        db.query(FormQuestion.question_id, FormQuestion.form_id)
-        .filter(FormQuestion.form_id.in_(form_ids))
-        .all()
-    )
-    q_to_forms = defaultdict(set)
-    for qid, fid in fq_rows:
-        q_to_forms[qid].add(fid)
-
-    # 3. Aristas por question_table_relations
-    edges = []
-    deps = defaultdict(set)
-
-    qtr_rows = (
-        db.query(QuestionTableRelation)
-        .filter(QuestionTableRelation.question_id.in_(q_to_forms.keys()))
-        .all()
-    )
-    for qtr in qtr_rows:
-        dest_forms = q_to_forms.get(qtr.question_id, set())
-        src_forms = set()
-        if qtr.related_question_id:
-            src_forms = q_to_forms.get(qtr.related_question_id, set())
-        if qtr.related_form_id and qtr.related_form_id in form_ids:
-            src_forms.add(qtr.related_form_id)
-        if not src_forms and qtr.name_table and qtr.name_table not in ('users', 'projects'):
-            continue
-        for sf in src_forms:
-            for df in dest_forms:
-                if sf != df and sf in form_ids and df in form_ids:
-                    deps[df].add(sf)
-                    edges.append({
-                        "from": sf, "to": df, "type": "data",
-                        "question_id": qtr.question_id,
-                    })
-
-    # 4. Aristas por question_filter_conditions
-    qfc_rows = (
-        db.query(QuestionFilterCondition)
-        .filter(QuestionFilterCondition.form_id.in_(form_ids))
-        .all()
-    )
-    for qfc in qfc_rows:
-        src_forms = q_to_forms.get(qfc.source_question_id, set())
-        cond_forms = q_to_forms.get(qfc.condition_question_id, set())
-        all_src = src_forms | cond_forms
-        for sf in all_src:
-            if sf != qfc.form_id and sf in form_ids:
-                deps[qfc.form_id].add(sf)
-                edges.append({
-                    "from": sf, "to": qfc.form_id, "type": "filter",
-                    "question_id": qfc.filtered_question_id,
-                })
-
-    # 5. Aristas por approval_requirements
-    ar_rows = (
-        db.query(ApprovalRequirement)
-        .filter(ApprovalRequirement.form_id.in_(form_ids))
-        .all()
-    )
-    for ar in ar_rows:
-        if ar.required_form_id in form_ids and ar.required_form_id != ar.form_id:
-            deps[ar.form_id].add(ar.required_form_id)
-            edges.append({
-                "from": ar.required_form_id, "to": ar.form_id,
-                "type": "approval",
-            })
-
-    # 6. Calcular niveles con BFS topologico
-    levels = {}
-    in_degree = defaultdict(int)
-    for fid in form_ids:
-        in_degree[fid]
-    for fid, src_set in deps.items():
-        for s in src_set:
-            in_degree[fid] += 1
-
-    queue = deque()
-    for fid in form_ids:
-        if in_degree[fid] == 0:
-            levels[fid] = 0
-            queue.append(fid)
-
-    adj = defaultdict(set)
-    for fid, src_set in deps.items():
-        for s in src_set:
-            adj[s].add(fid)
-
-    while queue:
-        node = queue.popleft()
-        for child in adj[node]:
-            levels[child] = max(levels.get(child, 0), levels[node] + 1)
-            in_degree[child] -= 1
-            if in_degree[child] == 0:
-                queue.append(child)
-
-    for fid in form_ids:
-        if fid not in levels:
-            levels[fid] = 0
-
-    # 7. Construir nodos
-    nodes = []
-    for f in forms:
-        cat_info = categories_map.get(f.id_category, {})
-        nodes.append({
-            "id": f.id,
-            "title": f.title,
-            "format_type": f.format_type.value if f.format_type else "abierto",
-            "category_id": f.id_category,
-            "category_name": cat_info.get("name", ""),
-            "category_color": cat_info.get("color", "#6b7f8c"),
-            "level": levels.get(f.id, 0),
-            "deps": list(deps.get(f.id, set())),
-            "is_enabled": f.is_enabled,
-        })
-
-    # Deduplicar aristas
-    seen_edges = set()
-    unique_edges = []
-    for e in edges:
-        key = (e["from"], e["to"], e["type"])
-        if key not in seen_edges:
-            seen_edges.add(key)
-            unique_edges.append(e)
+    categories = {
+        k: {"name": v["name"], "color": v["color"]}
+        for k, v in result["categories"].items()
+    }
 
     return {
-        "nodes": nodes,
-        "edges": unique_edges,
-        "categories": categories_map,
+        "nodes": result["nodes"],
+        "edges": legacy_edges,
+        "categories": categories,
     }
+
+
+@router.get("/dependency-map/full")
+def get_dependency_map_full(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """
+    Extractor completo — guía v3.
+
+    Devuelve la estructura enriquecida con campos por formato, fuente de
+    cada arista, y estadísticas. Para el mapa v2 y la mesa de creación.
+    """
+    from app.services.relation_extractor import extract_relations
+    return extract_relations(db)
+
+
+@router.get("/dependency-map/form/{form_id}")
+def get_single_form_map(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Mini-mapa de un solo formato: de quién depende y a quién alimenta.
+    Con los campos que viajan en cada relación.
+    """
+    from app.services.relation_extractor import extract_relations
+
+    result = extract_relations(db)
+    form_map = {n["id"]: n for n in result["nodes"]}
+    target = form_map.get(form_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    edges_in = [e for e in result["edges"] if e["a"] == form_id]
+    edges_out = [e for e in result["edges"] if e["de"] == form_id]
+
+    depends_on = []
+    for did in sorted(set(e["de"] for e in edges_in)):
+        node = form_map.get(did)
+        if not node:
+            continue
+        campos = list(set(c for e in edges_in if e["de"] == did for c in e["campos"]))
+        depends_on.append({**node, "campos": campos, "relation_class": next((e["clase"] for e in edges_in if e["de"] == did), "dato")})
+
+    feeds = []
+    for fid in sorted(set(e["a"] for e in edges_out)):
+        node = form_map.get(fid)
+        if not node:
+            continue
+        campos = list(set(c for e in edges_out if e["a"] == fid for c in e["campos"]))
+        feeds.append({**node, "campos": campos, "relation_class": next((e["clase"] for e in edges_out if e["a"] == fid), "dato")})
+
+    return {
+        "form": target,
+        "depends_on": depends_on,
+        "feeds": feeds,
+        "fields": result["fields"].get(form_id, []),
+        "alerts": [
+            {"type": "dead", "message": f"Lee de #{d['id']} «{d['title']}» que está desactivado.", "form_id": d["id"]}
+            for d in depends_on if not d.get("is_enabled", True)
+        ],
+    }
+
+
+@router.post("/publish/{form_id}")
+def publish_form(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """
+    Publica un formato borrador — Guía v3 §5.2.
+
+    Solo admin puede aprobar/publicar. El formato pasa de borrador a publicado,
+    se habilita, y queda disponible para diligenciar.
+    """
+    from app.models import FormStatus
+    from sqlalchemy import func
+
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+    if form.form_status != FormStatus.borrador:
+        raise HTTPException(status_code=400, detail=f"El formato está en estado '{form.form_status.value}', no se puede publicar")
+
+    # ── Si es versión nueva: marcar el viejo como obsoleto y repuntar consumidores ──
+    from app.models import DraftClass
+    old_version = None
+    if form.draft_class == DraftClass.version and form.lineage_id:
+        old_version = (
+            db.query(Form)
+            .filter(
+                Form.lineage_id == form.lineage_id,
+                Form.form_status == FormStatus.publicado,
+                Form.id != form_id,
+            )
+            .first()
+        )
+        if old_version:
+            old_version.form_status = FormStatus.obsoleto
+            old_version.replaced_by_id = form_id
+            old_version.valid_until = func.now()
+
+            # Repuntar consumidores: QuestionTableRelation que apuntan al formato viejo
+            from app.models import QuestionTableRelation as QTR
+            db.query(QTR).filter(QTR.related_form_id == old_version.id).update(
+                {QTR.related_form_id: form_id}, synchronize_session='fetch'
+            )
+
+    form.form_status = FormStatus.publicado
+    form.is_enabled = True
+    form.published_by = current_user.id
+    form.published_at = func.now()
+    form.valid_from = func.now()
+    form.draft_class = None
+    db.commit()
+
+    # Avisar al creador por correo (en segundo plano, nunca bloquea)
+    try:
+        from app.core.aviso_formato import avisar_formato_aprobado
+        creator = db.query(User).filter(User.id == form.user_id).first()
+        if creator and creator.email:
+            background_tasks.add_task(
+                avisar_formato_aprobado,
+                nombre_creador=creator.name or "",
+                correo_creador=creator.email,
+                titulo_formato=form.title,
+                form_id=form_id,
+                aprobado_por=current_user.name or "Admin",
+                categoria=form.category.name if form.category else None,
+            )
+    except Exception:
+        pass  # Avisar nunca impide publicar
+
+    msg = f"Formato #{form_id} publicado correctamente"
+    if old_version:
+        msg += f". La versión anterior (#{old_version.id}) quedó obsoleta."
+
+    return {
+        "message": msg,
+        "form_id": form_id,
+        "form_status": "publicado",
+        "obsoleted_id": old_version.id if old_version else None,
+    }
+
+
+@router.post("/reject/{form_id}")
+def reject_form(
+    form_id: int,
+    reason: str = FastAPIForm(default=""),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """
+    Rechaza un borrador — Guía v3 §5.5.
+
+    No elimina el formato: registra la observación de rechazo y avisa
+    al creador por correo. El creador decide si lo corrige o lo descarta.
+    """
+    from app.models import FormStatus, FormApprovalNote
+
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+    if form.form_status != FormStatus.borrador:
+        raise HTTPException(status_code=400, detail="Solo se pueden rechazar borradores")
+
+    # Registrar observación de rechazo
+    motivo = reason.strip() or "Sin motivo especificado"
+    note = FormApprovalNote(
+        form_id=form_id,
+        user_id=current_user.id,
+        note_text=f"[RECHAZADO] {motivo}",
+    )
+    db.add(note)
+    db.commit()
+
+    # Avisar al creador por correo
+    try:
+        from app.core.aviso_formato import avisar_formato_rechazado
+        creator = db.query(User).filter(User.id == form.user_id).first()
+        if creator and creator.email:
+            background_tasks.add_task(
+                avisar_formato_rechazado,
+                nombre_creador=creator.name or "",
+                correo_creador=creator.email,
+                titulo_formato=form.title,
+                form_id=form_id,
+                rechazado_por=current_user.name or "Admin",
+                motivo=motivo,
+                categoria=form.category.name if form.category else None,
+            )
+    except Exception:
+        pass
+
+    return {
+        "message": f"Formato #{form_id} rechazado. Se notificó al autor.",
+        "form_id": form_id,
+    }
+
+
+@router.get("/pending-approval")
+def get_pending_approval(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """
+    Lista formatos pendientes de aprobación (borradores) — Guía v3 §5.5.
+    Incluye información detallada: clase, edad, versión, campos.
+    """
+    from app.models import FormStatus
+    from datetime import datetime, timezone
+
+    drafts = (
+        db.query(Form)
+        .filter(Form.form_status == FormStatus.borrador)
+        .order_by(Form.created_at.desc())
+        .all()
+    )
+
+    now = datetime.now(timezone.utc)
+    result = []
+    for f in drafts:
+        q_count = db.query(FormQuestion).filter(FormQuestion.form_id == f.id).count()
+        age = (now - f.created_at).days if f.created_at else 0
+
+        # Si es versión, encontrar el formato publicado anterior
+        prev_id = None
+        if f.draft_class and f.draft_class.value == 'version' and f.lineage_id:
+            prev = (
+                db.query(Form.id)
+                .filter(Form.lineage_id == f.lineage_id, Form.form_status == FormStatus.publicado)
+                .first()
+            )
+            if prev:
+                prev_id = prev[0]
+
+        result.append({
+            "id": f.id,
+            "title": f.title,
+            "description": f.description,
+            "format_type": f.format_type.value if f.format_type else "abierto",
+            "user_id": f.user_id,
+            "user_name": f.user.name if f.user else None,
+            "created_at": f.created_at.isoformat() if f.created_at else None,
+            "category_name": f.category.name if f.category else None,
+            "draft_class": f.draft_class.value if f.draft_class else "nuevo",
+            "version": f.version or 1,
+            "lineage_id": f.lineage_id,
+            "age_days": age,
+            "question_count": q_count,
+            "has_design": _tiene_estructura(f),
+            "previous_version_id": prev_id,
+            "responsible_name": f.responsible.name if f.responsible_id and hasattr(f, 'responsible') and f.responsible else None,
+        })
+
+    return result
+
+
+@router.post("/release/{form_id}")
+def release_format(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """
+    Liberación documental de formato nuevo — Guía v3 §5.2.
+
+    Solo para draft_class=nuevo. El responsable de la carpeta (o admin si no hay)
+    libera con un clic. No es una revisión y no puede objetar.
+    """
+    from app.models import FormStatus, DraftClass
+    from sqlalchemy import func as sqlfunc
+    import hashlib, json
+
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+    if form.form_status != FormStatus.borrador:
+        raise HTTPException(status_code=400, detail="Solo se pueden liberar borradores")
+    if form.draft_class and form.draft_class != DraftClass.nuevo:
+        raise HTTPException(status_code=400, detail="Solo formatos nuevos pueden ser liberados. Las versiones requieren aprobación del admin.")
+
+    # Determinar quién puede liberar: responsable de la categoría o admin
+    es_admin = current_user.user_type.name == UserType.admin.name
+    puede_liberar = es_admin
+
+    if form.id_category and not puede_liberar:
+        cat_approver = (
+            db.query(CategoryApproval)
+            .filter(
+                CategoryApproval.category_id == form.id_category,
+                CategoryApproval.is_active == True,
+            )
+            .order_by(CategoryApproval.sequence_number)
+            .first()
+        )
+        if cat_approver and cat_approver.user_id == current_user.id:
+            puede_liberar = True
+
+    # El autor también puede liberar si no hay responsable de carpeta
+    if form.user_id == current_user.id:
+        if not form.id_category:
+            puede_liberar = True
+        else:
+            cat_approver = (
+                db.query(CategoryApproval)
+                .filter(CategoryApproval.category_id == form.id_category, CategoryApproval.is_active == True)
+                .first()
+            )
+            if not cat_approver:
+                puede_liberar = True
+
+    if not puede_liberar:
+        raise HTTPException(status_code=403, detail="No tiene autoridad para liberar este formato. Solo el responsable de la carpeta o el admin pueden hacerlo.")
+
+    # Generar hash del contenido para auditoría
+    design_str = json.dumps(form.form_design or {}, sort_keys=True, default=str)
+    content_hash = hashlib.sha256(design_str.encode()).hexdigest()[:16]
+
+    # Publicar
+    form.form_status = FormStatus.publicado
+    form.is_enabled = True
+    form.published_by = current_user.id
+    form.published_at = sqlfunc.now()
+    form.valid_from = sqlfunc.now()
+    form.draft_class = None
+    form.change_note = f"Liberado por {current_user.name} [hash:{content_hash}]"
+    db.commit()
+
+    return {
+        "message": f"Formato #{form_id} liberado y publicado",
+        "form_id": form_id,
+        "form_status": "publicado",
+        "released_by": current_user.name,
+        "content_hash": content_hash,
+    }
+
+
+@router.post("/approval-notes/{form_id}")
+def add_approval_note(
+    form_id: int,
+    note_text: str = FastAPIForm(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """
+    Agregar observación a un borrador — Guía v3 §5.5.
+    Solo-adición: no se editan ni borran.
+    """
+    from app.models import FormApprovalNote
+
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+
+    note = FormApprovalNote(
+        form_id=form_id,
+        user_id=current_user.id,
+        note_text=note_text.strip(),
+    )
+    db.add(note)
+    db.commit()
+    db.refresh(note)
+
+    return {
+        "id": note.id,
+        "form_id": form_id,
+        "user_name": current_user.name,
+        "note_text": note.note_text,
+        "created_at": note.created_at.isoformat() if note.created_at else None,
+    }
+
+
+@router.get("/approval-notes/{form_id}")
+def get_approval_notes(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """
+    Listar observaciones de un borrador — Guía v3 §5.5.
+    """
+    from app.models import FormApprovalNote
+
+    notes = (
+        db.query(FormApprovalNote)
+        .filter(FormApprovalNote.form_id == form_id)
+        .order_by(FormApprovalNote.created_at.asc())
+        .all()
+    )
+
+    return [
+        {
+            "id": n.id,
+            "user_name": n.user.name if n.user else None,
+            "note_text": n.note_text,
+            "created_at": n.created_at.isoformat() if n.created_at else None,
+        }
+        for n in notes
+    ]
+
+
+@router.get("/approval-history")
+def get_approval_history(
+    days: int = Query(default=90, ge=1, le=365),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """
+    Historial de formatos aprobados/publicados — Guía v3 §5.5.
+    """
+    from app.models import FormStatus
+    from datetime import datetime, timezone, timedelta
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    published = (
+        db.query(Form)
+        .filter(Form.form_status.in_([FormStatus.publicado, FormStatus.obsoleto]))
+        .filter(Form.published_at != None)
+        .filter(Form.published_at >= since)
+        .order_by(Form.published_at.desc())
+        .limit(200)
+        .all()
+    )
+
+    return [
+        {
+            "id": f.id,
+            "title": f.title,
+            "version": f.version or 1,
+            "form_status": f.form_status.value if f.form_status else None,
+            "published_at": f.published_at.isoformat() if f.published_at else None,
+            "published_by_name": f.published_by_user.name if f.published_by and hasattr(f, 'published_by_user') and f.published_by_user else None,
+            "change_note": f.change_note,
+            "user_name": f.user.name if f.user else None,
+            "category_name": f.category.name if f.category else None,
+            "lineage_id": f.lineage_id,
+        }
+        for f in published
+    ]
+
+
+@router.get("/my-drafts")
+def get_my_drafts(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """
+    Lista los borradores del usuario actual — Guía v3 §5.1.
+    """
+    from app.models import FormStatus
+    from datetime import datetime, timezone
+
+    drafts = (
+        db.query(Form)
+        .filter(Form.form_status == FormStatus.borrador, Form.user_id == current_user.id)
+        .order_by(Form.created_at.desc())
+        .all()
+    )
+
+    now = datetime.now(timezone.utc)
+    result = []
+    for f in drafts:
+        q_count = db.query(FormQuestion).filter(FormQuestion.form_id == f.id).count()
+        age = (now - f.created_at).days if f.created_at else 0
+        result.append({
+            "id": f.id,
+            "title": f.title,
+            "description": f.description,
+            "format_type": f.format_type.value if f.format_type else "abierto",
+            "draft_class": f.draft_class.value if f.draft_class else "nuevo",
+            "version": f.version or 1,
+            "created_at": f.created_at.isoformat() if f.created_at else None,
+            "category_name": f.category.name if f.category else None,
+            "age_days": age,
+            "question_count": q_count,
+            "has_design": _tiene_estructura(f),
+        })
+    return result
+
+
+@router.post("/create-version/{form_id}")
+def create_version(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """
+    Clona un formato publicado como borrador de versión nueva — Guía v3 §4, §6.5.
+
+    El nuevo borrador hereda questions, design, approvals y relaciones.
+    Se vincula al linaje y versión+1.
+    """
+    from app.models import FormStatus, DraftClass, QuestionFilterCondition
+    from sqlalchemy import func as sqlfunc
+
+    source = db.query(Form).filter(Form.id == form_id).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+    if source.form_status != FormStatus.publicado:
+        raise HTTPException(status_code=400, detail="Solo se puede versionar un formato publicado")
+
+    lineage = source.lineage_id or source.id
+
+    # Verificar que no exista otro borrador del mismo linaje
+    existing_draft = (
+        db.query(Form)
+        .filter(Form.lineage_id == lineage, Form.form_status == FormStatus.borrador)
+        .first()
+    )
+    if existing_draft:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Ya existe un borrador (#{existing_draft.id}) para este linaje. Edítelo o descártelo primero.",
+        )
+
+    # Clonar el formato
+    new_form = Form(
+        user_id=current_user.id,
+        title=source.title,
+        description=source.description,
+        format_type=source.format_type,
+        id_category=source.id_category,
+        form_design=source.form_design,
+        is_enabled=False,
+        form_status=FormStatus.borrador,
+        draft_class=DraftClass.version,
+        version=(source.version or 1) + 1,
+        lineage_id=lineage,
+        responsible_id=source.responsible_id or current_user.id,
+        approval_mode=source.approval_mode,
+        answer_editors_mode=source.answer_editors_mode,
+        show_approver_answers_to_filler=source.show_approver_answers_to_filler,
+        instructivo_url=source.instructivo_url,
+        alert_message=source.alert_message,
+        project_id=source.project_id,
+    )
+    db.add(new_form)
+    db.flush()  # para obtener new_form.id
+
+    # Clonar FormQuestion (vincular mismas preguntas)
+    source_questions = db.query(FormQuestion).filter(FormQuestion.form_id == source.id).all()
+    for fq in source_questions:
+        db.add(FormQuestion(form_id=new_form.id, question_id=fq.question_id))
+
+    # Clonar FormApproval
+    source_approvals = db.query(FormApproval).filter(FormApproval.form_id == source.id).all()
+    for fa in source_approvals:
+        db.add(FormApproval(
+            form_id=new_form.id,
+            user_id=fa.user_id,
+            sequence_number=fa.sequence_number,
+            is_mandatory=fa.is_mandatory,
+            deadline_days=fa.deadline_days,
+            is_active=fa.is_active,
+            firm_mode=fa.firm_mode,
+            firm_source_question_id=fa.firm_source_question_id,
+            participant_role=fa.participant_role,
+            receives_from_user_ids=fa.receives_from_user_ids,
+            receive_timing=fa.receive_timing,
+        ))
+
+    # Clonar FormModerators
+    source_mods = db.query(FormModerators).filter(FormModerators.form_id == source.id).all()
+    for m in source_mods:
+        db.add(FormModerators(form_id=new_form.id, user_id=m.user_id))
+
+    # Clonar FormCloseConfig
+    source_close = db.query(FormCloseConfig).filter(FormCloseConfig.form_id == source.id).first()
+    if source_close:
+        db.add(FormCloseConfig(
+            form_id=new_form.id,
+            send_download_link=source_close.send_download_link,
+            send_pdf_attachment=source_close.send_pdf_attachment,
+            generate_report=source_close.generate_report,
+            do_nothing=source_close.do_nothing,
+            send_custom_template=source_close.send_custom_template,
+            custom_template_include_pdf=source_close.custom_template_include_pdf,
+            download_link_recipients=source_close.download_link_recipients,
+            email_recipients=source_close.email_recipients,
+            report_recipients=source_close.report_recipients,
+            custom_template_recipients=source_close.custom_template_recipients,
+            custom_template_id=source_close.custom_template_id,
+            custom_email_subject=source_close.custom_email_subject,
+            custom_email_body=source_close.custom_email_body,
+            email_subject_code=source_close.email_subject_code,
+        ))
+
+    # Clonar QuestionFilterCondition
+    source_conds = db.query(QuestionFilterCondition).filter(QuestionFilterCondition.form_id == source.id).all()
+    for c in source_conds:
+        db.add(QuestionFilterCondition(
+            form_id=new_form.id,
+            filtered_question_id=c.filtered_question_id,
+            source_question_id=c.source_question_id,
+            condition_question_id=c.condition_question_id,
+            expected_value=c.expected_value,
+            operator=c.operator,
+            use_latest_only=c.use_latest_only,
+        ))
+
+    db.commit()
+
+    return {
+        "message": f"Borrador de versión {new_form.version} creado a partir de #{source.id}",
+        "draft_id": new_form.id,
+        "source_id": source.id,
+        "version": new_form.version,
+    }
+
+
+@router.get("/version-history/{lineage_id}")
+def get_version_history(
+    lineage_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """
+    Historial de versiones de un linaje — Guía v3 §4.
+    """
+    from app.models import FormStatus
+
+    versions = (
+        db.query(Form)
+        .filter(Form.lineage_id == lineage_id)
+        .order_by(Form.version.desc())
+        .all()
+    )
+
+    # Incluir también el formato original si su lineage_id apunta a sí mismo
+    if not versions:
+        original = db.query(Form).filter(Form.id == lineage_id).first()
+        if original:
+            versions = [original]
+
+    return [
+        {
+            "id": f.id,
+            "version": f.version or 1,
+            "form_status": f.form_status.value if f.form_status else "publicado",
+            "draft_class": f.draft_class.value if f.draft_class else None,
+            "title": f.title,
+            "published_at": f.published_at.isoformat() if f.published_at else None,
+            "published_by_name": f.published_by_user.name if f.published_by and hasattr(f, 'published_by_user') and f.published_by_user else None,
+            "change_note": f.change_note,
+            "valid_from": f.valid_from.isoformat() if f.valid_from else None,
+            "valid_until": f.valid_until.isoformat() if f.valid_until else None,
+            "created_at": f.created_at.isoformat() if f.created_at else None,
+            "user_name": f.user.name if f.user else None,
+        }
+        for f in versions
+    ]
+
+
+@router.delete("/discard-draft/{form_id}")
+def discard_draft(
+    form_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """
+    Descarta un borrador propio — Guía v3 §5.1.
+
+    Más simple que delete_form_endpoint: solo funciona con borradores,
+    y verifica que sea del usuario actual (o admin).
+    """
+    from app.models import FormStatus
+    from app.services.integrity import check_can_delete_form
+
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+    if form.form_status != FormStatus.borrador:
+        raise HTTPException(status_code=400, detail="Solo se pueden descartar borradores")
+
+    es_admin = current_user.user_type.name == UserType.admin.name
+    if form.user_id != current_user.id and not es_admin:
+        raise HTTPException(status_code=403, detail="Solo el autor o el admin pueden descartar este borrador")
+
+    check = check_can_delete_form(db, form_id)
+    if not check["allowed"]:
+        raise HTTPException(status_code=409, detail={"message": check["message"], "consumers": check["consumers"]})
+
+    delete_form(db, form_id)
+    return {"message": "Borrador descartado", "form_id": form_id}
 
 
 @router.get("/{form_id}")
@@ -3554,6 +4112,11 @@ def delete_form_endpoint(form_id: int, db: Session = Depends(get_db), current_us
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User does not have permission to create forms"
         )
+    # Guía v3 §6.4: formato consumido no se borra
+    from app.services.integrity import check_can_delete_form
+    check = check_can_delete_form(db, form_id)
+    if not check["allowed"]:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"message": check["message"], "consumers": check["consumers"]})
     return delete_form(db, form_id)
 
 @router.get("/forms/{form_id}/relations")
@@ -4568,8 +5131,14 @@ def update_form_status(
             detail="Only administrators can enable or disable forms"
         )
     
+    # Guía v3 §6.4: desactivar formato consumido no se puede
+    if not status_update.is_enabled:
+        from app.services.integrity import check_can_delete_form
+        check = check_can_delete_form(db, form_id)
+        if not check["allowed"]:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"message": check["message"], "consumers": check["consumers"]})
+
     resultado = toggle_form_status(db, form_id, status_update.is_enabled)
-    # "Formatos disponibles" solo lista los habilitados.
     cache_listas.invalidar()
     return resultado
 
