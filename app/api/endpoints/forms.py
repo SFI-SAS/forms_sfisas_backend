@@ -862,6 +862,53 @@ def reject_form(
     }
 
 
+# ── Estado de revisión de un borrador ────────────────────────────────────────
+# Sin columna propia: se deduce de la última nota de aprobación que marca un
+# paso de la revisión. «[RECHAZADO] …» la deja POST /forms/reject (el borrador
+# vuelve al autor) y «[ENVIADO] …» POST /forms/submit-for-approval (el autor lo
+# corrigió y lo reenvía). Sin ninguna de las dos, el borrador nunca se revisó.
+_MARCA_RECHAZO = "[RECHAZADO]"
+_MARCA_ENVIO = "[ENVIADO]"
+
+
+def _estado_revision(db: Session, form_ids: list) -> dict:
+    """form_id → {review_status, rejection_reason, rejected_at, rejected_by, resubmitted_at}.
+
+    review_status: 'sin_revisar' | 'rechazado' | 'reenviado'.
+    """
+    from app.models import FormApprovalNote
+    from sqlalchemy import or_
+
+    estado = {fid: {"review_status": "sin_revisar", "rejection_reason": None,
+                    "rejected_at": None, "rejected_by": None, "resubmitted_at": None}
+              for fid in form_ids}
+    if not form_ids:
+        return estado
+    notas = (
+        db.query(FormApprovalNote)
+        .options(joinedload(FormApprovalNote.user))
+        .filter(
+            FormApprovalNote.form_id.in_(form_ids),
+            or_(FormApprovalNote.note_text.like(f"{_MARCA_RECHAZO}%"),
+                FormApprovalNote.note_text.like(f"{_MARCA_ENVIO}%")),
+        )
+        .order_by(FormApprovalNote.created_at.asc(), FormApprovalNote.id.asc())
+        .all()
+    )
+    for n in notas:  # en orden: la última marca de cada borrador manda
+        e = estado[n.form_id]
+        if n.note_text.startswith(_MARCA_RECHAZO):
+            e["review_status"] = "rechazado"
+            e["rejection_reason"] = n.note_text[len(_MARCA_RECHAZO):].strip() or None
+            e["rejected_at"] = n.created_at.isoformat() if n.created_at else None
+            e["rejected_by"] = n.user.name if n.user else None
+            e["resubmitted_at"] = None
+        else:
+            e["review_status"] = "reenviado"
+            e["resubmitted_at"] = n.created_at.isoformat() if n.created_at else None
+    return estado
+
+
 @router.get("/pending-approval")
 def get_pending_approval(
     db: Session = Depends(get_db),
@@ -883,6 +930,7 @@ def get_pending_approval(
     )
 
     now = datetime.now(timezone.utc)
+    revision = _estado_revision(db, [f.id for f in drafts])
     result = []
     for f in drafts:
         q_count = db.query(FormQuestion).filter(FormQuestion.form_id == f.id).count()
@@ -916,6 +964,7 @@ def get_pending_approval(
             "has_design": _tiene_estructura(f),
             "previous_version_id": prev_id,
             "responsible_name": f.responsible.name if f.responsible_id and hasattr(f, 'responsible') and f.responsible else None,
+            **revision[f.id],
         })
 
     return result
@@ -1124,6 +1173,7 @@ def get_my_drafts(
     )
 
     now = datetime.now(timezone.utc)
+    revision = _estado_revision(db, [f.id for f in drafts])
     result = []
     for f in drafts:
         q_count = db.query(FormQuestion).filter(FormQuestion.form_id == f.id).count()
@@ -1140,8 +1190,38 @@ def get_my_drafts(
             "age_days": age,
             "question_count": q_count,
             "has_design": _tiene_estructura(f),
+            **revision[f.id],
         })
     return result
+
+
+@router.post("/submit-for-approval/{form_id}")
+def submit_for_approval(
+    form_id: int,
+    comment: str = FastAPIForm(default=""),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
+):
+    """
+    El autor (re)envía su borrador a revisión — típicamente tras un rechazo,
+    ya corregido. Deja la nota «[ENVIADO] …» que vuelve a ponerlo en la bandeja
+    del administrador (ver _estado_revision).
+    """
+    from app.models import FormStatus, FormApprovalNote
+
+    form = db.query(Form).filter(Form.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Formato no encontrado")
+    if form.form_status != FormStatus.borrador:
+        raise HTTPException(status_code=400, detail="Solo se puede enviar a revisión un borrador")
+    if form.user_id != current_user.id and current_user.user_type != UserType.admin:
+        raise HTTPException(status_code=403, detail="Solo el autor del borrador puede enviarlo a revisión")
+
+    texto = f"{_MARCA_ENVIO} " + (comment.strip() or "El autor corrigió el borrador y lo envía a revisión.")
+    db.add(FormApprovalNote(form_id=form_id, user_id=current_user.id, note_text=texto))
+    db.commit()
+
+    return {"message": f"Formato #{form_id} enviado a revisión", "form_id": form_id, "review_status": "reenviado"}
 
 
 @router.post("/create-version/{form_id}")
