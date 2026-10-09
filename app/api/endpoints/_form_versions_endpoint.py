@@ -612,7 +612,8 @@ def register_form_versions_routes(router):
                 "id": r.id,
                 "submitted_at": r.submitted_at.isoformat() if r.submitted_at else None,
                 "status": _enum(r.status),
-                "submitted_by": {"user_id": r.user.id, "name": r.user.name} if r.user else None,
+                "submitted_by": {"user_id": r.user.id, "name": r.user.name, "email": r.user.email,
+                                 "num_document": r.user.num_document} if r.user else None,
             },
             "form_design": fv.form_design or [],
             "answers": [{
