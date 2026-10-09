@@ -1879,3 +1879,63 @@ class ResponseEditRequest(Base):
         Index('ix_response_edit_requests_response', 'response_id'),
         Index('ix_response_edit_requests_status', 'status', 'created_at'),
     )
+
+
+class FormVersion(Base):
+    """Versión OBSOLETA de un formato: cómo era antes de que el administrador
+    aprobara una versión nueva.
+
+    El formato vigente conserva su id (todo lo que lo nombra —relaciones,
+    movimientos, perfiles, respuestas— sigue funcionando). Lo que tenía antes
+    de aprobarse el borrador se congela aquí: diseño, campos, participantes,
+    moderadores y cierre. Solo se lee: no se diligencia ni se edita.
+
+    Sus respuestas son las del formato que se enviaron mientras estuvo vigente
+    (valid_from ≤ submitted_at < valid_until).
+
+    Migración: scripts/db_migrations/2026-10-09_form_versions.sql
+    """
+    __tablename__ = 'form_versions'
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_id = Column(BigInteger, ForeignKey('forms.id', ondelete='CASCADE'), nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    title = Column(String(255), nullable=True)
+    description = Column(Text, nullable=True)
+    format_type = Column(String(30), nullable=True)
+    approval_mode = Column(String(20), nullable=True)
+    form_design = Column(AutoJSON, nullable=True)
+    participants = Column(AutoJSON, nullable=True)
+    moderators = Column(AutoJSON, nullable=True)
+    close_config = Column(AutoJSON, nullable=True)
+    change_note = Column(String(500), nullable=True)
+    valid_from = Column(TIMESTAMP(timezone=True), nullable=True)
+    valid_until = Column(TIMESTAMP(timezone=True), nullable=False)
+    published_by = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    archived_by = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    archived_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    replaced_by_version = Column(Integer, nullable=True)
+
+    form = relationship('Form', foreign_keys=[form_id])
+    questions = relationship('FormVersionQuestion', back_populates='form_version',
+                             cascade='all, delete-orphan', order_by='FormVersionQuestion.position')
+
+    __table_args__ = (
+        UniqueConstraint('form_id', 'version', name='uq_form_versions_form_version'),
+    )
+
+
+class FormVersionQuestion(Base):
+    """Copia de cada campo tal como estaba en una versión obsoleta. La pregunta
+    puede cambiar o borrarse después; esta foto no."""
+    __tablename__ = 'form_version_questions'
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    form_version_id = Column(BigInteger, ForeignKey('form_versions.id', ondelete='CASCADE'), nullable=False, index=True)
+    question_id = Column(BigInteger, nullable=False)
+    question_text = Column(String(255), nullable=True)
+    description = Column(Text, nullable=True)
+    question_type = Column(String(50), nullable=True)
+    required = Column(Boolean, nullable=True)
+    options = Column(AutoJSON, nullable=True)
+    position = Column(Integer, nullable=False, default=0)
+
+    form_version = relationship('FormVersion', back_populates='questions')

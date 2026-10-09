@@ -62,6 +62,12 @@ register_export_template_route(router)
 from app.api.endpoints._import_template_endpoint import register_import_template_route
 register_import_template_route(router)
 
+# Versiones de un formato publicado: archivar la vigente al aprobar, consultar obsoletas
+from app.api.endpoints._form_versions_endpoint import (
+    register_form_versions_routes, archivar_version, aplicar_borrador, copiar_configuracion,
+)
+register_form_versions_routes(router)
+
 MAX_APPROVALS_PER_FORM = 15
 
 
@@ -700,6 +706,10 @@ def submit_for_approval(
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Formato no encontrado")
+    if form.form_status == FormStatus.enviado:
+        # Ya estaba en la bandeja del admin: los cambios nuevos se sumaron al
+        # mismo borrador, no hay nada más que hacer.
+        return {"message": f"Formato #{form_id} ya está enviado a aprobación", "form_id": form_id, "form_status": "enviado"}
     if form.form_status != FormStatus.borrador:
         raise HTTPException(
             status_code=400,
@@ -742,18 +752,19 @@ def publish_form(
     if form.form_status not in (FormStatus.borrador, FormStatus.enviado):
         raise HTTPException(status_code=400, detail=f"El formato está en estado '{form.form_status.value}', no se puede publicar")
 
-    # Nota de cambio obligatoria para versiones nuevas — Guía v3 §6.5
     from app.models import DraftClass
-    if form.draft_class == DraftClass.version and not form.change_note:
-        raise HTTPException(
-            status_code=400,
-            detail="La nota de cambio es obligatoria al publicar una versión nueva. Agréguela al crear la versión.",
-        )
 
-    # ── Si es versión nueva: aplicar cambios al original y borrar el borrador ──
+    # ── Si es versión nueva: la vigente queda OBSOLETA y toma lo del borrador ──
     original = None
     if form.draft_class == DraftClass.version and form.lineage_id:
         original = (
+            db.query(Form)
+            .filter(
+                Form.id == form.lineage_id,
+                Form.form_status == FormStatus.publicado,
+            )
+            .first()
+        ) or (
             db.query(Form)
             .filter(
                 Form.lineage_id == form.lineage_id,
@@ -764,59 +775,24 @@ def publish_form(
         )
 
     if original:
-        # ── MERGE: aplicar los cambios del borrador al formato original ──
-        # El form_id original NO cambia. Nada se rompe.
         draft = form  # renombrar para claridad
 
-        # 1. Actualizar diseño y metadata del original
-        original.form_design = draft.form_design
-        original.description = draft.description
-        original.title = draft.title
-        original.format_type = draft.format_type
-        original.version = draft.version
-        original.change_note = draft.change_note
-        original.published_by = current_user.id
-        original.published_at = func.now()
-        original.valid_from = func.now()
+        # 1. Congelar cómo está hoy: queda como versión obsoleta, consultable
+        #    con sus respuestas pero ya no se diligencia.
+        archivar_version(db, original, current_user.id, draft.version)
 
-        # 2. Agregar campos nuevos que estén en el borrador pero no en el original
-        original_qids = {
-            fq.question_id
-            for fq in db.query(FormQuestion).filter(FormQuestion.form_id == original.id).all()
-        }
-        draft_questions = db.query(FormQuestion).filter(FormQuestion.form_id == draft.id).all()
-        for dq in draft_questions:
-            if dq.question_id not in original_qids:
-                db.add(FormQuestion(form_id=original.id, question_id=dq.question_id))
+        # 2. El vigente (mismo id: nada de lo que lo nombra se rompe) toma
+        #    diseño, campos, participantes, cierre, fórmulas...
+        aplicar_borrador(db, draft, original, current_user.id)
 
-        # 3. Actualizar QuestionFilterCondition: agregar las nuevas del borrador
-        from app.models import QuestionFilterCondition
-        original_conds = {
-            (c.filtered_question_id, c.source_question_id, c.condition_question_id)
-            for c in db.query(QuestionFilterCondition).filter(QuestionFilterCondition.form_id == original.id).all()
-        }
-        for c in db.query(QuestionFilterCondition).filter(QuestionFilterCondition.form_id == draft.id).all():
-            key = (c.filtered_question_id, c.source_question_id, c.condition_question_id)
-            if key not in original_conds:
-                db.add(QuestionFilterCondition(
-                    form_id=original.id,
-                    filtered_question_id=c.filtered_question_id,
-                    source_question_id=c.source_question_id,
-                    condition_question_id=c.condition_question_id,
-                    expected_value=c.expected_value,
-                    operator=c.operator,
-                    use_latest_only=c.use_latest_only,
-                ))
-
-        db.flush()
-
-        # 4. Borrar el borrador temporal (CASCADE limpia sus copias)
-        #    Limpiar auto-referencias primero
+        # 3. Borrar el borrador temporal. Limpiar auto-referencias primero.
         draft.lineage_id = None
         draft.replaced_by_id = None
         db.flush()
         from app.crud import delete_form
         delete_form(db, draft.id)
+        db.commit()
+        invalidate_form_cache(original.id)
 
         return_form_id = original.id
         msg = f"Versión {original.version} aplicada al formato #{original.id}"
@@ -993,9 +969,12 @@ def get_pending_approval(
         # Si es versión, encontrar el formato publicado anterior
         prev_id = None
         if f.draft_class and f.draft_class.value == 'version' and f.lineage_id:
+            from sqlalchemy import or_ as _or
             prev = (
                 db.query(Form.id)
-                .filter(Form.lineage_id == f.lineage_id, Form.form_status == FormStatus.publicado)
+                .filter(_or(Form.id == f.lineage_id, Form.lineage_id == f.lineage_id),
+                        Form.id != f.id, Form.form_status == FormStatus.publicado)
+                .order_by((Form.id == f.lineage_id).desc())
                 .first()
             )
             if prev:
@@ -1302,10 +1281,16 @@ def create_version(
 
     lineage = source.lineage_id or source.id
 
-    # Verificar que no exista otro borrador del mismo linaje
+    # Verificar que no exista otro borrador del mismo linaje (en edición o ya
+    # enviado al admin): los cambios nuevos se suman a ese, no se abre otro.
     existing_draft = (
         db.query(Form)
-        .filter(Form.lineage_id == lineage, Form.form_status == FormStatus.borrador)
+        .filter(
+            Form.lineage_id == lineage,
+            Form.id != source.id,
+            Form.draft_class == DraftClass.version,
+            Form.form_status.in_([FormStatus.borrador, FormStatus.enviado]),
+        )
         .first()
     )
     if existing_draft:
@@ -1344,61 +1329,9 @@ def create_version(
     for fq in source_questions:
         db.add(FormQuestion(form_id=new_form.id, question_id=fq.question_id))
 
-    # Clonar FormApproval
-    source_approvals = db.query(FormApproval).filter(FormApproval.form_id == source.id).all()
-    for fa in source_approvals:
-        db.add(FormApproval(
-            form_id=new_form.id,
-            user_id=fa.user_id,
-            sequence_number=fa.sequence_number,
-            is_mandatory=fa.is_mandatory,
-            deadline_days=fa.deadline_days,
-            is_active=fa.is_active,
-            firm_mode=fa.firm_mode,
-            firm_source_question_id=fa.firm_source_question_id,
-            participant_role=fa.participant_role,
-            receives_from_user_ids=fa.receives_from_user_ids,
-            receive_timing=fa.receive_timing,
-        ))
-
-    # Clonar FormModerators
-    source_mods = db.query(FormModerators).filter(FormModerators.form_id == source.id).all()
-    for m in source_mods:
-        db.add(FormModerators(form_id=new_form.id, user_id=m.user_id))
-
-    # Clonar FormCloseConfig
-    source_close = db.query(FormCloseConfig).filter(FormCloseConfig.form_id == source.id).first()
-    if source_close:
-        db.add(FormCloseConfig(
-            form_id=new_form.id,
-            send_download_link=source_close.send_download_link,
-            send_pdf_attachment=source_close.send_pdf_attachment,
-            generate_report=source_close.generate_report,
-            do_nothing=source_close.do_nothing,
-            send_custom_template=source_close.send_custom_template,
-            custom_template_include_pdf=source_close.custom_template_include_pdf,
-            download_link_recipients=source_close.download_link_recipients,
-            email_recipients=source_close.email_recipients,
-            report_recipients=source_close.report_recipients,
-            custom_template_recipients=source_close.custom_template_recipients,
-            custom_template_id=source_close.custom_template_id,
-            custom_email_subject=source_close.custom_email_subject,
-            custom_email_body=source_close.custom_email_body,
-            email_subject_code=source_close.email_subject_code,
-        ))
-
-    # Clonar QuestionFilterCondition
-    source_conds = db.query(QuestionFilterCondition).filter(QuestionFilterCondition.form_id == source.id).all()
-    for c in source_conds:
-        db.add(QuestionFilterCondition(
-            form_id=new_form.id,
-            filtered_question_id=c.filtered_question_id,
-            source_question_id=c.source_question_id,
-            condition_question_id=c.condition_question_id,
-            expected_value=c.expected_value,
-            operator=c.operator,
-            use_latest_only=c.use_latest_only,
-        ))
+    # Participantes, campos por aprobador, registro externo, condiciones y
+    # fórmulas: al aprobarse, lo que tenga el borrador reemplaza a lo del vigente.
+    copiar_configuracion(db, source.id, new_form.id)
 
     db.commit()
 
@@ -1421,18 +1354,17 @@ def get_version_history(
     """
     from app.models import FormStatus
 
+    from sqlalchemy import or_ as _or
+
+    # El formato raíz del linaje (lineage_id nulo o apuntando a sí mismo) y sus
+    # borradores de versión. Antes el raíz solo salía si no tenía borradores, y
+    # con uno pendiente el editor dejaba de saber que el formato está publicado.
     versions = (
         db.query(Form)
-        .filter(Form.lineage_id == lineage_id)
-        .order_by(Form.version.desc())
+        .filter(_or(Form.lineage_id == lineage_id, Form.id == lineage_id))
+        .order_by(Form.version.desc(), Form.id.desc())
         .all()
     )
-
-    # Incluir también el formato original si su lineage_id apunta a sí mismo
-    if not versions:
-        original = db.query(Form).filter(Form.id == lineage_id).first()
-        if original:
-            versions = [original]
 
     return [
         {
@@ -1478,9 +1410,15 @@ def discard_draft(
     if form.user_id != current_user.id and not es_admin:
         raise HTTPException(status_code=403, detail="Solo el autor o el admin pueden descartar este borrador")
 
-    check = check_can_delete_form(db, form_id)
-    if not check["allowed"]:
-        raise HTTPException(status_code=409, detail={"message": check["message"], "consumers": check["consumers"]})
+    # Un borrador de VERSIÓN comparte los campos del formato vigente, así que
+    # "otros formatos lo leen" siempre salía verdadero y no se podía descartar.
+    # Lo que esos formatos leen son las preguntas, que siguen en el vigente:
+    # borrar el borrador no les quita nada.
+    from app.models import DraftClass
+    if form.draft_class != DraftClass.version:
+        check = check_can_delete_form(db, form_id)
+        if not check["allowed"]:
+            raise HTTPException(status_code=409, detail={"message": check["message"], "consumers": check["consumers"]})
 
     delete_form(db, form_id)
     return {"message": "Borrador descartado", "form_id": form_id}
