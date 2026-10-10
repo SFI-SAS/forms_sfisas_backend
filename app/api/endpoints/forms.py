@@ -690,6 +690,7 @@ def get_single_form_map(
 @router.post("/submit-for-approval/{form_id}")
 def submit_for_approval(
     form_id: int,
+    comment: str = FastAPIForm(default=""),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
 ):
@@ -699,9 +700,10 @@ def submit_for_approval(
     El creador lo edita las veces que quiera mientras está en 'borrador'.
     Cuando está listo, lo envía. El admin lo ve en la cola de pendientes.
     Si el admin lo rechaza, vuelve a 'borrador' y el creador lo reenvía
-    cuando lo corrija.
+    cuando lo corrija: ese reenvío deja la nota «[ENVIADO] …» para que deje
+    de figurar como rechazado (ver _estado_revision).
     """
-    from app.models import FormStatus
+    from app.models import FormStatus, FormApprovalNote
 
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
@@ -721,6 +723,9 @@ def submit_for_approval(
         raise HTTPException(status_code=403, detail="Solo el autor o el admin pueden enviar este formato a aprobación")
 
     form.form_status = FormStatus.enviado
+    if comment.strip() or _estado_revision(db, [form_id])[form_id]["review_status"] == "rechazado":
+        texto = f"{_MARCA_ENVIO} " + (comment.strip() or "El autor corrigió el borrador y lo envía a revisión.")
+        db.add(FormApprovalNote(form_id=form_id, user_id=current_user.id, note_text=texto))
     db.commit()
 
     return {
@@ -1194,13 +1199,18 @@ def get_my_drafts(
 ):
     """
     Lista los borradores del usuario actual — Guía v3 §5.1.
+
+    Incluye los ya ENVIADOS que el administrador aún no revisa (también los
+    cambios a un formato publicado): siguen siendo borradores hasta que él
+    los apruebe o los rechace. Esos salen con review_status 'reenviado'
+    (en revisión).
     """
     from app.models import FormStatus
     from datetime import datetime, timezone
 
     drafts = (
         db.query(Form)
-        .filter(Form.form_status == FormStatus.borrador, Form.user_id == current_user.id)
+        .filter(Form.form_status.in_([FormStatus.borrador, FormStatus.enviado]), Form.user_id == current_user.id)
         .order_by(Form.created_at.desc())
         .all()
     )
@@ -1211,11 +1221,17 @@ def get_my_drafts(
     for f in drafts:
         q_count = db.query(FormQuestion).filter(FormQuestion.form_id == f.id).count()
         age = (now - f.created_at).days if f.created_at else 0
+        estado = dict(revision[f.id])
+        if f.form_status == FormStatus.enviado:
+            estado["review_status"] = "reenviado"  # en la bandeja del admin
         result.append({
             "id": f.id,
             "title": f.title,
             "description": f.description,
             "format_type": f.format_type.value if f.format_type else "abierto",
+            "form_status": f.form_status.value,
+            # Cambios a un formato publicado: cuál (el linaje conserva su id).
+            "replaces_id": f.lineage_id if f.draft_class and f.draft_class.value == "version" else None,
             "draft_class": f.draft_class.value if f.draft_class else "nuevo",
             "version": f.version or 1,
             "created_at": f.created_at.isoformat() if f.created_at else None,
@@ -1223,38 +1239,9 @@ def get_my_drafts(
             "age_days": age,
             "question_count": q_count,
             "has_design": _tiene_estructura(f),
-            **revision[f.id],
+            **estado,
         })
     return result
-
-
-@router.post("/submit-for-approval/{form_id}")
-def submit_for_approval(
-    form_id: int,
-    comment: str = FastAPIForm(default=""),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles([UserType.admin, UserType.creator])),
-):
-    """
-    El autor (re)envía su borrador a revisión — típicamente tras un rechazo,
-    ya corregido. Deja la nota «[ENVIADO] …» que vuelve a ponerlo en la bandeja
-    del administrador (ver _estado_revision).
-    """
-    from app.models import FormStatus, FormApprovalNote
-
-    form = db.query(Form).filter(Form.id == form_id).first()
-    if not form:
-        raise HTTPException(status_code=404, detail="Formato no encontrado")
-    if form.form_status != FormStatus.borrador:
-        raise HTTPException(status_code=400, detail="Solo se puede enviar a revisión un borrador")
-    if form.user_id != current_user.id and current_user.user_type != UserType.admin:
-        raise HTTPException(status_code=403, detail="Solo el autor del borrador puede enviarlo a revisión")
-
-    texto = f"{_MARCA_ENVIO} " + (comment.strip() or "El autor corrigió el borrador y lo envía a revisión.")
-    db.add(FormApprovalNote(form_id=form_id, user_id=current_user.id, note_text=texto))
-    db.commit()
-
-    return {"message": f"Formato #{form_id} enviado a revisión", "form_id": form_id, "review_status": "reenviado"}
 
 
 @router.post("/create-version/{form_id}")
@@ -1403,7 +1390,8 @@ def discard_draft(
     form = db.query(Form).filter(Form.id == form_id).first()
     if not form:
         raise HTTPException(status_code=404, detail="Formato no encontrado")
-    if form.form_status != FormStatus.borrador:
+    # Enviado y sin revisar también: el autor retira sus cambios.
+    if form.form_status not in (FormStatus.borrador, FormStatus.enviado):
         raise HTTPException(status_code=400, detail="Solo se pueden descartar borradores")
 
     es_admin = current_user.user_type.name == UserType.admin.name
