@@ -168,6 +168,10 @@ def extract_relations(db: Session) -> dict[str, Any]:
             "deps": sorted(deps.get(f.id, set())),
             "is_enabled": f.is_enabled,
             "user_id": f.user_id,
+            "version": f.version or 1,
+            "change_note": f.change_note or "",
+            "created_at": f.created_at.isoformat() if f.created_at else None,
+            "status": f.form_status.value if f.form_status else "publicado",
         })
 
     # ── 6. Campos por formato ─────────────────────────────────────────
