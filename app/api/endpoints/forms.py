@@ -2589,31 +2589,33 @@ def get_forms_endpoint(
 def get_forms_paginated_endpoint(
     page: int = 1,
     page_size: int = 30,
+    sort_by: str = "id",
+    sort_dir: str = "desc",
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    category_id: Optional[int] = None,
+    format_type: Optional[str] = None,
+    is_enabled: Optional[bool] = None,
+    search: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-
     """
-    Retorna una lista paginada de todos los formularios registrados en la base de datos.
-
-    - **page**: Número de página (por defecto 1)
-    - **page_size**: Cantidad de registros por página (por defecto 30, máximo 100)
-    - **Retorna**: Diccionario con items paginados y metadata.
-    - **Código 200**: Éxito, formularios encontrados.
-    - **Código 404**: No se encontraron formularios.
-    - **Código 500**: Error interno del servidor.
+    Lista paginada de formularios con filtros avanzados.
+    Incluye conteos de respuestas y usuarios asignados.
     """
-    
     try:
-        # Validar page_size máximo
         if page_size > 100:
             page_size = 100
-        
-        forms_data = get_all_forms_paginated(db, page, page_size)
-        
-        if not forms_data["items"]:
-            raise HTTPException(status_code=404, detail="No se encontraron formularios")
-        
+
+        forms_data = get_all_forms_paginated(
+            db, page, page_size,
+            sort_by=sort_by, sort_dir=sort_dir,
+            date_from=date_from, date_to=date_to,
+            category_id=category_id, format_type=format_type,
+            is_enabled=is_enabled, search=search,
+        )
+
         return forms_data
     except HTTPException:
         raise

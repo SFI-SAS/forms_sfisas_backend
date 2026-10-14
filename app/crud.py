@@ -1623,37 +1623,124 @@ def get_response_id(db: Session, form_id: int, user_id: int):
         raise HTTPException(status_code=404, detail="No se encontró la respuesta")
 
     return {"response_id": result}
-def get_all_forms_paginated(db: Session, page: int = 1, page_size: int = 30):
+def get_all_forms_paginated(
+    db: Session,
+    page: int = 1,
+    page_size: int = 30,
+    sort_by: str = "id",
+    sort_dir: str = "desc",
+    date_from: str = None,
+    date_to: str = None,
+    category_id: int = None,
+    format_type: str = None,
+    is_enabled: bool = None,
+    search: str = None,
+):
     """
-    Realiza una consulta paginada para obtener todos los formularios incluyendo su categoría.
+    Consulta paginada de formularios con filtros avanzados y conteos.
+    """
+    from app.models import FormStatus, FormModerators, Response
+    from sqlalchemy import func as sqlfunc, case
+    from datetime import datetime
 
-    :param db: Sesión activa de la base de datos
-    :param page: Número de página
-    :param page_size: Cantidad de registros por página
-    :return: Diccionario con items paginados y metadata
-    """
-    # Calcular offset
     offset = (page - 1) * page_size
-    
-    # Query base. ORDENADA: sin orden, offset/limit entre páginas puede repetir o saltarse formatos.
-    # Guía v3: ocultar borradores (se ven en "Mis borradores") y enviados (se ven en "Pendientes").
-    from app.models import FormStatus
+
+    # Subqueries para conteos
+    response_count_sq = (
+        db.query(Response.form_id, sqlfunc.count(Response.id).label("cnt"))
+        .filter(Response.parent_response_id.is_(None))
+        .group_by(Response.form_id)
+        .subquery()
+    )
+    assigned_count_sq = (
+        db.query(FormModerators.form_id, sqlfunc.count(FormModerators.id).label("cnt"))
+        .group_by(FormModerators.form_id)
+        .subquery()
+    )
+
+    # Query base
     base_query = (
-        db.query(Form)
+        db.query(
+            Form,
+            sqlfunc.coalesce(response_count_sq.c.cnt, 0).label("response_count"),
+            sqlfunc.coalesce(assigned_count_sq.c.cnt, 0).label("assigned_count"),
+        )
+        .outerjoin(response_count_sq, Form.id == response_count_sq.c.form_id)
+        .outerjoin(assigned_count_sq, Form.id == assigned_count_sq.c.form_id)
         .options(joinedload(Form.category))
         .filter(Form.form_status.notin_([FormStatus.borrador, FormStatus.enviado]))
-        .order_by(Form.id)
     )
-    
-    # Contar total de registros
-    total_count = base_query.count()
-    
-    # Obtener registros paginados
-    forms = base_query.offset(offset).limit(page_size).all()
-    
-    # Convertir a diccionarios
-    items = [
-        {
+
+    # Filtros
+    if search:
+        base_query = base_query.filter(
+            Form.title.ilike(f"%{search}%") | Form.description.ilike(f"%{search}%")
+        )
+    if date_from:
+        try:
+            dt = datetime.fromisoformat(date_from)
+            base_query = base_query.filter(Form.created_at >= dt)
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            dt = datetime.fromisoformat(date_to)
+            base_query = base_query.filter(Form.created_at <= dt)
+        except ValueError:
+            pass
+    if category_id is not None:
+        base_query = base_query.filter(Form.id_category == category_id)
+    if format_type:
+        base_query = base_query.filter(Form.format_type == format_type)
+    if is_enabled is not None:
+        base_query = base_query.filter(Form.is_enabled == is_enabled)
+
+    # Ordenamiento
+    sort_map = {
+        "id": Form.id,
+        "title": Form.title,
+        "created_at": Form.created_at,
+        "responses": sqlfunc.coalesce(response_count_sq.c.cnt, 0),
+        "assigned": sqlfunc.coalesce(assigned_count_sq.c.cnt, 0),
+        "version": Form.version,
+    }
+    order_col = sort_map.get(sort_by, Form.id)
+    base_query = base_query.order_by(order_col.desc() if sort_dir == "desc" else order_col.asc())
+
+    # Contar (sin joinedload para el count)
+    count_query = (
+        db.query(sqlfunc.count(Form.id))
+        .outerjoin(response_count_sq, Form.id == response_count_sq.c.form_id)
+        .outerjoin(assigned_count_sq, Form.id == assigned_count_sq.c.form_id)
+        .filter(Form.form_status.notin_([FormStatus.borrador, FormStatus.enviado]))
+    )
+    if search:
+        count_query = count_query.filter(Form.title.ilike(f"%{search}%") | Form.description.ilike(f"%{search}%"))
+    if date_from:
+        try:
+            count_query = count_query.filter(Form.created_at >= datetime.fromisoformat(date_from))
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            count_query = count_query.filter(Form.created_at <= datetime.fromisoformat(date_to))
+        except ValueError:
+            pass
+    if category_id is not None:
+        count_query = count_query.filter(Form.id_category == category_id)
+    if format_type:
+        count_query = count_query.filter(Form.format_type == format_type)
+    if is_enabled is not None:
+        count_query = count_query.filter(Form.is_enabled == is_enabled)
+
+    total_count = count_query.scalar()
+
+    # Paginación
+    rows = base_query.offset(offset).limit(page_size).all()
+
+    items = []
+    for form, resp_count, asgn_count in rows:
+        items.append({
             "id": form.id,
             "user_id": form.user_id,
             "title": form.title,
@@ -1663,24 +1750,23 @@ def get_all_forms_paginated(db: Session, page: int = 1, page_size: int = 30):
             "form_status": form.form_status.value if form.form_status else "publicado",
             "version": form.version or 1,
             "created_at": form.created_at.isoformat() if form.created_at else None,
+            "response_count": resp_count,
+            "assigned_count": asgn_count,
             "category": {
                 "id": form.category.id,
                 "name": form.category.name,
                 "description": form.category.description,
-            } if form.category else None
-        }
-        for form in forms
-    ]
-    
-    # Calcular total de páginas
+            } if form.category else None,
+        })
+
     total_pages = (total_count + page_size - 1) // page_size
-    
+
     return {
         "items": items,
         "total": total_count,
         "page": page,
         "page_size": page_size,
-        "total_pages": total_pages
+        "total_pages": total_pages,
     }
 
 def get_all_forms(db: Session):
