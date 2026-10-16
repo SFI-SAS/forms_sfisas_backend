@@ -1281,10 +1281,16 @@ class GenericActivity(Base):
     classification_question_id = Column(BigInteger, ForeignKey('questions.id', ondelete='SET NULL'), nullable=True)
     classification_value = Column(String(255), nullable=True)
 
+    # Categoría de formatos donde vive el servicio (una sola, como un formato).
+    # En los exploradores y selectores de categoría el servicio sale dentro de
+    # ella. SET NULL: borrar la categoría deja el servicio suelto, no lo borra.
+    category_id = Column(BigInteger, ForeignKey('form_categories.id', ondelete='SET NULL'), nullable=True, index=True)
+
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     creator = relationship('User', foreign_keys=[created_by])
+    category = relationship('FormCategory', foreign_keys=[category_id])
     classification_form = relationship('Form', foreign_keys=[classification_form_id])
     classification_question = relationship('Question', foreign_keys=[classification_question_id])
     # Diligenciadores asignados (formato↔usuario). OPCIONAL/diferido.

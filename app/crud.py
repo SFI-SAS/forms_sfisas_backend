@@ -8392,6 +8392,31 @@ def get_category_tree(db: Session) -> List[FormCategoryTreeResponse]:
         .order_by(FormCategory.order, FormCategory.name)\
         .all()
     
+    # Servicios activos que viven en alguna categoría, para pintarlos dentro de
+    # ella en los selectores (crear formato / mover a categoría).
+    from app.models import GenericActivityFormLink
+    from app.schemas import CategoryServiceOut
+    conteo = dict(
+        db.query(GenericActivityFormLink.activity_id, func.count(GenericActivityFormLink.form_id))
+        .group_by(GenericActivityFormLink.activity_id)
+        .all()
+    )
+    servicios_por_categoria: dict = {}
+    for servicio in (
+        db.query(GenericActivity)
+        .filter(GenericActivity.category_id.isnot(None), GenericActivity.is_active.is_(True))
+        .order_by(GenericActivity.name)
+        .all()
+    ):
+        servicios_por_categoria.setdefault(servicio.category_id, []).append(
+            CategoryServiceOut(
+                id=servicio.id,
+                name=servicio.name,
+                description=servicio.description,
+                form_count=conteo.get(servicio.id, 0),
+            )
+        )
+
     def build_tree(category: FormCategory) -> FormCategoryTreeResponse:
         # Contar formularios
         forms_count = db.query(func.count(Form.id))\
@@ -8411,7 +8436,8 @@ def get_category_tree(db: Session) -> List[FormCategoryTreeResponse]:
             updated_at=category.updated_at,
             forms_count=forms_count,
             children_count=len(category.children),
-            children=[]
+            children=[],
+            services=servicios_por_categoria.get(category.id, []),
         )
         
         # Recursivamente construir hijos

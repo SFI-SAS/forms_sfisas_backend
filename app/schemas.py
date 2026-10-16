@@ -918,10 +918,19 @@ class UpdateFormBasicInfo(BaseModel):
     format_type: Optional[FormatTypeEdit] = None
     project_id: Optional[int] = None
 
+class CategoryServiceOut(BaseModel):
+    """Servicio que vive dentro de una categoría (se pinta en el árbol)."""
+    id: int
+    name: str
+    description: Optional[str] = None
+    form_count: int = 0
+
+
 # Tu clase FormCategoryTreeResponse quedaría igual, ya que hereda la solución:
 class FormCategoryTreeResponse(FormCategoryResponse):
     children: List['FormCategoryTreeResponse'] = []
     forms: List['FormResponse'] = [] 
+    services: List[CategoryServiceOut] = []
 
 FormCategoryTreeResponse.model_rebuild()
 
@@ -1813,6 +1822,8 @@ class GenericActivityCreate(BaseModel):
     # Feature "Servicios": formatos del servicio (la asignación de usuarios es
     # OPCIONAL/diferida). Pueden venir solo aquí, sin items.
     form_ids: List[int] = []
+    # Categoría de formatos donde vive el servicio (opcional).
+    category_id: Optional[int] = None
     # Clasificación opcional: formato + pregunta + valor elegido.
     classification_form_id: Optional[int] = None
     classification_question_id: Optional[int] = None
@@ -1823,6 +1834,8 @@ class GenericActivityUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=150)
     description: Optional[str] = None
     is_active: Optional[bool] = None
+    # Categoría: solo se toca si viene en el payload; null la quita.
+    category_id: Optional[int] = None
     # Clasificación: enviar los 3 juntos para fijarla; enviar value="" (o null
     # en los tres) para limpiarla. Ver lógica del endpoint.
     classification_form_id: Optional[int] = None
@@ -1876,6 +1889,8 @@ class GenericActivityOut(BaseModel):
     classification_question_id: Optional[int] = None
     classification_question_text: Optional[str] = None
     classification_value: Optional[str] = None
+    category_id: Optional[int] = None
+    category_name: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -1891,9 +1906,31 @@ class GenericActivitySummaryOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     classification_value: Optional[str] = None
+    category_id: Optional[int] = None
+    category_name: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+
+class ServiceFormBriefOut(BaseModel):
+    id: int
+    title: str
+    description: Optional[str] = None
+    format_type: Optional[str] = None
+    is_enabled: Optional[bool] = None
+    user_id: Optional[int] = None
+    id_category: Optional[int] = None
+    created_at: Optional[datetime] = None
+
+
+class ServiceInCategoryOut(BaseModel):
+    """Servicio dentro de una carpeta, con los formatos que el usuario ve en él."""
+    id: int
+    name: str
+    description: Optional[str] = None
+    classification_value: Optional[str] = None
+    forms: List[ServiceFormBriefOut] = []
 
 
 class GenericActivityMineOut(BaseModel):

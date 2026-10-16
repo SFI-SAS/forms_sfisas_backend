@@ -40,7 +40,7 @@ from app.api.controllers.excel_form_exporter import generate_form_excel
 from app.api.controllers.mail import send_response_answers_email
 from app.redis_client import redis_client
 from app.database import get_db
-from app.models import Answer, AnswerHistory, ApprovalStatus, CategoryApproval, FormatType, Form, FormAnswer, FormAnswerEditor, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, GenericActivity, GenericActivityForm, PalabrasClave, Profile, ProfileCategory, ProfileForm, ProfileUser, Question, QuestionTableRelation, QuestionType, RelationQuestionRule, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
+from app.models import Answer, AnswerHistory, ApprovalStatus, CategoryApproval, FormatType, Form, FormAnswer, FormAnswerEditor, FormApproval, FormApprovalNotification, FormCategory, FormCloseConfig, FormModerators, FormMovimientos, FormQuestion, FormSchedule, FormTemplate, GenericActivity, GenericActivityForm, GenericActivityFormLink, PalabrasClave, Profile, ProfileCategory, ProfileForm, ProfileUser, Question, QuestionTableRelation, QuestionType, RelationQuestionRule, Response, ResponseApproval, ResponseStatus, TemplateScope, User, UserType
 from app.crud import  _extract_style_config, _serialize_answers, add_category_approver, analyze_form_relations, apply_template_service, bulk_save_category_approvers, check_form_data, create_form, add_questions_to_form, create_form_category, create_form_movimiento, create_form_schedule, create_response_approval, create_template_service, delete_form, delete_form_category, delete_template_service, fetch_completed_forms_by_user, fetch_completed_forms_with_all_responses, fetch_form_questions, fetch_form_users, generate_excel_with_repeaters, get_all_categories_with_approvers, get_all_form_movimientos_basic, get_all_forms, get_all_forms_paginated, get_all_user_responses_by_form_id_improved, get_categories_by_parent, get_category_approvals, get_category_path, get_category_tree, get_form, get_form_id_users, get_form_responses_data, get_form_with_full_responses, get_forms, get_forms_by_approver, get_forms_by_user, get_forms_by_user_summary, get_forms_pending_approval_for_user, get_moderated_forms_by_answers, get_next_mandatory_approver, get_notifications_for_form, get_questions_and_answers_by_form_id, get_questions_and_answers_by_form_id_and_user, get_response_approval_status, get_response_details_logic, get_template_detail_service, get_unanswered_forms_by_user, get_user_responses_data, invalidate_form_cache, link_moderator_to_form, link_question_to_form, list_templates_service, move_category, process_regisfacial_answer, remove_category_approver, remove_moderator_from_form, remove_question_from_form, save_form_approvals, search_forms_by_user, send_rejection_email_to_all, sync_form_approvals_from_category, toggle_form_status, update_category_approver, update_form_category_1, update_form_design_service, update_notification_status, update_response_approval_status, update_template_service, update_form_movimiento
 from app.schemas import AlertMessageRequest, AnswerEditorsConfigOut, AnswerEditorsConfigUpdate, AnswerEditorUserOut, CategoryApprovalBulkSave, CategoryApprovalCreate, CategoryApprovalResponse, CategoryApprovalUpdate, FormAnswerCreate, FormBaseUser, FormCategoryCreate, FormCategoryMove, FormCategoryResponse, FormCategoryTreeResponse, FormCategoryUpdate, FormCategoryWithFormsResponse, FormCloseConfigCreate, FormCloseConfigOut, FormCreate, FormDesignUpdate, FormDraftUpdate, FormMovimientoBase, FormMovimientoResponse, FormResponse, FormResponseBitacora, FormScheduleCreate, FormScheduleOut, FormStatusUpdate, FormTemplateCreate, FormTemplateDetail, FormTemplateResponse, FormTemplateUpdate, NotificationCreate, NotificationsByFormResponse_schema, QuestionAdd, FormBase, QuestionIdsRequest, RelatedAnswerRequest, ResponseApprovalCreate, SendResponseEmailRequest, UpdateFormBasicInfo, UpdateFormCategory, UpdateNotifyOnSchema, UpdateResponseApprovalRequest
 from app.core.security import get_current_user, require_roles
@@ -4787,6 +4787,7 @@ def get_forms_by_category_endpoint(
     page: int = 1,
     page_size: int = 30,
     include_subcategories: bool = Query(False),
+    exclude_service_forms: bool = Query(False),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -4808,6 +4809,16 @@ def get_forms_by_category_endpoint(
         all_ids = get_all_descendant_ids(category_id)
         base_query = db.query(Form).filter(Form.id_category.in_(all_ids))
     
+    if exclude_service_forms:
+        # Los formatos de un servicio que vive en esta carpeta se muestran dentro
+        # del servicio, no sueltos (el explorador pinta el servicio aparte).
+        en_servicio = (
+            select(GenericActivityFormLink.form_id)
+            .join(GenericActivity, GenericActivity.id == GenericActivityFormLink.activity_id)
+            .where(GenericActivity.category_id == category_id, GenericActivity.is_active.is_(True))
+        )
+        base_query = base_query.filter(~Form.id.in_(en_servicio))
+
     total_count = base_query.count()
     forms = base_query.offset(offset).limit(page_size).all()
     total_pages = (total_count + page_size - 1) // page_size
@@ -4844,6 +4855,7 @@ def get_user_forms_by_category_endpoint(
     page: int = 1,
     page_size: int = 30,
     include_subcategories: bool = Query(False),
+    exclude_service_forms: bool = Query(False),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -4887,6 +4899,16 @@ def get_user_forms_by_category_endpoint(
         .filter(Form.id_category.in_(category_ids))  # ← Y en la categoría
     )
     
+    if exclude_service_forms:
+        # Los formatos de un servicio que vive en esta carpeta se muestran dentro
+        # del servicio, no sueltos (el explorador pinta el servicio aparte).
+        en_servicio = (
+            select(GenericActivityFormLink.form_id)
+            .join(GenericActivity, GenericActivity.id == GenericActivityFormLink.activity_id)
+            .where(GenericActivity.category_id == category_id, GenericActivity.is_active.is_(True))
+        )
+        base_query = base_query.filter(~Form.id.in_(en_servicio))
+
     total_count = base_query.count()
     forms = base_query.offset(offset).limit(page_size).all()
     total_pages = (total_count + page_size - 1) // page_size
@@ -4934,6 +4956,7 @@ def get_user_completed_forms_by_category_endpoint(
     page: int = 1,
     page_size: int = 30,
     include_subcategories: bool = Query(False),
+    exclude_service_forms: bool = Query(False),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -4978,6 +5001,16 @@ def get_user_completed_forms_by_category_endpoint(
         .distinct()  # ← Evitar duplicados si tiene múltiples respuestas al mismo form
     )
     
+    if exclude_service_forms:
+        # Los formatos de un servicio que vive en esta carpeta se muestran dentro
+        # del servicio, no sueltos (el explorador pinta el servicio aparte).
+        en_servicio = (
+            select(GenericActivityFormLink.form_id)
+            .join(GenericActivity, GenericActivity.id == GenericActivityFormLink.activity_id)
+            .where(GenericActivity.category_id == category_id, GenericActivity.is_active.is_(True))
+        )
+        base_query = base_query.filter(~Form.id.in_(en_servicio))
+
     total_count = base_query.count()
     forms = base_query.offset(offset).limit(page_size).all()
     total_pages = (total_count + page_size - 1) // page_size

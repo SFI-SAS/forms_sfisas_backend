@@ -26,6 +26,8 @@ from app.database import get_db
 from app.models import (
     Answer,
     Form,
+    FormCategory,
+    FormModerators,
     FormQuestion,
     FormServiceClassification,
     GenericActivity,
@@ -57,7 +59,9 @@ from app.schemas import (
     ResponseServiceLinkDetailOut,
     ResponseServiceLinkOut,
     ServiceAssignmentsAdd,
+    ServiceFormBriefOut,
     ServiceFormLinksAdd,
+    ServiceInCategoryOut,
     ServiceSelectableOut,
 )
 
@@ -108,6 +112,8 @@ def _serialize_activity(a: GenericActivity) -> GenericActivityOut:
             a.classification_question.question_text if a.classification_question else None
         ),
         classification_value=a.classification_value,
+        category_id=a.category_id,
+        category_name=a.category.name if a.category else None,
     )
 
 
@@ -159,6 +165,8 @@ def _summary(a: GenericActivity, classification_value=None) -> GenericActivitySu
         updated_at=a.updated_at,
         # Clasificacion unificada: la de las relaciones; si no hay, la legacy.
         classification_value=classification_value or a.classification_value,
+        category_id=a.category_id,
+        category_name=a.category.name if a.category else None,
     )
 
 
@@ -181,6 +189,11 @@ def _load_full(db: Session, activity_id: int) -> GenericActivity:
             status_code=status.HTTP_404_NOT_FOUND, detail="Actividad no encontrada"
         )
     return activity
+
+
+def _check_category(db: Session, category_id) -> None:
+    if category_id is not None and not db.query(FormCategory.id).filter(FormCategory.id == category_id).first():
+        raise HTTPException(400, "La categoría elegida no existe")
 
 
 def _apply_classification(
@@ -450,6 +463,105 @@ def list_selectable_services(
     return [ServiceSelectableOut(id=r.id, name=r.name) for r in rows]
 
 
+@router.get("/by-category/{category_id}", response_model=List[ServiceInCategoryOut])
+def list_services_in_category(
+    category_id: int,
+    scope: str = "all",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Servicios activos que viven en la categoría, con sus formatos, para los
+    exploradores de carpetas. `scope` filtra los formatos igual que la carpeta:
+    all (Editar formatos), fill (los que el usuario diligencia) o answered (los
+    que ya respondió). Con fill/answered no salen los servicios que quedan vacíos."""
+    if scope not in ("all", "fill", "answered"):
+        raise HTTPException(400, "scope debe ser all, fill o answered")
+
+    services = (
+        db.query(GenericActivity)
+        .filter(GenericActivity.category_id == category_id, GenericActivity.is_active.is_(True))
+        .order_by(GenericActivity.name)
+        .all()
+    )
+    if not services:
+        return []
+    ids = [a.id for a in services]
+
+    links = (
+        db.query(GenericActivityFormLink.activity_id, Form)
+        .join(Form, Form.id == GenericActivityFormLink.form_id)
+        .filter(GenericActivityFormLink.activity_id.in_(ids))
+        .order_by(Form.title)
+        .all()
+    )
+
+    habilitado = {f.id: f.is_enabled for _, f in links}
+    visibles = None
+    if scope != "all":
+        form_ids = {f.id for _, f in links}
+        if scope == "fill":
+            visibles = {
+                r[0] for r in db.query(FormModerators.form_id)
+                .filter(FormModerators.user_id == current_user.id, FormModerators.form_id.in_(form_ids))
+                .all()
+            }
+            # La asignación como diligenciador dentro del servicio también da acceso.
+            asignados = {
+                (r[0], r[1]) for r in db.query(GenericActivityForm.activity_id, GenericActivityForm.form_id)
+                .filter(GenericActivityForm.user_id == current_user.id, GenericActivityForm.activity_id.in_(ids))
+                .all()
+            }
+        else:
+            visibles = {
+                r[0] for r in db.query(Response.form_id)
+                .filter(Response.user_id == current_user.id, Response.form_id.in_(form_ids))
+                .distinct()
+                .all()
+            }
+
+    def ve(activity_id: int, form_id: int) -> bool:
+        if visibles is None:
+            return True
+        # Diligenciar y Consultar no muestran formatos deshabilitados.
+        if habilitado.get(form_id) is False:
+            return False
+        if form_id in visibles:
+            return True
+        return scope == "fill" and (activity_id, form_id) in asignados
+
+    por_servicio: dict = {i: [] for i in ids}
+    for activity_id, f in links:
+        if ve(activity_id, f.id):
+            por_servicio[activity_id].append(
+                ServiceFormBriefOut(
+                    id=f.id,
+                    title=f.title,
+                    description=f.description,
+                    format_type=f.format_type.value if hasattr(f.format_type, "value") else (str(f.format_type) if f.format_type else None),
+                    is_enabled=f.is_enabled,
+                    user_id=f.user_id,
+                    id_category=f.id_category,
+                    created_at=f.created_at,
+                )
+            )
+
+    salida = []
+    for a in services:
+        forms = por_servicio[a.id]
+        if scope != "all" and not forms:
+            continue
+        salida.append(
+            ServiceInCategoryOut(
+                id=a.id,
+                name=a.name,
+                description=a.description,
+                classification_value=a.classification_value,
+                forms=forms,
+            )
+        )
+    return salida
+
+
 @router.get("/{activity_id}", response_model=GenericActivityOut)
 def get_activity(
     activity_id: int,
@@ -474,11 +586,13 @@ def create_activity(
 
     items = _validate_items(db, payload.items)
 
+    _check_category(db, payload.category_id)
     activity = GenericActivity(
         name=name,
         description=payload.description,
         created_by=current_user.id,
         is_active=True,
+        category_id=payload.category_id,
     )
     _apply_classification(
         db,
@@ -552,6 +666,10 @@ def update_activity(
 
     if payload.is_active is not None:
         activity.is_active = payload.is_active
+
+    if "category_id" in payload.model_fields_set:
+        _check_category(db, payload.category_id)
+        activity.category_id = payload.category_id
 
     # Solo tocar la clasificación si el payload incluyó alguno de sus campos.
     cls_fields = {
