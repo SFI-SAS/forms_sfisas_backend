@@ -81,3 +81,15 @@ docs/
 
 # Node (si hay scripts de frontend embebidos)
 node_modules/
+
+# Archivos subidos por los usuarios: datos de cada instalación, nunca van en
+# la imagen (el Dockerfile crea las carpetas vacías).
+documents/
+uploaded_files/
+approval_attachments/
+logo/
+
+# Pruebas sueltas
+test/
+probar_*.py
+requirements2.txt
