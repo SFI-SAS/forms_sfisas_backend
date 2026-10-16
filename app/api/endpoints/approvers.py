@@ -1415,7 +1415,7 @@ def get_approver_required_forms_responses(response_id: int, approver_user_id: in
             # Obtener respuestas actuales (excluyendo las que son previous_answer_ids)
             answers = (
                 db.query(Answer, Question)
-                .join(Question)
+                .join(Question, Answer.question_id == Question.id)
                 .filter(
                     Answer.response_id == response.id,
                     ~Answer.id.in_(previous_answer_ids) if previous_answer_ids else True
@@ -2954,7 +2954,7 @@ def get_my_participation_detail(
 
     filas = (
         db.query(Answer, Question)
-        .join(Question)
+        .join(Question, Answer.question_id == Question.id)
         .filter(Answer.response_id.in_(response_scope.response_tree_ids(db, response_id)))
         .all()
     )

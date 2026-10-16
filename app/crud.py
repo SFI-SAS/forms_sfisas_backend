@@ -1388,7 +1388,7 @@ def check_form_data(db: Session, form_id: int):
     responses = response_scope.only_submissions(
         db.query(Response).filter(Response.form_id == form_id)
     ).all()
-    answers = db.query(Answer).join(Response).filter(Response.form_id == form_id).all()
+    answers = db.query(Answer).join(Response, Answer.response_id == Response.id).filter(Response.form_id == form_id).all()
     questions = db.query(Question).all()
     
     form_data = {
@@ -5026,7 +5026,7 @@ def get_forms_pending_approval_for_user(user_id: int, db: Session):
             # Se lee la respuesta COMPLETA: la del diligenciador más las de sus
             # aprobadores, que son responses propias colgadas de esta. Cada dato
             # llega con su autor (answered_by_user_id).
-            answers = db.query(Answer, Question).join(Question).filter(
+            answers = db.query(Answer, Question).join(Question, Answer.question_id == Question.id).filter(
                 Answer.response_id.in_(response_scope.response_tree_ids(db, response.id)),
                 ~Answer.id.in_(previous_answer_ids) if previous_answer_ids else True
             ).all()
