@@ -635,7 +635,28 @@ def get_dependency_map_full(
     cada arista, y estadísticas. Para el mapa v2 y la mesa de creación.
     """
     from app.services.relation_extractor import extract_relations
-    return extract_relations(db)
+    result = extract_relations(db)
+
+    # Procesos (activos) de cada formato, para filtrar las relaciones del mapa
+    # por proceso. Un formato está en un proceso si tiene vínculo o asignación.
+    filas = (
+        db.query(GenericActivity.id, GenericActivity.name, GenericActivity.category_id)
+        .filter(GenericActivity.is_active.is_(True))
+        .all()
+    )
+    procesos = {pid: nombre for pid, nombre, _ in filas}
+    por_formato: dict = {}
+    for modelo in (GenericActivityFormLink, GenericActivityForm):
+        for fid, aid in db.query(modelo.form_id, modelo.activity_id).filter(
+            modelo.activity_id.in_(procesos.keys())
+        ).all():
+            por_formato.setdefault(fid, set()).add(aid)
+    for n in result["nodes"]:
+        n["process_ids"] = sorted(por_formato.get(n["id"], ()))
+    result["processes"] = procesos
+    # Carpeta donde vive cada proceso: el listado del mapa lo pinta dentro de ella.
+    result["process_categories"] = {pid: cid for pid, _, cid in filas}
+    return result
 
 
 @router.get("/dependency-map/form/{form_id}")

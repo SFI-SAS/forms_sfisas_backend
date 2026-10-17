@@ -186,9 +186,41 @@ def _load_full(db: Session, activity_id: int) -> GenericActivity:
     )
     if not activity:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Actividad no encontrada"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Proceso no encontrado"
         )
     return activity
+
+
+# Un formato puede pertenecer como máximo a este número de procesos.
+MAX_PROCESOS_POR_FORMATO = 3
+
+
+def _check_process_limit(db: Session, activity_id, form_ids) -> None:
+    """Rechaza (400) si alguno de los formatos ya está en el máximo de procesos.
+
+    Un formato está en un proceso si tiene vínculo (form_links) o asignaciones
+    en él. El proceso `activity_id` no cuenta: volver a agregar un formato al
+    mismo proceso no suma. Solo se valida lo que se agrega; si por datos viejos
+    un formato ya pasa del máximo, se queda como está."""
+    form_ids = set(form_ids or [])
+    if not form_ids:
+        return
+    otros: dict = {}
+    for modelo in (GenericActivityFormLink, GenericActivityForm):
+        q = db.query(modelo.form_id, modelo.activity_id).filter(modelo.form_id.in_(form_ids))
+        if activity_id is not None:
+            q = q.filter(modelo.activity_id != activity_id)
+        for fid, aid in q.all():
+            otros.setdefault(fid, set()).add(aid)
+    llenos = sorted(fid for fid, aids in otros.items() if len(aids) >= MAX_PROCESOS_POR_FORMATO)
+    if llenos:
+        titulos = dict(db.query(Form.id, Form.title).filter(Form.id.in_(llenos)).all())
+        nombres = ", ".join(f'"{titulos.get(fid, fid)}"' for fid in llenos)
+        raise HTTPException(
+            400,
+            f"Un formato puede estar como máximo en {MAX_PROCESOS_POR_FORMATO} procesos, "
+            f"y {nombres} ya está en {MAX_PROCESOS_POR_FORMATO}.",
+        )
 
 
 def _check_category(db: Session, category_id) -> None:
@@ -463,6 +495,17 @@ def list_selectable_services(
     return [ServiceSelectableOut(id=r.id, name=r.name) for r in rows]
 
 
+@router.get("/by-category/root", response_model=List[ServiceInCategoryOut])
+def list_services_without_category(
+    scope: str = "all",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Procesos activos sin carpeta: salen en la raíz de los exploradores y del
+    selector de carpeta. Mismo `scope` que /by-category/{id}."""
+    return _services_in(db, None, scope, current_user)
+
+
 @router.get("/by-category/{category_id}", response_model=List[ServiceInCategoryOut])
 def list_services_in_category(
     category_id: int,
@@ -470,6 +513,10 @@ def list_services_in_category(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    return _services_in(db, category_id, scope, current_user)
+
+
+def _services_in(db: Session, category_id, scope: str, current_user: User):
     """Servicios activos que viven en la categoría, con sus formatos, para los
     exploradores de carpetas. `scope` filtra los formatos igual que la carpeta:
     all (Editar formatos), fill (los que el usuario diligencia) o answered (los
@@ -479,7 +526,11 @@ def list_services_in_category(
 
     services = (
         db.query(GenericActivity)
-        .filter(GenericActivity.category_id == category_id, GenericActivity.is_active.is_(True))
+        .filter(
+            GenericActivity.category_id.is_(None) if category_id is None
+            else GenericActivity.category_id == category_id,
+            GenericActivity.is_active.is_(True),
+        )
         .order_by(GenericActivity.name)
         .all()
     )
@@ -582,7 +633,7 @@ def create_activity(
 ):
     name = payload.name.strip()
     if db.query(GenericActivity.id).filter(GenericActivity.name == name).first():
-        raise HTTPException(400, "Ya existe una actividad con ese nombre")
+        raise HTTPException(400, "Ya existe un proceso con ese nombre")
 
     items = _validate_items(db, payload.items)
 
@@ -624,6 +675,7 @@ def create_activity(
         missing = link_form_ids - existing_forms
         if missing:
             raise HTTPException(400, f"Formatos inexistentes: {sorted(missing)}")
+        _check_process_limit(db, activity.id, link_form_ids)
         for fid in link_form_ids:
             db.add(GenericActivityFormLink(activity_id=activity.id, form_id=fid))
 
@@ -647,7 +699,7 @@ def update_activity(
 ):
     activity = db.query(GenericActivity).filter(GenericActivity.id == activity_id).first()
     if not activity:
-        raise HTTPException(404, "Actividad no encontrada")
+        raise HTTPException(404, "Proceso no encontrado")
 
     if payload.name is not None:
         new_name = payload.name.strip()
@@ -658,7 +710,7 @@ def update_activity(
             .filter(GenericActivity.name == new_name, GenericActivity.id != activity.id)
             .first()
         ):
-            raise HTTPException(400, "Ya existe otra actividad con ese nombre")
+            raise HTTPException(400, "Ya existe otro proceso con ese nombre")
         activity.name = new_name
 
     if payload.description is not None:
@@ -698,7 +750,7 @@ def delete_activity(
 ):
     activity = db.query(GenericActivity).filter(GenericActivity.id == activity_id).first()
     if not activity:
-        raise HTTPException(404, "Actividad no encontrada")
+        raise HTTPException(404, "Proceso no encontrado")
     db.delete(activity)
     db.commit()
     return {"deleted": True, "id": activity_id}
@@ -716,9 +768,10 @@ def set_activity_forms(
     la actividad. Notifica solo a los diligenciadores recién agregados."""
     activity = db.query(GenericActivity).filter(GenericActivity.id == activity_id).first()
     if not activity:
-        raise HTTPException(404, "Actividad no encontrada")
+        raise HTTPException(404, "Proceso no encontrado")
 
     items = _validate_items(db, payload.items)
+    _check_process_limit(db, activity.id, {it.form_id for it in items})
 
     # Asignaciones previas, para notificar solo las NUEVAS (no re-notificar).
     old_pairs: Set[Tuple[int, int]] = {
@@ -889,7 +942,7 @@ def link_response_to_service(
         .first()
     )
     if not activity:
-        raise HTTPException(404, "Servicio no encontrado")
+        raise HTTPException(404, "Proceso no encontrado")
 
     link = (
         db.query(ResponseServiceLink)
@@ -1013,7 +1066,7 @@ def add_service_form_links(
     """Agrega formatos al servicio (additivo, no quita los existentes)."""
     activity = db.query(GenericActivity).filter(GenericActivity.id == activity_id).first()
     if not activity:
-        raise HTTPException(404, "Servicio no encontrado")
+        raise HTTPException(404, "Proceso no encontrado")
 
     form_ids = set(payload.form_ids)
     if form_ids:
@@ -1023,6 +1076,7 @@ def add_service_form_links(
         missing = form_ids - existing_forms
         if missing:
             raise HTTPException(400, f"Formatos inexistentes: {sorted(missing)}")
+        _check_process_limit(db, activity_id, form_ids)
         already = {
             row[0]
             for row in db.query(GenericActivityFormLink.form_id)
@@ -1048,7 +1102,7 @@ def remove_service_form_link(
     (guion AGO, ETAPA 23 en dairo)."""
     activity = db.query(GenericActivity).filter(GenericActivity.id == activity_id).first()
     if not activity:
-        raise HTTPException(404, "Actividad no encontrada")
+        raise HTTPException(404, "Proceso no encontrado")
     borrados = (
         db.query(GenericActivityFormLink)
         .filter(GenericActivityFormLink.activity_id == activity_id,
@@ -1062,7 +1116,7 @@ def remove_service_form_link(
         .delete(synchronize_session=False)
     )
     if not borrados:
-        raise HTTPException(404, f"El formato {form_id} no está en este servicio")
+        raise HTTPException(404, f"El formato {form_id} no está en este proceso")
     db.commit()
     return _serialize_activity(_load_full(db, activity_id))
 
@@ -1079,7 +1133,7 @@ def add_service_assignments(
     nuevos y asegura que el formato esté en los formatos del servicio."""
     activity = db.query(GenericActivity).filter(GenericActivity.id == activity_id).first()
     if not activity:
-        raise HTTPException(404, "Servicio no encontrado")
+        raise HTTPException(404, "Proceso no encontrado")
 
     # Valida formatos/usuarios/perfiles y deduplica (reusa _validate_items).
     items = _validate_items(
@@ -1091,6 +1145,7 @@ def add_service_assignments(
             for uid in payload.user_ids
         ],
     )
+    _check_process_limit(db, activity_id, {payload.form_id})
 
     existing_pairs = {
         (fid, uid)
