@@ -1333,9 +1333,10 @@ def create_version(
     db.flush()  # para obtener new_form.id
 
     # Clonar FormQuestion (vincular mismas preguntas)
-    source_questions = db.query(FormQuestion).filter(FormQuestion.form_id == source.id).all()
-    for fq in source_questions:
-        db.add(FormQuestion(form_id=new_form.id, question_id=fq.question_id))
+    # Sin repetir el par campo↔formato aunque el origen lo tenga duplicado.
+    source_questions = db.query(FormQuestion).filter(FormQuestion.form_id == source.id).order_by(FormQuestion.id).all()
+    for qid in dict.fromkeys(fq.question_id for fq in source_questions):
+        db.add(FormQuestion(form_id=new_form.id, question_id=qid))
 
     # Participantes, campos por aprobador, registro externo, condiciones y
     # fórmulas: al aprobarse, lo que tenga el borrador reemplaza a lo del vigente.
@@ -2117,7 +2118,9 @@ async def update_form_questions(
         invalid_question_ids = []
         
         if request.question_ids and len(request.question_ids) > 0:
-            for question_id in request.question_ids:
+            # Sin repetidos (en el orden en que llegan): un mismo campo dos
+            # veces en la lista creaba dos vínculos iguales al mismo formato.
+            for question_id in dict.fromkeys(request.question_ids):
                 # Verificar que la pregunta existe
                 question = db.query(Question).filter(Question.id == question_id).first()
                 

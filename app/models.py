@@ -1,8 +1,9 @@
 from datetime import datetime
 from sqlalchemy import (
     Boolean, Column, BigInteger, DateTime, Integer, SmallInteger, String, Text,
-    ForeignKey, TIMESTAMP, Enum, UniqueConstraint, Index, func, text
+    ForeignKey, TIMESTAMP, Enum, UniqueConstraint, Index, func, text, LargeBinary
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from app.database import Base
 import enum
@@ -1516,6 +1517,19 @@ class TokenAccount(Base):
     licencia_emitida_en = Column(TIMESTAMP(timezone=True), nullable=True)
     licencia_expira_en  = Column(TIMESTAMP(timezone=True), nullable=True)
     verificado_en       = Column(TIMESTAMP(timezone=True), nullable=True)
+    # Lo que trae la licencia firmada por la consola y el último intento de
+    # reportarle (app/services/consola_reporte.py). Migración 2026-10-19.
+    licencia_secuencia   = Column(Integer, nullable=True)
+    licencia_estado      = Column(String(20), nullable=True)
+    reporte_intentado_en = Column(TIMESTAMP(timezone=True), nullable=True)
+    reporte_error        = Column(Text, nullable=True)
+    # Licencia v2 (manual maestro v4). Migración 2026-10-20.
+    licencia_contenido   = Column(JSONB, nullable=True)   # identidad, canal, plan, módulos, créditos
+    tarifas              = Column(JSONB, nullable=False,
+                                  server_default=text("'{\"usuario\": 50, \"formato\": 20, \"movimiento\": 20, \"campo\": 2}'::jsonb"))
+    creditos_saldo       = Column(BigInteger, nullable=True)
+    empresa_logo         = Column(LargeBinary, nullable=True)
+    empresa_logo_tipo    = Column(String(30), nullable=True)
     # Interruptor de la fase 2. En FALSE no se bloquea nada: solo se mide.
     bloqueo_activo      = Column(Boolean, nullable=False, default=False)
     actualizado_en      = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
@@ -1536,6 +1550,9 @@ class TokenEvent(Base):
     ocupado_despues = Column(BigInteger, nullable=True)
     origen          = Column(String(20), nullable=True)    # ui|api|importacion|migracion
     detalle         = Column(Text, nullable=True)
+    # Transacción que lo generó. Lo llenan los triggers (migración 2026-10-19)
+    # para anular baja+alta del mismo vínculo al guardar un formato.
+    txid            = Column(BigInteger, nullable=True)
 
     actor = relationship('User', foreign_keys=[actor_user_id])
 

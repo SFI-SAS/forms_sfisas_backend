@@ -115,6 +115,10 @@ app.add_middleware(
     minimum_size=1000
 )
 
+# Quién hace cada cambio, para los triggers de token_events.
+from app.services.token_actor import middleware_actor
+app.middleware("http")(middleware_actor)
+
 # 3. ✅ SECURITY HEADERS
 @app.middleware("http")
 async def add_security_headers(request, call_next):
@@ -580,6 +584,22 @@ scheduler.add_job(
     id="pending_approval_reminder"
 )
 logger.info("[v3] Recordatorio de pendientes de aprobación: Diario a las 8:00 AM")
+
+# Reporte a la consola de Safemetrics cada 6 h (y uno al minuto de arrancar).
+# Sin CONSOLA_URL / CONSOLA_CLAVE_INSTALACION no se programa: solo mide.
+from datetime import datetime, timedelta
+from app.services import consola_reporte
+if consola_reporte.configurado():
+    scheduler.add_job(
+        consola_reporte.tarea_programada,
+        "interval",
+        hours=6,
+        next_run_time=datetime.now() + timedelta(minutes=1),
+        id="reporte_consola",
+    )
+    logger.info("[consola] Reporte a %s cada 6 h", consola_reporte.CONSOLA_URL)
+else:
+    logger.info("[consola] Sin CONSOLA_URL: no se reporta a la consola")
 
 # Iniciar el scheduler
 scheduler.start()
