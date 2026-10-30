@@ -16,8 +16,9 @@ from sqlalchemy.orm import Session
 from fastapi import Depends
 
 from app.database import get_db
-from app.models import Response, Form, Answer, Question
-from app.core.security import SECRET_KEY
+from app.models import Response, Form, Answer, Question, User
+from app.core.security import SECRET_KEY, get_current_user
+from app.core.permissions import can_user_view_response
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -99,9 +100,10 @@ def public_view_response(token: str, db: Session = Depends(get_db)):
 
 
 @router.get("/generate-token/{response_id}")
-def generate_token_for_response(response_id: int, db: Session = Depends(get_db)):
-    response = db.query(Response).filter(Response.id == response_id).first()
-    if not response:
+def generate_token_for_response(response_id: int, db: Session = Depends(get_db),
+                                current_user: User = Depends(get_current_user)):
+    # Sin sesión cualquiera podía pedir el enlace público de cualquier respuesta recorriendo ids.
+    if not can_user_view_response(current_user, response_id, db):
         raise HTTPException(status_code=404, detail="Respuesta no encontrada")
     token = generate_qr_token(response_id)
     return {"token": token, "response_id": response_id}
