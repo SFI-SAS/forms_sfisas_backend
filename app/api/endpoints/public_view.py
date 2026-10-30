@@ -103,7 +103,8 @@ def public_view_response(token: str, db: Session = Depends(get_db)):
 def generate_token_for_response(response_id: int, db: Session = Depends(get_db),
                                 current_user: User = Depends(get_current_user)):
     # Sin sesión cualquiera podía pedir el enlace público de cualquier respuesta recorriendo ids.
-    if not can_user_view_response(current_user, response_id, db):
+    existe = db.query(Response.id).filter(Response.id == response_id).first()
+    if not existe or not can_user_view_response(current_user, response_id, db):
         raise HTTPException(status_code=404, detail="Respuesta no encontrada")
     token = generate_qr_token(response_id)
     return {"token": token, "response_id": response_id}
