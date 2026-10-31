@@ -746,6 +746,8 @@ def get_question_answers(question_id: int, db: Session = Depends(get_db), curren
             answers = get_answers_by_question(db, question_id)
 
             return answers
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

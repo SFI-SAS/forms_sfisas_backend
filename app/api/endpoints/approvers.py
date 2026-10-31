@@ -694,6 +694,8 @@ def get_user_forms_by_approver(
         
         return forms_approval_info
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail="No se pudo procesar la solicitud")
 

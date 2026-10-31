@@ -2606,6 +2606,8 @@ def get_forms_endpoint(
         if not forms:
             raise HTTPException(status_code=404, detail="No se encontraron formularios")
         return forms
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail="No se pudo procesar la solicitud")
     
@@ -3694,6 +3696,8 @@ def get_unanswered_forms(
 
         return forms
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail="No se pudo procesar la solicitud")
 

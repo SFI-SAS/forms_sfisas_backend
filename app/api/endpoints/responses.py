@@ -1343,6 +1343,8 @@ def set_reconsideration_true(
             "aprobaciones_actualizadas": len(approvals)
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail="Error al procesar la reconsideración")
@@ -2652,6 +2654,8 @@ def obtener_ultima_relacion(
             }
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,

@@ -1113,6 +1113,8 @@ def create_email(email_config: EmailConfigCreate, db: Session = Depends(get_db),
                 detail="User does not have permission to update user types"
             )
         return create_email_config(db, email_config)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail="No se pudo procesar la solicitud")
     
