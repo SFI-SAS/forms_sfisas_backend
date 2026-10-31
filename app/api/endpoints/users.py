@@ -1919,6 +1919,23 @@ def delete_user_endpoint(
         }
 
 
+@router.patch("/{user_id}/deactivate")
+def deactivate_user_endpoint(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles([UserType.admin])),
+):
+    """Desactiva un usuario sin borrar nada (DELETE borra del todo a quien no tiene datos)."""
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="No puedes desactivarte a ti mismo")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    user.is_active = False
+    db.commit()
+    return {"ok": True, "user_id": user_id, "message": "Usuario desactivado; se puede reactivar."}
+
+
 @router.patch("/{user_id}/reactivate")
 def reactivate_user_endpoint(
     user_id: int,
