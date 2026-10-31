@@ -662,6 +662,18 @@ def read_options_by_question(question_id: int, db: Session = Depends(get_db), cu
     else: 
         return get_options_by_question_id(db=db, question_id=question_id)
 
+@router.delete("/options/{option_id}")
+def delete_option(option_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_roles([UserType.admin, UserType.creator]))):
+    """Quita una opción de una pregunta. Las respuestas guardan el texto, no el id de la opción."""
+    from app.models import Option
+    option = db.get(Option, option_id)
+    if option is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Option with id {option_id} not found")
+    db.delete(option)
+    db.commit()
+    cache_listas.invalidar()
+    return {"ok": True, "option_id": option_id}
+
 @router.delete("/delete/{question_id}")
 def delete_question(question_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_roles([UserType.admin, UserType.creator]))):
     """
