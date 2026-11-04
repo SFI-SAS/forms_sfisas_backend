@@ -225,6 +225,9 @@ class Form(Base):
     responsible_id = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     published_by = Column(BigInteger, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     published_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    # Cuándo se envió a aprobación por última vez (se reinicia en cada reenvío).
+    # La antigüedad en la bandeja se cuenta desde aquí, no desde created_at.
+    sent_at = Column(TIMESTAMP(timezone=True), nullable=True)
     valid_from = Column(TIMESTAMP(timezone=True), nullable=True)
     valid_until = Column(TIMESTAMP(timezone=True), nullable=True)
     change_note = Column(String(500), nullable=True)

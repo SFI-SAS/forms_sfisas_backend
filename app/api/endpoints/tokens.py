@@ -62,20 +62,32 @@ def ocupado_de(desglose: dict, t: dict) -> int:
             + desglose["movimientos"] * t["movimiento"] + desglose["vinculos"] * t["campo"])
 
 
+# Un formato ocupa solo si alguna vez se activó (respuesta de Andrés, 22-oct):
+# el borrador nuevo, el rechazado y el borrador de una versión nueva no
+# cuentan, ni sus campos. Un publicado nunca vuelve a borrador (lo editado va
+# a un borrador aparte), así que «alguna vez activo» es no estar en borrador.
+# Si después se desactiva, sigue ocupando. Igual en token_ocupado() de la base
+# (migración 2026-10-22_creditos_solo_activados.sql).
+FORMATO_CUENTA = "f.form_status::text NOT IN ('borrador', 'enviado')"
+
+
 def conteos(db: Session) -> dict:
     """Cuántos hay de cada cosa que ocupa. Es también el desglose que se
     reporta a la consola (app/services/consola_reporte.py).
 
     Solo ocupa el usuario habilitado: dar de baja libera (manual maestro 4.2).
     Un campo vinculado dos veces al mismo formato cuenta una sola: el doble
-    vínculo es un error de guardado, no algo que el cliente tenga montado."""
-    return dict(db.execute(text("""
+    vínculo es un error de guardado, no algo que el cliente tenga montado.
+    Los borradores no ocupan (ver FORMATO_CUENTA)."""
+    return dict(db.execute(text(f"""
         SELECT
             (SELECT count(*) FROM users WHERE is_active) AS usuarios,
-            (SELECT count(*) FROM forms)             AS formatos,
+            (SELECT count(*) FROM forms f WHERE {FORMATO_CUENTA}) AS formatos,
             (SELECT count(*) FROM forms_movimientos) AS movimientos,
-            (SELECT count(*) FROM (SELECT DISTINCT form_id, question_id
-                                   FROM form_questions) v) AS vinculos
+            (SELECT count(*) FROM (SELECT DISTINCT fq.form_id, fq.question_id
+                                   FROM form_questions fq
+                                   JOIN forms f ON f.id = fq.form_id
+                                   WHERE {FORMATO_CUENTA}) v) AS vinculos
     """)).mappings().one())
 
 
@@ -151,6 +163,11 @@ def resumen(db: Session = Depends(get_db), current_user: User = Depends(_ADMIN))
         "plan": plan,
         "modulos": lic.get("modulos") or [],
         "creditos_saldo": cuenta["creditos_saldo"] if cuenta else None,
+        # Corte mensual: el periodo en curso ({desde, hasta}; hasta = próximo
+        # corte) y, si el saldo quedó en negativo, el plazo para recargar
+        # ({desde, plazo_hasta}). None si la licencia no los trae.
+        "periodo": lic.get("periodo"),
+        "mora": lic.get("mora"),
     }
 
 
@@ -184,7 +201,7 @@ def por_formato(
     más 2 por cada campo vinculado, así que los formatos con muchos campos
     dominan la factura aunque nadie lo note."""
     t = tarifas(db)
-    filas = db.execute(text("""
+    filas = db.execute(text(f"""
         SELECT f.id,
                f.title,
                f.is_enabled,
@@ -194,6 +211,7 @@ def por_formato(
         FROM forms f
         LEFT JOIN form_questions fq ON fq.form_id = f.id
         LEFT JOIN users u           ON u.id = f.user_id
+        WHERE {FORMATO_CUENTA}
         GROUP BY f.id, f.title, f.is_enabled, u.name
         ORDER BY tokens DESC
         LIMIT :limite
@@ -216,7 +234,7 @@ def por_usuario(
     la tabla `users` no guarda quién creó a quién.
     """
     t = tarifas(db)
-    filas = db.execute(text("""
+    filas = db.execute(text(f"""
         SELECT u.id,
                u.name,
                u.email,
@@ -235,6 +253,7 @@ def por_usuario(
                                        THEN (fq.form_id, fq.question_id) END) AS campos
             FROM forms f
             LEFT JOIN form_questions fq ON fq.form_id = f.id
+            WHERE {FORMATO_CUENTA}
             GROUP BY f.user_id
         ) f ON f.user_id = u.id
         LEFT JOIN (
@@ -259,13 +278,15 @@ def campos_mas_reutilizados(
     """Campos usados en varios formatos. Se cobra el par campo↔formato, así que
     un mismo campo en 5 formatos ocupa 10 tokens. Es la parte del modelo que
     más preguntas genera al cliente: conviene poder mostrarla."""
-    filas = db.execute(text("""
+    filas = db.execute(text(f"""
         SELECT q.id,
                q.question_text,
                count(DISTINCT fq.form_id)          AS formatos,
                count(DISTINCT fq.form_id) * :vinc  AS tokens
         FROM form_questions fq
         JOIN questions q ON q.id = fq.question_id
+        JOIN forms f     ON f.id = fq.form_id
+        WHERE {FORMATO_CUENTA}
         GROUP BY q.id, q.question_text
         HAVING count(DISTINCT fq.form_id) > 1
         ORDER BY tokens DESC

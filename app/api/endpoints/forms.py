@@ -743,7 +743,9 @@ def submit_for_approval(
     if form.user_id != current_user.id and not es_admin:
         raise HTTPException(status_code=403, detail="Solo el autor o el admin pueden enviar este formato a aprobación")
 
+    from datetime import datetime, timezone
     form.form_status = FormStatus.enviado
+    form.sent_at = datetime.now(timezone.utc)
     if comment.strip() or _estado_revision(db, [form_id])[form_id]["review_status"] == "rechazado":
         texto = f"{_MARCA_ENVIO} " + (comment.strip() or "El autor corrigió el borrador y lo envía a revisión.")
         db.add(FormApprovalNote(form_id=form_id, user_id=current_user.id, note_text=texto))
@@ -990,7 +992,8 @@ def get_pending_approval(
     result = []
     for f in drafts:
         q_count = db.query(FormQuestion).filter(FormQuestion.form_id == f.id).count()
-        age = (now - f.created_at).days if f.created_at else 0
+        desde = f.sent_at or f.created_at
+        age = (now - desde).days if desde else 0
 
         # Si es versión, encontrar el formato publicado anterior
         prev_id = None
@@ -1241,7 +1244,8 @@ def get_my_drafts(
     result = []
     for f in drafts:
         q_count = db.query(FormQuestion).filter(FormQuestion.form_id == f.id).count()
-        age = (now - f.created_at).days if f.created_at else 0
+        desde = f.sent_at or f.created_at
+        age = (now - desde).days if desde else 0
         estado = dict(revision[f.id])
         if f.form_status == FormStatus.enviado:
             estado["review_status"] = "reenviado"  # en la bandeja del admin

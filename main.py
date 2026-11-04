@@ -442,6 +442,7 @@ def pending_approval_reminder_task():
     """
     from app.models import Form, FormStatus, User, UserType, CategoryApproval
     from datetime import datetime, timezone, timedelta
+    from sqlalchemy import func
 
     logger.info("[v3] Ejecutando tarea de recordatorio de pendientes...")
     db = SessionLocal()
@@ -454,7 +455,7 @@ def pending_approval_reminder_task():
         overdue = (
             db.query(Form)
             .filter(Form.form_status == FormStatus.enviado)
-            .filter(Form.created_at < threshold_48h)
+            .filter(func.coalesce(Form.sent_at, Form.created_at) < threshold_48h)
             .all()
         )
 
@@ -474,7 +475,8 @@ def pending_approval_reminder_task():
         admin_ids = {a.id for a in admins}
 
         for f in overdue:
-            age_days = (now - f.created_at).days if f.created_at else 0
+            desde = f.sent_at or f.created_at
+            age_days = (now - desde).days if desde else 0
             item = {
                 "id": f.id,
                 "title": f.title,
