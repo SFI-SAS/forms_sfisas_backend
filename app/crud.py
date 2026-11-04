@@ -7218,9 +7218,11 @@ def create_form_atomic(db: Session, payload: dict, user_id: int) -> dict:
 
     CHOICE = {"one_choice", "multiple_choice"}
     QTYPE_TO_ITEM = {
-        "text": "input", "number": "input", "date": "date", "time": "input",
+        # number/time/location con su componente: como "input" el front los pintaba como caja de texto
+        # y un precio aceptaba "$110000" (las fórmulas no multiplicaban).
+        "text": "input", "number": "number", "date": "date", "time": "time",
         "file": "file", "one_choice": "select", "multiple_choice": "select",
-        "location": "input", "firm": "firm", "regisfacial": "regisfacial", "table": "select",
+        "location": "location", "firm": "firm", "regisfacial": "regisfacial", "table": "select",
     }
 
     def _normf(f, path):
